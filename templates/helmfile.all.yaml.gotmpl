@@ -1,3 +1,5 @@
+# code: language=helm
+
 {{- /*
 ================================================================================
 MAIN LOGIC: CLUSTER AND DEPLOYMENT DISCOVERY
@@ -7,7 +9,7 @@ This template discovers all clusters in the deployment tree and assigns
 deployments to them based on a hierarchical structure.
 
 DIRECTORY STRUCTURE:
-  clusters/
+  deployments/
     apps/                           ← Global deployments (all clusters)
       global-app/
         deployment.yaml
@@ -33,9 +35,9 @@ DIRECTORY STRUCTURE:
             deployment.yaml
 
 DEPLOYMENT ASSIGNMENT RULES:
-1. Global deployments (clusters/apps/*) → assigned to ALL clusters
-2. Group deployments (clusters/GROUP/apps/*) → assigned to all clusters in GROUP
-3. Cluster deployments (clusters/[GROUP/]CLUSTER/apps/*) → assigned to that CLUSTER only
+1. Global deployments (deployments/apps/*) → assigned to ALL clusters
+2. Group deployments (deployments/GROUP/apps/*) → assigned to all clusters in GROUP
+3. Cluster deployments (deployments/[GROUP/]CLUSTER/apps/*) → assigned to that CLUSTER only
 
 OUTPUT FORMAT:
   A flat list where each item contains:
@@ -44,9 +46,13 @@ OUTPUT FORMAT:
   - path: "/absolute/path/to/deployment.yaml"
 */ -}}
 
-{{- /* Get the current working directory and git repository root */ -}}
-{{- $cwd := include "getCwd" . -}}
-{{- $root := include "getDeploymentRoot" . -}}
+{{- /* Lets make sure the passed working directory is set, exists and is absolute */ -}}
+{{- $repoRoot := and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd) -}}
+{{- $cwd := exec "pwd" (list) -}}
+
+# From template
+{{ $repoRoot }}
+{{ $cwd }}
 
 {{- /*
 STEP 1: DISCOVER ALL CLUSTERS

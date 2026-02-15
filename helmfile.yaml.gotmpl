@@ -1,7 +1,5 @@
 # code: language=helm
 
-{{ .Values | toYaml }}
-
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
     values:
