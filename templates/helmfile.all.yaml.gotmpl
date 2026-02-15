@@ -47,7 +47,7 @@ OUTPUT FORMAT:
 */ -}}
 
 {{- /* Lets make sure the passed working directory is set, exists and is absolute */ -}}
-{{- $repoRoot := and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd) -}}
+{{- $repoRoot := and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd) | ternary .Values.atlas.cwd (fail "No valid cwd given") -}}
 {{- $cwd := exec "pwd" (list) -}}
 
 # From template
