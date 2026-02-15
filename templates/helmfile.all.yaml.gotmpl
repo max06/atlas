@@ -47,7 +47,10 @@ OUTPUT FORMAT:
 */ -}}
 
 {{- /* Lets make sure the passed working directory is set, exists and is absolute */ -}}
-{{- $repoRoot := and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd) | ternary .Values.atlas.cwd (fail "No valid cwd given") -}}
+{{- if not (and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd)) -}}
+  {{- fail "No valid cwd given" -}}
+{{- end -}}
+{{- $repoRoot := .Values.atlas.cwd -}}
 {{- $cwd := exec "pwd" (list) -}}
 
 # From template
@@ -60,7 +63,12 @@ Find all directories with an "apps" subdirectory, which indicates either:
 - A cluster (if it's a leaf node with no child clusters)
 - A cluster group (if it has child clusters beneath it)
 */ -}}
-{{- $clustersPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/**/apps" $repoRoot)) -}}
+{{- $clustersPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/%s/**/apps" $repoRoot .Values.atlas.deploymentDefinitions )) -}}
+
+# DEBUG!
+{{ $clustersPattern }}
+{{ "" }}
+
 {{- $rawClusters := include "glob" $clustersPattern | fromJson -}}
 
 {{- /* Dictionary to store discovered leaf clusters (actual deployment targets) */ -}}
