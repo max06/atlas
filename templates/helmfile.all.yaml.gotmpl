@@ -60,7 +60,7 @@ Find all directories with an "apps" subdirectory, which indicates either:
 - A cluster (if it's a leaf node with no child clusters)
 - A cluster group (if it has child clusters beneath it)
 */ -}}
-{{- $clustersPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/**/apps" $root)) -}}
+{{- $clustersPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/**/apps" $repoRoot)) -}}
 {{- $rawClusters := include "glob" $clustersPattern | fromJson -}}
 
 {{- /* Dictionary to store discovered leaf clusters (actual deployment targets) */ -}}
@@ -105,7 +105,7 @@ Find all directories with an "apps" subdirectory, which indicates either:
     - "cyrannus/helios/apps" is a LEAF (no children found)
     - "cyrannus/apps" is a GROUP if "cyrannus/*\/apps" finds children like "cyrannus/helios/apps"
     */ -}}
-    {{- $childPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/*/apps" $root $clusterPath)) -}}
+    {{- $childPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/*/apps" $repoRoot $clusterPath)) -}}
     {{- $hasChildren := include "glob" $childPattern | fromJson -}}
     {{- $isLeaf := eq (len $hasChildren) 0 -}}
 
@@ -137,7 +137,7 @@ For each discovered cluster, gather all deployments from:
   These are found in clusters/apps/* and apply to ALL clusters.
   Pattern: clusters/apps/*\/deployment.yaml
   */ -}}
-  {{- $globalPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/apps/*/deployment.yaml" $root)) -}}
+  {{- $globalPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/apps/*/deployment.yaml" $repoRoot)) -}}
   {{- $rawDeployments := include "glob" $globalPattern | fromJson -}}
 
   {{- /*
@@ -152,7 +152,7 @@ For each discovered cluster, gather all deployments from:
   */ -}}
   {{- $groupPath := $cluster | dir -}}
   {{- if ne $groupPath "." -}}
-    {{- $groupPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/apps/*/deployment.yaml" $root $groupPath)) -}}
+    {{- $groupPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/apps/*/deployment.yaml" $repoRoot $groupPath)) -}}
     {{- $groupDeployments := include "glob" $groupPattern | fromJson -}}
     {{- /* Append group deployments to our collection */ -}}
     {{- $rawDeployments = concat $rawDeployments $groupDeployments -}}
@@ -164,7 +164,7 @@ For each discovered cluster, gather all deployments from:
   Pattern: clusters/GROUP/CLUSTER/apps/*\/deployment.yaml
        or: clusters/CLUSTER/apps/*\/deployment.yaml (for standalone clusters)
   */ -}}
-  {{- $clusterPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/apps/*/deployment.yaml" $root $cluster)) -}}
+  {{- $clusterPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/apps/*/deployment.yaml" $repoRoot $cluster)) -}}
   {{- $specificDeployments := include "glob" $clusterPattern | fromJson -}}
   {{- $rawDeployments = concat $rawDeployments $specificDeployments -}}
 
