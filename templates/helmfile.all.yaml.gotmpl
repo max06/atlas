@@ -51,11 +51,6 @@ OUTPUT FORMAT:
   {{- fail "No valid cwd given" -}}
 {{- end -}}
 {{- $repoRoot := .Values.atlas.cwd -}}
-{{- $cwd := exec "pwd" (list) -}}
-
-# From template
-{{ $repoRoot }}
-{{ $cwd }}
 
 {{- /*
 STEP 1: DISCOVER ALL CLUSTERS
@@ -65,10 +60,6 @@ Find all directories with an "apps" subdirectory, which indicates either:
 */ -}}
 {{- $clustersPattern := printf "%s/%s/**/apps" .Values.atlas.cwd .Values.atlas.deploymentDefinitions -}}
 
-# DEBUG!
-{{ $clustersPattern }}
-{{ "" }}
-
 {{- $rawClusters := include "glob" $clustersPattern | fromJson -}}
 
 {{- /* Dictionary to store discovered leaf clusters (actual deployment targets) */ -}}
@@ -76,35 +67,21 @@ Find all directories with an "apps" subdirectory, which indicates either:
 {{- /* Value: empty list (placeholder, will be populated in step 2) */ -}}
 {{- $clusters := dict -}}
 
+{{- $basePrefix := printf "%s/%s/" .Values.atlas.cwd .Values.atlas.deploymentDefinitions -}}
+
 {{- range $rawClusters -}}
-  {{- $absolutePath := . -}}
-  {{- $pathParts := $absolutePath | splitList "/" -}}
-
   {{- /*
-  Find the index where the deploymentDefinitions directory appears in the path.
-  Example path: "/workspaces/repo/clusters/cyrannus/helios/apps"
-  Split parts: ["", "workspaces", "repo", "clusters", "cyrannus", "helios", "apps"]
-  If deploymentDefinitions is "clusters", clustersIdx: 3
-  */ -}}
-  {{- $clustersIdx := -1 -}}
-  {{- range $idx, $part := $pathParts -}}
-    {{- if eq $part $.Values.atlas.deploymentDefinitions -}}
-      {{- $clustersIdx = $idx -}}
-    {{- end -}}
-  {{- end -}}
+  Remove the base prefix and trailing "/apps" to extract the cluster path.
+  Example: "/workspaces/repo/clusters/cyrannus/helios/apps"
+           → remove "/workspaces/repo/clusters/" → "cyrannus/helios/apps"
+           → remove "/apps" → "cyrannus/helios"
 
-  {{- /*
-  Extract the cluster path between deploymentDefinitions and "apps".
-  Example: ["", "workspaces", "repo", "clusters", "cyrannus", "helios", "apps"]
-           → slice from index 4 to 6 → ["cyrannus", "helios"]
-           → join with "/" → "cyrannus/helios"
-
-  Note: We skip paths with only 2 parts after deploymentDefinitions (e.g., "clusters/apps")
+  Note: We skip paths that result in empty string (e.g., "/workspaces/repo/clusters/apps")
         because that's the global apps directory, not a cluster.
   */ -}}
-  {{- if and (ge $clustersIdx 0) (gt (sub (len $pathParts) $clustersIdx) 2) -}}
-    {{- $clusterPath := slice $pathParts (add1 $clustersIdx) (sub (len $pathParts) 1) | join "/" -}}
+  {{- $clusterPath := . | trimPrefix $basePrefix | dir -}}
 
+  {{- if ne $clusterPath "" -}}
     {{- /*
     Determine if this is a LEAF cluster (actual deployment target) or a GROUP.
     A cluster is a leaf if it has no child directories with "apps" subdirectories.
@@ -223,6 +200,8 @@ OUTPUT
 ================================================================================
 Generate the final YAML structure with the flat list of deployments.
 */ -}}
+
+{{ "" }}
 environments:
   default:
     values:

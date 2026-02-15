@@ -1,44 +1,4 @@
-# Find our base path - to avoid including relative paths
-{{- define "getDeploymentRoot" -}}
-    {{- exec "git" (list "rev-parse" "--show-toplevel") | trim -}}
-{{- end -}}
 
-
-{{- /*
-getCwd returns the current working directory as an absolute path.
-This is necessary because Helm's file system functions (isDir, readDirEntries, etc.)
-work relative to the current directory, not the git repository root.
-
-Returns: string - absolute path like "/workspaces/deployments/system"
-*/ -}}
-{{- define "getCwd" -}}
-  {{- $result := exec "pwd" (list) -}}
-  {{- $result | trim -}}
-{{- end -}}
-
-{{- /*
-getRelativePath converts an absolute path to a relative path from the current working directory.
-
-This is needed because:
-1. The glob function expects relative paths (not absolute)
-2. We're running from /workspaces/deployments/system
-3. But our deployment files are in /workspaces/deployments/clusters/*
-
-Algorithm:
-- If the absolute path starts with cwd, just strip the cwd prefix
-- Otherwise, calculate the common ancestor directory and build a path with "../" to go up
-
-Parameters (passed as dict):
-  .cwd     - Current working directory (e.g., "/workspaces/deployments/system")
-  .path    - Absolute path to convert (e.g., "/workspaces/deployments/clusters/apps")
-
-Returns: string - relative path (e.g., "../clusters/apps")
-
-Example:
-  cwd:  /workspaces/deployments/system
-  path: /workspaces/deployments/clusters/apps
-  →     ../clusters/apps
-*/ -}}
 {{- define "glob" -}}
   {{- $pattern := . -}}
   {{- $results := list -}}
@@ -124,8 +84,13 @@ Example:
 
     {{- /* Handle empty parts (from leading slash in absolute paths) */ -}}
     {{- if eq $part "" -}}
-      {{- /* Skip empty part and continue to next */ -}}
-      {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $currentPath) | fromJson -}}
+      {{- /* Skip empty part and continue to next, marking as absolute path */ -}}
+      {{- $newCurrentPath := $currentPath -}}
+      {{- if and (eq $index 0) (eq $currentPath "") -}}
+        {{- /* First part is empty = absolute path starting with / */ -}}
+        {{- $newCurrentPath = "/" -}}
+      {{- end -}}
+      {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newCurrentPath) | fromJson -}}
       {{- range $subResults -}}
         {{- $results = append $results . -}}
       {{- end -}}
@@ -150,7 +115,10 @@ Example:
             {{- if regexMatch (printf "^%s$" $regex) $entryName -}}
               {{- $newPath := $entryName -}}
               {{- if ne $currentPath "" -}}
-                {{- if hasPrefix $currentPath "/" -}}
+                {{- if eq $currentPath "/" -}}
+                  {{- /* Root path - don't add extra slash */ -}}
+                  {{- $newPath = printf "/%s" $entryName -}}
+                {{- else if hasPrefix $currentPath "/" -}}
                   {{- /* Absolute path - just append */ -}}
                   {{- $newPath = printf "%s/%s" $currentPath $entryName -}}
                 {{- else -}}
@@ -175,7 +143,10 @@ Example:
           {{- /* Exact match */ -}}
           {{- $newPath := $part -}}
           {{- if ne $currentPath "" -}}
-            {{- if hasPrefix $currentPath "/" -}}
+            {{- if eq $currentPath "/" -}}
+              {{- /* Root path - don't add extra slash */ -}}
+              {{- $newPath = printf "/%s" $part -}}
+            {{- else if hasPrefix $currentPath "/" -}}
               {{- /* Absolute path - just append */ -}}
               {{- $newPath = printf "%s/%s" $currentPath $part -}}
             {{- else -}}
@@ -297,6 +268,8 @@ Example:
 
   {{- $results | toJson -}}
 {{- end -}}
+
+
 
 
 
