@@ -1,0 +1,364 @@
+# Find our base path - to avoid including relative paths
+{{- define "getDeploymentRoot" -}}
+    {{- exec "git" (list "rev-parse" "--show-toplevel") | trim -}}
+{{- end -}}
+
+
+{{- /*
+getCwd returns the current working directory as an absolute path.
+This is necessary because Helm's file system functions (isDir, readDirEntries, etc.)
+work relative to the current directory, not the git repository root.
+
+Returns: string - absolute path like "/workspaces/deployments/system"
+*/ -}}
+{{- define "getCwd" -}}
+  {{- $result := exec "pwd" (list) -}}
+  {{- $result | trim -}}
+{{- end -}}
+
+{{- /*
+getRelativePath converts an absolute path to a relative path from the current working directory.
+
+This is needed because:
+1. The glob function expects relative paths (not absolute)
+2. We're running from /workspaces/deployments/system
+3. But our deployment files are in /workspaces/deployments/clusters/*
+
+Algorithm:
+- If the absolute path starts with cwd, just strip the cwd prefix
+- Otherwise, calculate the common ancestor directory and build a path with "../" to go up
+
+Parameters (passed as dict):
+  .cwd     - Current working directory (e.g., "/workspaces/deployments/system")
+  .path    - Absolute path to convert (e.g., "/workspaces/deployments/clusters/apps")
+
+Returns: string - relative path (e.g., "../clusters/apps")
+
+Example:
+  cwd:  /workspaces/deployments/system
+  path: /workspaces/deployments/clusters/apps
+  →     ../clusters/apps
+*/ -}}
+{{- define "getRelativePath" -}}
+  {{- $cwd := .cwd -}}
+  {{- $absPath := .path -}}
+
+  {{- /* Normalize paths by removing trailing slashes */ -}}
+  {{- $cwd = trimSuffix "/" $cwd -}}
+  {{- $absPath = trimSuffix "/" $absPath -}}
+
+  {{- /* CASE 1: Path is inside or equal to cwd - just strip the prefix */ -}}
+  {{- if hasPrefix $absPath $cwd -}}
+    {{- $relPath := trimPrefix $cwd $absPath -}}
+    {{- $relPath = trimPrefix "/" $relPath -}}
+    {{- if eq $relPath "" -}}
+      {{- "." -}}
+    {{- else -}}
+      {{- $relPath -}}
+    {{- end -}}
+  {{- else -}}
+    {{- /* CASE 2: Path is outside cwd - need to calculate relative path with ../ */ -}}
+
+    {{- /* Split both paths into components for comparison */ -}}
+    {{- /* Example: "/workspaces/deployments/system" → ["", "workspaces", "deployments", "system"] */ -}}
+    {{- $cwdParts := splitList "/" $cwd -}}
+    {{- $absParts := splitList "/" $absPath -}}
+
+    {{- /* Find the common ancestor by comparing path components */ -}}
+    {{- /* Example: "/workspaces/deployments/system" and "/workspaces/deployments/clusters" */ -}}
+    {{- /*          share ["", "workspaces", "deployments"] = 3 components */ -}}
+    {{- $commonLen := 0 -}}
+    {{- range $idx, $cwdPart := $cwdParts -}}
+      {{- if and (lt $idx (len $absParts)) (eq $cwdPart (index $absParts $idx)) -}}
+        {{- $commonLen = add1 $idx -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- /* Calculate how many "../" we need to go up from cwd to common ancestor */ -}}
+    {{- /* Example: from "/workspaces/deployments/system" (4 parts) */ -}}
+    {{- /*          to   "/workspaces/deployments" (3 parts common) */ -}}
+    {{- /*          = 4 - 3 = 1 level up = "../" */ -}}
+    {{- $upLevels := sub (len $cwdParts) $commonLen -}}
+
+    {{- /* Build the relative path: [".."] + ["clusters", "apps"] = "../clusters/apps" */ -}}
+    {{- $relParts := list -}}
+
+    {{- /* Add the "../" components */ -}}
+    {{- range until (int $upLevels) -}}
+      {{- $relParts = append $relParts ".." -}}
+    {{- end -}}
+
+    {{- /* Add the remaining path components after the common ancestor */ -}}
+    {{- range $idx, $part := $absParts -}}
+      {{- if ge $idx $commonLen -}}
+        {{- $relParts = append $relParts $part -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- /* Join all parts with "/" */ -}}
+    {{- $relParts | join "/" -}}
+  {{- end -}}
+{{- end -}}
+
+
+{{- define "glob" -}}
+  {{- $pattern := . -}}
+  {{- $results := list -}}
+
+  {{- /* Check if pattern contains ** for recursive matching */ -}}
+  {{- $hasRecursive := contains "**" $pattern -}}
+
+  {{- if $hasRecursive -}}
+    {{- /* Handle recursive globbing */ -}}
+    {{- $parts := splitList "**" $pattern -}}
+    {{- $prefix := index $parts 0 | trimSuffix "/" -}}
+    {{- $suffix := "" -}}
+    {{- if gt (len $parts) 1 -}}
+      {{- $suffix = index $parts 1 | trimPrefix "/" -}}
+    {{- end -}}
+
+    {{- /* Start recursive search from prefix directory */ -}}
+    {{- $startDir := $prefix -}}
+    {{- if eq $startDir "" -}}
+      {{- $startDir = "." -}}
+    {{- end -}}
+
+    {{- $results = include "globRecursive" (dict "dir" $startDir "pattern" $suffix "prefix" $prefix) | fromJson -}}
+  {{- else -}}
+    {{- /* Check if pattern has wildcards in directory parts */ -}}
+    {{- $parts := splitList "/" $pattern -}}
+    {{- $hasWildcardInPath := false -}}
+    {{- range $idx, $part := $parts -}}
+      {{- if and (contains "*" $part) (lt $idx (sub (len $parts) 1)) -}}
+        {{- $hasWildcardInPath = true -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- if $hasWildcardInPath -}}
+      {{- /* Use iterative matching for wildcards in path */ -}}
+      {{- $results = include "globIterative" (dict "parts" $parts "index" 0 "currentPath" "") | fromJson -}}
+    {{- else -}}
+      {{- /* Simple glob - wildcard only in filename */ -}}
+      {{- $dir := dir $pattern -}}
+      {{- $base := base $pattern -}}
+
+      {{- if eq $dir "." -}}
+        {{- $dir = "" -}}
+      {{- end -}}
+
+      {{- if or (eq $dir "") (isDir $dir) -}}
+        {{- $entries := readDirEntries $dir -}}
+
+        {{- range $entries -}}
+          {{- $entryName := .Name -}}
+          {{- $fullPath := $entryName -}}
+          {{- if ne $dir "" -}}
+            {{- $fullPath = printf "%s/%s" $dir $entryName -}}
+          {{- end -}}
+
+          {{- /* Wildcard matching */ -}}
+          {{- if contains "*" $base -}}
+            {{- $regex := regexReplaceAll "\\*" $base ".*" -}}
+            {{- $regex = regexReplaceAll "\\?" $regex "." -}}
+            {{- if regexMatch (printf "^%s$" $regex) $entryName -}}
+              {{- $results = append $results $fullPath -}}
+            {{- end -}}
+          {{- else if eq $base $entryName -}}
+            {{- $results = append $results $fullPath -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- $results | toJson -}}
+{{- end -}}
+
+{{- define "globIterative" -}}
+  {{- $parts := .parts -}}
+  {{- $index := .index -}}
+  {{- $currentPath := .currentPath -}}
+  {{- $results := list -}}
+
+  {{- if lt $index (len $parts) -}}
+    {{- $part := index $parts $index -}}
+    {{- $isLast := eq $index (sub (len $parts) 1) -}}
+
+    {{- /* Determine the directory to search in */ -}}
+    {{- $searchDir := $currentPath -}}
+    {{- if eq $searchDir "" -}}
+      {{- $searchDir = "." -}}
+    {{- end -}}
+
+    {{- if isDir $searchDir -}}
+      {{- $entries := readDirEntries $searchDir -}}
+
+      {{- /* Match entries against current part pattern */ -}}
+      {{- if contains "*" $part -}}
+        {{- /* Wildcard matching */ -}}
+        {{- $regex := regexReplaceAll "\\*" $part ".*" -}}
+        {{- $regex = regexReplaceAll "\\?" $regex "." -}}
+
+        {{- range $entries -}}
+          {{- $entryName := .Name -}}
+          {{- if regexMatch (printf "^%s$" $regex) $entryName -}}
+            {{- $newPath := $entryName -}}
+            {{- if ne $currentPath "" -}}
+              {{- $newPath = printf "%s/%s" $currentPath $entryName -}}
+            {{- end -}}
+
+            {{- if $isLast -}}
+              {{- /* This is the last part, add matching entries */ -}}
+              {{- $results = append $results $newPath -}}
+            {{- else -}}
+              {{- /* Recurse to next part */ -}}
+              {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newPath) | fromJson -}}
+              {{- range $subResults -}}
+                {{- $results = append $results . -}}
+              {{- end -}}
+            {{- end -}}
+          {{- end -}}
+        {{- end -}}
+      {{- else -}}
+        {{- /* Exact match */ -}}
+        {{- $newPath := $part -}}
+        {{- if ne $currentPath "" -}}
+          {{- $newPath = printf "%s/%s" $currentPath $part -}}
+        {{- end -}}
+
+        {{- if $isLast -}}
+          {{- if or (isFile $newPath) (isDir $newPath) -}}
+            {{- $results = append $results $newPath -}}
+          {{- end -}}
+        {{- else -}}
+          {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newPath) | fromJson -}}
+          {{- range $subResults -}}
+            {{- $results = append $results . -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- else -}}
+    {{- /* Base case: we've processed all parts */ -}}
+    {{- if or (isFile $currentPath) (isDir $currentPath) -}}
+      {{- $results = append $results $currentPath -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- $results | toJson -}}
+{{- end -}}
+
+{{- define "globRecursive" -}}
+  {{- $dir := .dir -}}
+  {{- $pattern := .pattern -}}
+  {{- $prefix := .prefix -}}
+  {{- $results := list -}}
+
+  {{- /* Read current directory */ -}}
+  {{- if isDir $dir -}}
+    {{- $entries := readDirEntries $dir -}}
+
+    {{- range $entries -}}
+      {{- $entry := . -}}
+      {{- $entryName := $entry.Name -}}
+      {{- $fullPath := printf "%s/%s" $dir $entryName -}}
+      {{- /* Clean up path if starting from current dir */ -}}
+      {{- if hasPrefix $fullPath "./" -}}
+        {{- $fullPath = trimPrefix "./" $fullPath -}}
+      {{- end -}}
+
+      {{- /* If there's a pattern after **, check if this entry matches */ -}}
+      {{- if ne $pattern "" -}}
+        {{- /* Check if pattern has wildcards in path - use globIterative */ -}}
+        {{- $patternParts := splitList "/" $pattern -}}
+        {{- $hasWildcardInPath := false -}}
+        {{- range $idx, $part := $patternParts -}}
+          {{- if and (contains "*" $part) (lt $idx (sub (len $patternParts) 1)) -}}
+            {{- $hasWildcardInPath = true -}}
+          {{- end -}}
+        {{- end -}}
+
+        {{- if $hasWildcardInPath -}}
+          {{- /* Use iterative matching from this point */ -}}
+          {{- $matched := include "globIterative" (dict "parts" $patternParts "index" 0 "currentPath" $fullPath) | fromJson -}}
+          {{- range $matched -}}
+            {{- $results = append $results . -}}
+          {{- end -}}
+        {{- else -}}
+          {{- /* Simple pattern matching */ -}}
+          {{- $firstPart := index $patternParts 0 -}}
+
+          {{- /* Check if entry matches the pattern */ -}}
+          {{- $matches := false -}}
+          {{- if contains "*" $firstPart -}}
+            {{- $regex := regexReplaceAll "\\*" $firstPart ".*" -}}
+            {{- $regex = regexReplaceAll "\\?" $regex "." -}}
+            {{- if regexMatch (printf "^%s$" $regex) $entryName -}}
+              {{- $matches = true -}}
+            {{- end -}}
+          {{- else if eq $firstPart $entryName -}}
+            {{- $matches = true -}}
+          {{- end -}}
+
+          {{- /* If it matches and it's the last part of pattern, add to results */ -}}
+          {{- if and $matches (eq (len $patternParts) 1) -}}
+            {{- $results = append $results $fullPath -}}
+          {{- end -}}
+        {{- end -}}
+
+        {{- /* If directory, recurse into it */ -}}
+        {{- if $entry.IsDir -}}
+          {{- $subResults := include "globRecursive" (dict "dir" $fullPath "pattern" $pattern "prefix" $prefix) | fromJson -}}
+          {{- range $subResults -}}
+            {{- $results = append $results . -}}
+          {{- end -}}
+        {{- end -}}
+      {{- else -}}
+        {{- /* No pattern after **, match everything */ -}}
+        {{- $results = append $results $fullPath -}}
+
+        {{- /* Recurse into subdirectories */ -}}
+        {{- if $entry.IsDir -}}
+          {{- $subResults := include "globRecursive" (dict "dir" $fullPath "pattern" "" "prefix" $prefix) | fromJson -}}
+          {{- range $subResults -}}
+            {{- $results = append $results . -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- $results | toJson -}}
+{{- end -}}
+
+
+# Create a list of defined clusters
+{{- define "findClusters" -}}
+  {{- $basePath := .basePath -}}
+  {{- $relativePath := .relativePath -}}
+  {{- $results := .results -}}
+
+  {{- range $entry := readDirEntries $basePath -}}
+    {{- $currentPath := printf "%s/%s" $basePath $entry.Name -}}
+    {{- $newRelativePath := $entry.Name -}}
+    {{- if $relativePath -}}
+      {{- $newRelativePath = printf "%s/%s" $relativePath $entry.Name -}}
+    {{- end -}}
+
+    {{- if eq $entry.Name "apps" -}}
+      {{- if not (isFile $currentPath) -}}
+        {{- $appsEntries := readDirEntries $currentPath | default (list ) -}}
+        {{- if gt (len $appsEntries) 0 -}}
+          {{- $results = append $results $relativePath -}}
+        {{- end -}}
+      {{- end -}}
+    {{- else -}}
+      {{- if not (isFile $currentPath) -}}
+        {{- $subResults := include "findClusters" (dict "basePath" $currentPath "relativePath" $newRelativePath "results" $results) | fromYaml -}}
+        {{- $results = $subResults -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- $results | toYaml -}}
+{{- end -}}

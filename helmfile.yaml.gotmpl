@@ -1,0 +1,7 @@
+# code: language=helm
+
+helmfiles:
+  - path: templates/helmfile.all.yaml.gotmpl
+    values:
+      - appTemplates: {{ .Values.appTemplates }}
+      - deploymentDefinitions: {{ .Values.deploymentDefinitions }}

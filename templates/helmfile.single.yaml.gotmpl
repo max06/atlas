@@ -1,0 +1,60 @@
+# Rencering a single deployment based on the contents of its deployment.yaml
+
+# Loading global values, valid for every cluster
+
+environments:
+  default:
+    values:
+      - ../clusters/global.values.yaml
+      - ../clusters/global.values.yaml.gotmpl
+    missingFileHandler: Info
+
+---
+# Loading cluster values
+
+environments:
+  default:
+    values:
+      - ../clusters/{{ .Values.cluster }}/cluster.values.yaml
+      - ../clusters/{{ .Values.cluster }}/cluster.values.yaml.gotmpl
+    missingFileHandler: Info
+
+---
+# Loading deployment definition
+
+environments:
+  default:
+    values:
+      - ../clusters/{{ .Values.cluster }}/apps/{{ .Values.deploymentName }}/deployment.yaml
+    missingFileHandler: Info
+
+
+---
+# Loading deployment values
+
+environments:
+  default:
+    values:
+      - ../clusters/{{ .Values.cluster }}/{{ .Values.deploymentName }}/values.yaml
+      - ../clusters/{{ .Values.cluster }}/{{ .Values.deploymentName }}/values.yaml.gotmpl
+    missingFileHandler: Info
+
+
+
+---
+# Loading deployment components
+{{ $cluster := .Values.cluster }}
+{{ $deploymentName := .Values.deploymentName }}
+
+helmfiles:
+  {{ range $entry := .Values.apps }}
+  - path: ../apps/{{ $entry.template }}/helmfile.yaml.gotmpl
+    values:
+      - instance: {{ $entry.name }}
+      - {{ $.Values | toYaml | nindent 8 }}
+      - {{ $entry | toYaml | nindent 8 }}
+      {{ $specificDeploymentValues := printf "deployments/%s/%s/%s.values.yaml.gotmpl" ($cluster) ($deploymentName) $entry.name }}
+      {{ if isFile $specificDeploymentValues }}
+      - {{ $ | tpl (readFile $specificDeploymentValues) }}
+      {{ end }}
+  {{ end }}
