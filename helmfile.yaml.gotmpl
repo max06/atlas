@@ -1,7 +1,8 @@
 # code: language=helm
 
+{{ .Values | toYaml }}
+
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
     values:
-      - appTemplates: {{ .Values.appTemplates }}
-      - deploymentDefinitions: {{ .Values.deploymentDefinitions }}
+      - atlas: {{ .Values.atlas | toYaml | nindent 10 }}
