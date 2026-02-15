@@ -63,7 +63,7 @@ Find all directories with an "apps" subdirectory, which indicates either:
 - A cluster (if it's a leaf node with no child clusters)
 - A cluster group (if it has child clusters beneath it)
 */ -}}
-{{- $clustersPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/%s/**/apps" $repoRoot .Values.atlas.deploymentDefinitions )) -}}
+{{- $clustersPattern := printf "%s/%s/**/apps" .Values.atlas.cwd .Values.atlas.deploymentDefinitions -}}
 
 # DEBUG!
 {{ $clustersPattern }}
@@ -77,29 +77,29 @@ Find all directories with an "apps" subdirectory, which indicates either:
 {{- $clusters := dict -}}
 
 {{- range $rawClusters -}}
-  {{- $relativePath := . -}}
-  {{- $pathParts := $relativePath | splitList "/" -}}
+  {{- $absolutePath := . -}}
+  {{- $pathParts := $absolutePath | splitList "/" -}}
 
   {{- /*
-  Find the index where "clusters" appears in the path.
-  Example path: "../clusters/cyrannus/helios/apps"
-  Split parts: ["..", "clusters", "cyrannus", "helios", "apps"]
-  clustersIdx: 1
+  Find the index where the deploymentDefinitions directory appears in the path.
+  Example path: "/workspaces/repo/clusters/cyrannus/helios/apps"
+  Split parts: ["", "workspaces", "repo", "clusters", "cyrannus", "helios", "apps"]
+  If deploymentDefinitions is "clusters", clustersIdx: 3
   */ -}}
   {{- $clustersIdx := -1 -}}
   {{- range $idx, $part := $pathParts -}}
-    {{- if eq $part "clusters" -}}
+    {{- if eq $part $.Values.atlas.deploymentDefinitions -}}
       {{- $clustersIdx = $idx -}}
     {{- end -}}
   {{- end -}}
 
   {{- /*
-  Extract the cluster path between "clusters" and "apps".
-  Example: ["..", "clusters", "cyrannus", "helios", "apps"]
-           → slice from index 2 to 4 → ["cyrannus", "helios"]
+  Extract the cluster path between deploymentDefinitions and "apps".
+  Example: ["", "workspaces", "repo", "clusters", "cyrannus", "helios", "apps"]
+           → slice from index 4 to 6 → ["cyrannus", "helios"]
            → join with "/" → "cyrannus/helios"
 
-  Note: We skip paths with only 2 parts after "clusters" (e.g., "clusters/apps")
+  Note: We skip paths with only 2 parts after deploymentDefinitions (e.g., "clusters/apps")
         because that's the global apps directory, not a cluster.
   */ -}}
   {{- if and (ge $clustersIdx 0) (gt (sub (len $pathParts) $clustersIdx) 2) -}}
@@ -110,10 +110,10 @@ Find all directories with an "apps" subdirectory, which indicates either:
     A cluster is a leaf if it has no child directories with "apps" subdirectories.
 
     Example:
-    - "cyrannus/helios/apps" is a LEAF (no children found)
-    - "cyrannus/apps" is a GROUP if "cyrannus/*\/apps" finds children like "cyrannus/helios/apps"
+    - "/workspaces/repo/clusters/cyrannus/helios/apps" is a LEAF (no children found)
+    - "/workspaces/repo/clusters/cyrannus/apps" is a GROUP if pattern finds children
     */ -}}
-    {{- $childPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/*/apps" $repoRoot $clusterPath)) -}}
+    {{- $childPattern := printf "%s/%s/%s/*/apps" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $clusterPath -}}
     {{- $hasChildren := include "glob" $childPattern | fromJson -}}
     {{- $isLeaf := eq (len $hasChildren) 0 -}}
 
@@ -143,9 +143,9 @@ For each discovered cluster, gather all deployments from:
   {{- /*
   LEVEL 1: GLOBAL DEPLOYMENTS
   These are found in clusters/apps/* and apply to ALL clusters.
-  Pattern: clusters/apps/*\/deployment.yaml
+  Pattern: /absolute/path/clusters/apps/*/deployment.yaml
   */ -}}
-  {{- $globalPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/apps/*/deployment.yaml" $repoRoot)) -}}
+  {{- $globalPattern := printf "%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions -}}
   {{- $rawDeployments := include "glob" $globalPattern | fromJson -}}
 
   {{- /*
@@ -160,7 +160,7 @@ For each discovered cluster, gather all deployments from:
   */ -}}
   {{- $groupPath := $cluster | dir -}}
   {{- if ne $groupPath "." -}}
-    {{- $groupPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/apps/*/deployment.yaml" $repoRoot $groupPath)) -}}
+    {{- $groupPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $groupPath -}}
     {{- $groupDeployments := include "glob" $groupPattern | fromJson -}}
     {{- /* Append group deployments to our collection */ -}}
     {{- $rawDeployments = concat $rawDeployments $groupDeployments -}}
@@ -169,10 +169,10 @@ For each discovered cluster, gather all deployments from:
   {{- /*
   LEVEL 3: CLUSTER-SPECIFIC DEPLOYMENTS
   These are unique to this specific cluster.
-  Pattern: clusters/GROUP/CLUSTER/apps/*\/deployment.yaml
-       or: clusters/CLUSTER/apps/*\/deployment.yaml (for standalone clusters)
+  Pattern: /absolute/path/clusters/GROUP/CLUSTER/apps/*/deployment.yaml
+       or: /absolute/path/clusters/CLUSTER/apps/*/deployment.yaml (for standalone clusters)
   */ -}}
-  {{- $clusterPattern := include "getRelativePath" (dict "cwd" $cwd "path" (printf "%s/clusters/%s/apps/*/deployment.yaml" $repoRoot $cluster)) -}}
+  {{- $clusterPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $cluster -}}
   {{- $specificDeployments := include "glob" $clusterPattern | fromJson -}}
   {{- $rawDeployments = concat $rawDeployments $specificDeployments -}}
 
@@ -185,26 +185,16 @@ For each discovered cluster, gather all deployments from:
   {{- range $rawDeployments -}}
     {{- /*
     Extract deployment name from path.
-    Example: "../clusters/apps/global-sample/deployment.yaml"
-             → dir → "../clusters/apps/global-sample"
+    Example: "/workspaces/repo/clusters/apps/global-sample/deployment.yaml"
+             → dir → "/workspaces/repo/clusters/apps/global-sample"
              → base → "global-sample"
     */ -}}
     {{- $deploymentName := . | dir | base -}}
 
     {{- /*
-    Construct the absolute path to the deployment file.
-    The glob function returns relative paths (e.g., "../clusters/apps/..."),
-    so we need to resolve them to absolute paths.
+    Path is already absolute from the glob function, so we can use it directly
     */ -}}
     {{- $fullPath := . -}}
-    {{- if not (hasPrefix . "/") -}}
-      {{- /* It's a relative path - combine with cwd and clean up any ".." */ -}}
-      {{- $fullPath = printf "%s/%s" $cwd . -}}
-      {{- /* The clean function resolves ".." and "." in paths */ -}}
-      {{- /* Example: "/workspaces/deployments/system/../clusters/apps" */ -}}
-      {{- /*       → "/workspaces/deployments/clusters/apps" */ -}}
-      {{- $fullPath = clean $fullPath -}}
-    {{- end -}}
 
     {{- /* Add this deployment to the cluster's collection */ -}}
     {{- $clusterDeployments = append $clusterDeployments (dict "deploymentName" $deploymentName "path" $fullPath) -}}
@@ -225,6 +215,7 @@ For each discovered cluster, gather all deployments from:
     {{- $deploymentsList = append $deploymentsList (merge . (dict "cluster" $cluster)) -}}
   {{- end -}}
 {{- end -}}
+
 
 {{- /*
 ================================================================================

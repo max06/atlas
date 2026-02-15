@@ -39,68 +39,6 @@ Example:
   path: /workspaces/deployments/clusters/apps
   →     ../clusters/apps
 */ -}}
-{{- define "getRelativePath" -}}
-  {{- $cwd := .cwd -}}
-  {{- $absPath := .path -}}
-
-  {{- /* Normalize paths by removing trailing slashes */ -}}
-  {{- $cwd = trimSuffix "/" $cwd -}}
-  {{- $absPath = trimSuffix "/" $absPath -}}
-
-  {{- /* CASE 1: Path is inside or equal to cwd - just strip the prefix */ -}}
-  {{- if hasPrefix $absPath $cwd -}}
-    {{- $relPath := trimPrefix $cwd $absPath -}}
-    {{- $relPath = trimPrefix "/" $relPath -}}
-    {{- if eq $relPath "" -}}
-      {{- "." -}}
-    {{- else -}}
-      {{- $relPath -}}
-    {{- end -}}
-  {{- else -}}
-    {{- /* CASE 2: Path is outside cwd - need to calculate relative path with ../ */ -}}
-
-    {{- /* Split both paths into components for comparison */ -}}
-    {{- /* Example: "/workspaces/deployments/system" → ["", "workspaces", "deployments", "system"] */ -}}
-    {{- $cwdParts := splitList "/" $cwd -}}
-    {{- $absParts := splitList "/" $absPath -}}
-
-    {{- /* Find the common ancestor by comparing path components */ -}}
-    {{- /* Example: "/workspaces/deployments/system" and "/workspaces/deployments/clusters" */ -}}
-    {{- /*          share ["", "workspaces", "deployments"] = 3 components */ -}}
-    {{- $commonLen := 0 -}}
-    {{- range $idx, $cwdPart := $cwdParts -}}
-      {{- if and (lt $idx (len $absParts)) (eq $cwdPart (index $absParts $idx)) -}}
-        {{- $commonLen = add1 $idx -}}
-      {{- end -}}
-    {{- end -}}
-
-    {{- /* Calculate how many "../" we need to go up from cwd to common ancestor */ -}}
-    {{- /* Example: from "/workspaces/deployments/system" (4 parts) */ -}}
-    {{- /*          to   "/workspaces/deployments" (3 parts common) */ -}}
-    {{- /*          = 4 - 3 = 1 level up = "../" */ -}}
-    {{- $upLevels := sub (len $cwdParts) $commonLen -}}
-
-    {{- /* Build the relative path: [".."] + ["clusters", "apps"] = "../clusters/apps" */ -}}
-    {{- $relParts := list -}}
-
-    {{- /* Add the "../" components */ -}}
-    {{- range until (int $upLevels) -}}
-      {{- $relParts = append $relParts ".." -}}
-    {{- end -}}
-
-    {{- /* Add the remaining path components after the common ancestor */ -}}
-    {{- range $idx, $part := $absParts -}}
-      {{- if ge $idx $commonLen -}}
-        {{- $relParts = append $relParts $part -}}
-      {{- end -}}
-    {{- end -}}
-
-    {{- /* Join all parts with "/" */ -}}
-    {{- $relParts | join "/" -}}
-  {{- end -}}
-{{- end -}}
-
-
 {{- define "glob" -}}
   {{- $pattern := . -}}
   {{- $results := list -}}
@@ -184,56 +122,77 @@ Example:
     {{- $part := index $parts $index -}}
     {{- $isLast := eq $index (sub (len $parts) 1) -}}
 
-    {{- /* Determine the directory to search in */ -}}
-    {{- $searchDir := $currentPath -}}
-    {{- if eq $searchDir "" -}}
-      {{- $searchDir = "." -}}
-    {{- end -}}
+    {{- /* Handle empty parts (from leading slash in absolute paths) */ -}}
+    {{- if eq $part "" -}}
+      {{- /* Skip empty part and continue to next */ -}}
+      {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $currentPath) | fromJson -}}
+      {{- range $subResults -}}
+        {{- $results = append $results . -}}
+      {{- end -}}
+    {{- else -}}
+      {{- /* Determine the directory to search in */ -}}
+      {{- $searchDir := $currentPath -}}
+      {{- if eq $searchDir "" -}}
+        {{- $searchDir = "." -}}
+      {{- end -}}
 
-    {{- if isDir $searchDir -}}
-      {{- $entries := readDirEntries $searchDir -}}
+      {{- if isDir $searchDir -}}
+        {{- $entries := readDirEntries $searchDir -}}
 
-      {{- /* Match entries against current part pattern */ -}}
-      {{- if contains "*" $part -}}
-        {{- /* Wildcard matching */ -}}
-        {{- $regex := regexReplaceAll "\\*" $part ".*" -}}
-        {{- $regex = regexReplaceAll "\\?" $regex "." -}}
+        {{- /* Match entries against current part pattern */ -}}
+        {{- if contains "*" $part -}}
+          {{- /* Wildcard matching */ -}}
+          {{- $regex := regexReplaceAll "\\*" $part ".*" -}}
+          {{- $regex = regexReplaceAll "\\?" $regex "." -}}
 
-        {{- range $entries -}}
-          {{- $entryName := .Name -}}
-          {{- if regexMatch (printf "^%s$" $regex) $entryName -}}
-            {{- $newPath := $entryName -}}
-            {{- if ne $currentPath "" -}}
-              {{- $newPath = printf "%s/%s" $currentPath $entryName -}}
-            {{- end -}}
+          {{- range $entries -}}
+            {{- $entryName := .Name -}}
+            {{- if regexMatch (printf "^%s$" $regex) $entryName -}}
+              {{- $newPath := $entryName -}}
+              {{- if ne $currentPath "" -}}
+                {{- if hasPrefix $currentPath "/" -}}
+                  {{- /* Absolute path - just append */ -}}
+                  {{- $newPath = printf "%s/%s" $currentPath $entryName -}}
+                {{- else -}}
+                  {{- /* Relative path */ -}}
+                  {{- $newPath = printf "%s/%s" $currentPath $entryName -}}
+                {{- end -}}
+              {{- end -}}
 
-            {{- if $isLast -}}
-              {{- /* This is the last part, add matching entries */ -}}
-              {{- $results = append $results $newPath -}}
-            {{- else -}}
-              {{- /* Recurse to next part */ -}}
-              {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newPath) | fromJson -}}
-              {{- range $subResults -}}
-                {{- $results = append $results . -}}
+              {{- if $isLast -}}
+                {{- /* This is the last part, add matching entries */ -}}
+                {{- $results = append $results $newPath -}}
+              {{- else -}}
+                {{- /* Recurse to next part */ -}}
+                {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newPath) | fromJson -}}
+                {{- range $subResults -}}
+                  {{- $results = append $results . -}}
+                {{- end -}}
               {{- end -}}
             {{- end -}}
           {{- end -}}
-        {{- end -}}
-      {{- else -}}
-        {{- /* Exact match */ -}}
-        {{- $newPath := $part -}}
-        {{- if ne $currentPath "" -}}
-          {{- $newPath = printf "%s/%s" $currentPath $part -}}
-        {{- end -}}
-
-        {{- if $isLast -}}
-          {{- if or (isFile $newPath) (isDir $newPath) -}}
-            {{- $results = append $results $newPath -}}
-          {{- end -}}
         {{- else -}}
-          {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newPath) | fromJson -}}
-          {{- range $subResults -}}
-            {{- $results = append $results . -}}
+          {{- /* Exact match */ -}}
+          {{- $newPath := $part -}}
+          {{- if ne $currentPath "" -}}
+            {{- if hasPrefix $currentPath "/" -}}
+              {{- /* Absolute path - just append */ -}}
+              {{- $newPath = printf "%s/%s" $currentPath $part -}}
+            {{- else -}}
+              {{- /* Relative path */ -}}
+              {{- $newPath = printf "%s/%s" $currentPath $part -}}
+            {{- end -}}
+          {{- end -}}
+
+          {{- if $isLast -}}
+            {{- if or (isFile $newPath) (isDir $newPath) -}}
+              {{- $results = append $results $newPath -}}
+            {{- end -}}
+          {{- else -}}
+            {{- $subResults := include "globIterative" (dict "parts" $parts "index" (add1 $index) "currentPath" $newPath) | fromJson -}}
+            {{- range $subResults -}}
+              {{- $results = append $results . -}}
+            {{- end -}}
           {{- end -}}
         {{- end -}}
       {{- end -}}
@@ -261,10 +220,18 @@ Example:
     {{- range $entries -}}
       {{- $entry := . -}}
       {{- $entryName := $entry.Name -}}
-      {{- $fullPath := printf "%s/%s" $dir $entryName -}}
-      {{- /* Clean up path if starting from current dir */ -}}
-      {{- if hasPrefix $fullPath "./" -}}
-        {{- $fullPath = trimPrefix "./" $fullPath -}}
+
+      {{- /* Build full path preserving absolute/relative nature */ -}}
+      {{- $fullPath := "" -}}
+      {{- if hasPrefix $dir "/" -}}
+        {{- /* Absolute path */ -}}
+        {{- $fullPath = printf "%s/%s" (trimSuffix "/" $dir) $entryName -}}
+      {{- else if eq $dir "." -}}
+        {{- /* Current directory - just use entry name */ -}}
+        {{- $fullPath = $entryName -}}
+      {{- else -}}
+        {{- /* Relative path */ -}}
+        {{- $fullPath = printf "%s/%s" (trimSuffix "/" $dir) $entryName -}}
       {{- end -}}
 
       {{- /* If there's a pattern after **, check if this entry matches */ -}}
@@ -330,6 +297,7 @@ Example:
 
   {{- $results | toJson -}}
 {{- end -}}
+
 
 
 # Create a list of defined clusters
