@@ -143,7 +143,7 @@ For each discovered cluster, gather all deployments from:
   {{- /*
   LEVEL 1: GLOBAL DEPLOYMENTS
   These are found in clusters/apps/* and apply to ALL clusters.
-  Pattern: /absolute/path/clusters/apps/*/deployment.yaml
+  Pattern: /absolute/path/clusters/apps/*\/deployment.yaml
   */ -}}
   {{- $globalPattern := printf "%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions -}}
   {{- $rawDeployments := include "glob" $globalPattern | fromJson -}}
@@ -169,8 +169,8 @@ For each discovered cluster, gather all deployments from:
   {{- /*
   LEVEL 3: CLUSTER-SPECIFIC DEPLOYMENTS
   These are unique to this specific cluster.
-  Pattern: /absolute/path/clusters/GROUP/CLUSTER/apps/*/deployment.yaml
-       or: /absolute/path/clusters/CLUSTER/apps/*/deployment.yaml (for standalone clusters)
+  Pattern: /absolute/path/clusters/GROUP/CLUSTER/apps/*\/deployment.yaml
+       or: /absolute/path/clusters/CLUSTER/apps/*\/deployment.yaml (for standalone clusters)
   */ -}}
   {{- $clusterPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $cluster -}}
   {{- $specificDeployments := include "glob" $clusterPattern | fromJson -}}
