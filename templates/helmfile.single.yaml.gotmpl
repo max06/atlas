@@ -119,7 +119,7 @@
 helmfiles:
   {{- range $instance := $deployment.apps }}
   {{- $_ := set $instance "values" (mergeOverwrite ($instance | get "values" dict) $loadedValues) }}
-  - path: {{ $basePath }}/{{ $.Values.atlas.appTemplates }}/{{ $instance.template }}/helmfile.yaml.gotmpl
+  - path: {{ $.Values.atlas.cwd }}/{{ $.Values.atlas.appTemplates }}/{{ $instance.template }}/helmfile.yaml.gotmpl
     values:
       - atlas:
           deployment: {{ $.Values.atlas.deployment | toYaml | nindent 12 }}
