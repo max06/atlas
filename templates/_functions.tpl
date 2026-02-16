@@ -1,3 +1,6 @@
+{{- define "debugEnabled" -}}
+  {{- .Values | get "atlas.debug" false -}}
+{{- end -}}
 
 {{- define "glob" -}}
   {{- $pattern := . -}}
@@ -267,39 +270,4 @@
   {{- end -}}
 
   {{- $results | toJson -}}
-{{- end -}}
-
-
-
-
-
-# Create a list of defined clusters
-{{- define "findClusters" -}}
-  {{- $basePath := .basePath -}}
-  {{- $relativePath := .relativePath -}}
-  {{- $results := .results -}}
-
-  {{- range $entry := readDirEntries $basePath -}}
-    {{- $currentPath := printf "%s/%s" $basePath $entry.Name -}}
-    {{- $newRelativePath := $entry.Name -}}
-    {{- if $relativePath -}}
-      {{- $newRelativePath = printf "%s/%s" $relativePath $entry.Name -}}
-    {{- end -}}
-
-    {{- if eq $entry.Name "apps" -}}
-      {{- if not (isFile $currentPath) -}}
-        {{- $appsEntries := readDirEntries $currentPath | default (list ) -}}
-        {{- if gt (len $appsEntries) 0 -}}
-          {{- $results = append $results $relativePath -}}
-        {{- end -}}
-      {{- end -}}
-    {{- else -}}
-      {{- if not (isFile $currentPath) -}}
-        {{- $subResults := include "findClusters" (dict "basePath" $currentPath "relativePath" $newRelativePath "results" $results) | fromYaml -}}
-        {{- $results = $subResults -}}
-      {{- end -}}
-    {{- end -}}
-  {{- end -}}
-
-  {{- $results | toYaml -}}
 {{- end -}}

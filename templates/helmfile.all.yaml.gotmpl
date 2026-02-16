@@ -1,219 +1,201 @@
-# code: language=helm
+# This template discovers all clusters and deployments in a hierarchical directory structure,
+# assigns deployments to clusters based on global, group, and cluster-specific levels,
+# and generates a flat list of helmfile entries for each cluster-deployment pair.
+#
+# DIRECTORY STRUCTURE OVERVIEW:
+#   deployments/
+#     apps/                           ← Global deployments (applied to all clusters)
+#       global-app/
+#         deployment.yaml
+#
+#     single-cluster/                 ← Standalone cluster (no group)
+#       apps/
+#         single-app/
+#           deployment.yaml
+#
+#     group-name/                     ← Cluster group
+#       apps/                         ← Group-level deployments (applied to all clusters in group)
+#         group-app/
+#           deployment.yaml
+#
+#       cluster-a/                    ← Individual cluster in group
+#         apps/
+#           cluster-app/
+#             deployment.yaml
+#
+#       cluster-b/                    ← Another cluster in same group
+#         apps/
+#           another-app/
+#             deployment.yaml
+#
+# DEPLOYMENT ASSIGNMENT RULES:
+# 1. Global deployments (deployments/apps/*) are assigned to ALL clusters.
+# 2. Group deployments (deployments/GROUP/apps/*) are assigned to all clusters within that GROUP.
+# 3. Cluster deployments (deployments/[GROUP/]CLUSTER/apps/*) are assigned only to that specific CLUSTER.
+#
+# OUTPUT FORMAT:
+# A YAML list under 'helmfiles:' where each item represents a deployment assignment to a cluster,
+# with:
+# - cluster: Full cluster path like "group-name/cluster-a" or "single-cluster".
+# - deploymentName: The name of the deployment (derived from its directory).
+# - path: Absolute path to the deployment.yaml file.
+#
+# This output configures helmfile entries that point to a single deployment renderer template
+# (helmfile.single.yaml.gotmpl), injecting the necessary context for each deployment.
 
-{{- /*
-================================================================================
-MAIN LOGIC: CLUSTER AND DEPLOYMENT DISCOVERY
-================================================================================
+{{- $debug := include "debugEnabled" . }}
 
-This template discovers all clusters in the deployment tree and assigns
-deployments to them based on a hierarchical structure.
+# Ensure the working directory (cwd) is set, absolute, and exists.
+{{- if not (and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd)) }}
+  {{- fail "No valid cwd given" }}
+{{- end }}
+{{- $repoRoot := .Values.atlas.cwd }}
 
-DIRECTORY STRUCTURE:
-  deployments/
-    apps/                           ← Global deployments (all clusters)
-      global-app/
-        deployment.yaml
+# STEP 1: DISCOVER ALL CLUSTERS
+# Identify all directories with an "apps" subdirectory, which indicate either:
+# - Leaf clusters (actual deployment targets, no child clusters).
+# - Cluster groups (have child clusters).
+# Only leaf clusters are collected as deployment targets.
+{{- $clustersPattern := printf "%s/%s/**/apps" .Values.atlas.cwd .Values.atlas.deploymentDefinitions }}
+{{- $rawClusters := include "glob" $clustersPattern | fromJson }}
 
-    single-cluster/                 ← Standalone cluster (no group)
-      apps/
-        single-app/
-          deployment.yaml
+# Dictionary to store discovered leaf clusters.
+# Key: cluster path (e.g., "group-name/cluster-a" or "single-cluster").
+# Value: Empty list (placeholder for deployments, populated in STEP 2).
+{{- $clusters := dict }}
 
-    group-name/                     ← Cluster group
-      apps/                         ← Group-level deployments
-        group-app/
-          deployment.yaml
+{{- $basePrefix := printf "%s/%s/" .Values.atlas.cwd .Values.atlas.deploymentDefinitions }}
 
-      cluster-a/                    ← Individual cluster in group
-        apps/
-          cluster-app/
-            deployment.yaml
+{{- range $rawClusters }}
+  # Extract cluster path by removing base prefix and trailing "/apps".
+  # Skip if resulting path is empty (global apps directory, not a cluster).
+  {{- $clusterPath := . | trimPrefix $basePrefix | dir }}
+  {{- if ne $clusterPath "" }}
+    # Check if this is a leaf cluster (no child "apps" directories).
+    {{- $childPattern := printf "%s/%s/%s/*/apps" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $clusterPath }}
+    {{- $hasChildren := include "glob" $childPattern | fromJson }}
+    {{- $isLeaf := eq (len $hasChildren) 0 }}
+    # Only add leaf clusters to the dictionary.
+    {{- if $isLeaf }}
+      {{- $_ := set $clusters $clusterPath (list) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
 
-      cluster-b/                    ← Another cluster in same group
-        apps/
-          another-app/
-            deployment.yaml
+{{- if $debug }}
+# DEBUG: Discovered leaf clusters:
+{{- range $cluster := keys $clusters | sortAlpha }}
+# - {{ $cluster }}
+{{- end }}
+{{- end }}
 
-DEPLOYMENT ASSIGNMENT RULES:
-1. Global deployments (deployments/apps/*) → assigned to ALL clusters
-2. Group deployments (deployments/GROUP/apps/*) → assigned to all clusters in GROUP
-3. Cluster deployments (deployments/[GROUP/]CLUSTER/apps/*) → assigned to that CLUSTER only
+# STEP 2: COLLECT DEPLOYMENTS FOR EACH CLUSTER
+# For each leaf cluster, gather deployments from:
+# 1. Global level (applied to all).
+# 2. Group level (if in a group).
+# 3. Cluster-specific level.
+{{- $deploymentsList := list }}
 
-OUTPUT FORMAT:
-  A flat list where each item contains:
-  - cluster: "group-name/cluster-a" or "single-cluster"
-  - deploymentName: "app-name"
-  - path: "/absolute/path/to/deployment.yaml"
-*/ -}}
+{{- range $cluster := keys $clusters | sortAlpha }}
+  {{- if $debug }}
+  # DEBUG: Processing cluster '{{ $cluster }}'
+  {{- end }}
 
-{{- /* Lets make sure the passed working directory is set, exists and is absolute */ -}}
-{{- if not (and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd)) -}}
-  {{- fail "No valid cwd given" -}}
-{{- end -}}
-{{- $repoRoot := .Values.atlas.cwd -}}
+  {{- $clusterDeployments := list }}
+  {{- $rawDeployments := list }}
 
-{{- /*
-STEP 1: DISCOVER ALL CLUSTERS
-Find all directories with an "apps" subdirectory, which indicates either:
-- A cluster (if it's a leaf node with no child clusters)
-- A cluster group (if it has child clusters beneath it)
-*/ -}}
-{{- $clustersPattern := printf "%s/%s/**/apps" .Values.atlas.cwd .Values.atlas.deploymentDefinitions -}}
+  # LEVEL 1: GLOBAL DEPLOYMENTS
+  {{- $globalPattern := printf "%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions }}
+  {{- if $debug }}
+  # DEBUG: Fetching global deployments with pattern: {{ $globalPattern }}
+  {{- end }}
+  {{- $globalDeployments := include "glob" $globalPattern | fromJson }}
+  {{- $rawDeployments = concat $rawDeployments $globalDeployments }}
+  {{- if $debug }}
+  # DEBUG: Found {{ len $globalDeployments }} global deployments:
+  {{- range $globalDeployments }}
+  #   - {{ . }}
+  {{- end }}
+  {{- end }}
 
-{{- $rawClusters := include "glob" $clustersPattern | fromJson -}}
+  # LEVEL 2: GROUP DEPLOYMENTS (if cluster is in a group)
+  {{- $groupPath := $cluster | dir }}
+  {{- if ne $groupPath "." }}
+    {{- if $debug }}
+    # DEBUG: Cluster has group '{{ $groupPath }}'
+    {{- end }}
+    {{- $groupPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $groupPath }}
+    {{- if $debug }}
+    # DEBUG: Fetching group deployments with pattern: {{ $groupPattern }}
+    {{- end }}
+    {{- $groupDeployments := include "glob" $groupPattern | fromJson }}
+    {{- $rawDeployments = concat $rawDeployments $groupDeployments }}
+    {{- if $debug }}
+    # DEBUG: Found {{ len $groupDeployments }} group deployments:
+    {{- range $groupDeployments }}
+    #   - {{ . }}
+    {{- end }}
+    {{- end }}
+  {{- else }}
+    {{- if $debug }}
+    # DEBUG: No group for this cluster.
+    {{- end }}
+  {{- end }}
 
-{{- /* Dictionary to store discovered leaf clusters (actual deployment targets) */ -}}
-{{- /* Key: cluster path like "cyrannus/helios" or "single-cluster" */ -}}
-{{- /* Value: empty list (placeholder, will be populated in step 2) */ -}}
-{{- $clusters := dict -}}
+  # LEVEL 3: CLUSTER-SPECIFIC DEPLOYMENTS
+  {{- $clusterPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $cluster }}
+  {{- if $debug }}
+  # DEBUG: Fetching cluster-specific deployments with pattern: {{ $clusterPattern }}
+  {{- end }}
+  {{- $specificDeployments := include "glob" $clusterPattern | fromJson }}
+  {{- $rawDeployments = concat $rawDeployments $specificDeployments }}
+  {{- if $debug }}
+  # DEBUG: Found {{ len $specificDeployments }} cluster-specific deployments:
+  {{- range $specificDeployments }}
+  #   - {{ . }}
+  {{- end }}
+  {{- end }}
 
-{{- $basePrefix := printf "%s/%s/" .Values.atlas.cwd .Values.atlas.deploymentDefinitions -}}
+  # PROCESS DEPLOYMENT PATHS
+  # Convert each raw path to a dict with deploymentName and path.
+  {{- if $debug }}
+  # DEBUG: Processing {{ len $rawDeployments }} raw deployment paths for cluster '{{ $cluster }}'
+  {{- end }}
+  {{- range $rawDeployments }}
+    {{- $deploymentName := . | dir | base }}
+    {{- $fullPath := . }}
+    {{- $clusterDeployments = append $clusterDeployments (dict "deploymentName" $deploymentName "path" $fullPath) }}
+    {{- if $debug }}
+    # DEBUG: Added deployment '{{ $deploymentName }}' with path: {{ $fullPath }}
+    {{- end }}
+  {{- end }}
 
-{{- range $rawClusters -}}
-  {{- /*
-  Remove the base prefix and trailing "/apps" to extract the cluster path.
-  Example: "/workspaces/repo/clusters/cyrannus/helios/apps"
-           → remove "/workspaces/repo/clusters/" → "cyrannus/helios/apps"
-           → remove "/apps" → "cyrannus/helios"
-
-  Note: We skip paths that result in empty string (e.g., "/workspaces/repo/clusters/apps")
-        because that's the global apps directory, not a cluster.
-  */ -}}
-  {{- $clusterPath := . | trimPrefix $basePrefix | dir -}}
-
-  {{- if ne $clusterPath "" -}}
-    {{- /*
-    Determine if this is a LEAF cluster (actual deployment target) or a GROUP.
-    A cluster is a leaf if it has no child directories with "apps" subdirectories.
-
-    Example:
-    - "/workspaces/repo/clusters/cyrannus/helios/apps" is a LEAF (no children found)
-    - "/workspaces/repo/clusters/cyrannus/apps" is a GROUP if pattern finds children
-    */ -}}
-    {{- $childPattern := printf "%s/%s/%s/*/apps" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $clusterPath -}}
-    {{- $hasChildren := include "glob" $childPattern | fromJson -}}
-    {{- $isLeaf := eq (len $hasChildren) 0 -}}
-
-    {{- /* Only add leaf clusters (actual deployment targets) to our dictionary */ -}}
-    {{- if $isLeaf -}}
-      {{- $_ := set $clusters $clusterPath (list) -}}
-    {{- end -}}
-  {{- end -}}
-{{- end -}}
-
-{{- /*
-STEP 2: COLLECT DEPLOYMENTS FOR EACH CLUSTER
-For each discovered cluster, gather all deployments from:
-1. Global level (clusters/apps/*)
-2. Group level (clusters/GROUP/apps/*) - if cluster is in a group
-3. Cluster level (clusters/GROUP/CLUSTER/apps/* or clusters/CLUSTER/apps/*)
-*/ -}}
-
-{{- /* This will be our final output: a flat list of deployment assignments */ -}}
-{{- $deploymentsList := list -}}
-
-{{- /* Iterate through each discovered cluster in alphabetical order */ -}}
-{{- range $cluster := keys $clusters | sortAlpha -}}
-  {{- /* Temporary list to collect this cluster's deployments */ -}}
-  {{- $clusterDeployments := list -}}
-
-  {{- /*
-  LEVEL 1: GLOBAL DEPLOYMENTS
-  These are found in clusters/apps/* and apply to ALL clusters.
-  Pattern: /absolute/path/clusters/apps/*\/deployment.yaml
-  */ -}}
-  {{- $globalPattern := printf "%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions -}}
-  {{- $rawDeployments := include "glob" $globalPattern | fromJson -}}
-
-  {{- /*
-  LEVEL 2: GROUP DEPLOYMENTS (if applicable)
-  If this cluster is part of a group (e.g., "cyrannus/helios"),
-  include deployments from the group level (e.g., "clusters/cyrannus/apps/*").
-
-  The group path is the directory containing the cluster.
-  Example: "cyrannus/helios" → dir → "cyrannus"
-
-  If dir returns "." (no parent), this is a standalone cluster with no group.
-  */ -}}
-  {{- $groupPath := $cluster | dir -}}
-  {{- if ne $groupPath "." -}}
-    {{- $groupPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $groupPath -}}
-    {{- $groupDeployments := include "glob" $groupPattern | fromJson -}}
-    {{- /* Append group deployments to our collection */ -}}
-    {{- $rawDeployments = concat $rawDeployments $groupDeployments -}}
-  {{- end -}}
-
-  {{- /*
-  LEVEL 3: CLUSTER-SPECIFIC DEPLOYMENTS
-  These are unique to this specific cluster.
-  Pattern: /absolute/path/clusters/GROUP/CLUSTER/apps/*\/deployment.yaml
-       or: /absolute/path/clusters/CLUSTER/apps/*\/deployment.yaml (for standalone clusters)
-  */ -}}
-  {{- $clusterPattern := printf "%s/%s/%s/apps/*/deployment.yaml" $.Values.atlas.cwd $.Values.atlas.deploymentDefinitions $cluster -}}
-  {{- $specificDeployments := include "glob" $clusterPattern | fromJson -}}
-  {{- $rawDeployments = concat $rawDeployments $specificDeployments -}}
-
-  {{- /*
-  PROCESS DEPLOYMENT PATHS
-  Convert each deployment path into a structured object with:
-  - deploymentName: extracted from the directory name
-  - path: absolute path to the deployment.yaml file
-  */ -}}
-  {{- range $rawDeployments -}}
-    {{- /*
-    Extract deployment name from path.
-    Example: "/workspaces/repo/clusters/apps/global-sample/deployment.yaml"
-             → dir → "/workspaces/repo/clusters/apps/global-sample"
-             → base → "global-sample"
-    */ -}}
-    {{- $deploymentName := . | dir | base -}}
-
-    {{- /*
-    Path is already absolute from the glob function, so we can use it directly
-    */ -}}
-    {{- $fullPath := . -}}
-
-    {{- /* Add this deployment to the cluster's collection */ -}}
-    {{- $clusterDeployments = append $clusterDeployments (dict "deploymentName" $deploymentName "path" $fullPath) -}}
-  {{- end -}}
-
-  {{- /*
-  FLATTEN: Add cluster name to each deployment and append to final list.
-  Instead of { cluster1: [dep1, dep2], cluster2: [dep3, dep4] }
-  We create: [
-    {cluster: cluster1, deploymentName: dep1, path: ...},
-    {cluster: cluster1, deploymentName: dep2, path: ...},
-    {cluster: cluster2, deploymentName: dep3, path: ...},
-    ...
-  ]
-  */ -}}
+  {{- if $debug }}
+  {{- $names := list -}}
   {{- range $clusterDeployments -}}
-    {{- /* Merge the cluster name into the deployment dict */ -}}
-    {{- $deploymentsList = append $deploymentsList (merge . (dict "cluster" $cluster)) -}}
-  {{- end -}}
-{{- end -}}
+    {{- $names = append $names .deploymentName -}}
+  {{- end }}
+  # DEBUG: Total deployments for cluster '{{ $cluster }}': {{ $names | join ", " }}
+  {{- end }}
 
+  # FLATTEN: Add cluster to each deployment dict and append to final list.
+  {{- range $clusterDeployments }}
+    {{- $deploymentsList = append $deploymentsList (merge . (dict "cluster" $cluster)) }}
+  {{- end }}
+{{- end }}
 
-{{- /*
-================================================================================
-OUTPUT
-================================================================================
-Generate the final YAML structure with the flat list of deployments.
-*/ -}}
+{{- if $debug }}
+# DEBUG: Total deployments discovered across all clusters: {{ len $deploymentsList }}
+{{- end }}
 
-{{ "" }}
-environments:
-  default:
-    values:
-      - deployments: {{ $deploymentsList | toYaml | nindent 10 }}
-
----
-
-# Loading all deployments
-
+# OUTPUT
+# Generate YAML helmfiles list, each pointing to the single deployment renderer,
+# with injected atlas context and specific deployment details.
 helmfiles:
-{{ range $deployment := .Values.deployments }}
+{{- range $deployment := $deploymentsList }}
   - path: helmfile.single.yaml.gotmpl
     values:
-      - {{ $deployment | toYaml | nindent 8 }}
-{{- end -}}
+      - atlas:
+          {{- $.Values.atlas | toYaml | nindent 10 }}
+          deployment: {{ $deployment | toYaml | nindent 12 }}
+{{- end }}
