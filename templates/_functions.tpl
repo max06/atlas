@@ -2,9 +2,41 @@
 # code:   language=helm
 */ -}}
 
+
 {{- define "debugEnabled" -}}
   {{- .Values | get "atlas.debug" false -}}
 {{- end -}}
+
+
+{{- define "atlas.applyListOverride" -}}
+  {{- /* Only scalar locals – never re-assign complex maps from . */ -}}
+  {{- $field       := .field }}
+  {{- $templateDir := .templateDir }}
+
+  {{- /* 1. Convert relative paths in the *template's own* definition */ -}}
+  {{- if hasKey .release $field }}
+
+    {{- $val := .release | get $field }}
+    {{- if $val }}
+      {{- $converted := include "convertPaths" (dict
+        "targetPath" $templateDir
+        "values"     (toJson $val)
+      ) | fromJson }}
+      {{- $_ := set .release $field $converted }}
+
+    {{- end }}
+  {{- end }}
+
+  {{- /* 2. Append any instance-level overrides */ -}}
+  {{- if hasKey .instance $field }}
+    {{- $toAdd := .instance | get $field list }}
+    {{- if $toAdd }}
+      {{- $current := .release | get $field list }}
+      {{- $_ := set .release $field (concat $current $toAdd) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
 
 {{- define "convertPaths" -}}
   {{- $newValues := list }}
@@ -15,14 +47,13 @@
       {{- if isFile (printf "%s/%s" $.targetPath $entry ) }}
         {{- $newValues = append $newValues (printf "%s/%s" $.targetPath $entry) }}
       {{- else }}
-        {{- fail "Referenced value file not resolved." }}
       {{- end }}
     {{- else }}
       {{- $newValues = append $newValues $entry  }}
     {{- end }}
   {{- end }}
 
-  {{- $newValues | toJson -}}
+  {{ $newValues | toJson }}
 {{- end -}}
 
 {{- define "glob" -}}
