@@ -219,6 +219,14 @@
         {{- $_ := set $release "labels" (mergeOverwrite $release.labels $instance.labels) }}
       {{- end }}
 
+      # Append all the values
+
+
+      {{- range $k, $v := merge $loadedValues $.Values }}
+        {{- $_ := set $release "values" (append $release.values (dict $k $v)) }}
+      {{- end }}
+
+
     {{- end }}
     {{ $template | toYaml | nindent 0 }}
     {{ "---" | nindent 0 }}
