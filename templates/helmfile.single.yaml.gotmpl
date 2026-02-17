@@ -1,3 +1,5 @@
+# code: language=helm
+
 # Rendering a single deployment based on the contents of its deployment.yaml file.
 # This template assembles and merges values from various sources (global, group, cluster, deployment),
 # handles SOPS-encrypted files by decrypting individual keys, and processes regular YAML or Go template files.
@@ -112,20 +114,118 @@
 {{- if isFile .Values.atlas.deployment.path }}
   {{- $deployment := $loadedValues | tpl (readFile .Values.atlas.deployment.path) | fromYaml }}
 
-# Output the helmfiles section as YAML.
-# For each app instance in the deployment:
-# - Merge instance-specific values with the shared $loadedValues.
-# - Generate a helmfile entry pointing to the app's template, injecting atlas.deployment and atlas.instance contexts.
-helmfiles:
   {{- range $instance := $deployment.apps }}
-  {{- $_ := set $instance "values" (mergeOverwrite ($instance | get "values" dict) $loadedValues) }}
-  - path: {{ $.Values.atlas.cwd }}/{{ $.Values.atlas.appTemplates }}/{{ $instance.template }}/helmfile.yaml.gotmpl
-    values:
-      - atlas:
-          deployment: {{ $.Values.atlas.deployment | toYaml | nindent 12 }}
-          instance: {{ $instance | toYaml | nindent 12 }}
-      - {{ $instance.values | toYaml | nindent 8 }}
+    # For every referenced template in this deployment:
+    # - load the template
+    # - apply patches
+    # - render template strings
+    # - add to output
+
+    {{- $template := readFile (printf "%s/%s/%s/helmfile.yaml.gotmpl" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template) | fromYaml }}
+
+    {{- $_ := set $template "commonLabels" (dict "cluster" $.Values.atlas.deployment.cluster "deploymentName" $.Values.atlas.deployment.deploymentName) }}
+
+    # Iterating through all defined releases
+    {{- range $release := $template.releases }}
+
+      {{- if hasKey $instance "nameSuffix" }}
+        {{- $_ := set $release "name" (printf "%s-%s" $release.name $instance.nameSuffix) }}
+      {{- end }}
+
+      {{- if hasKey $instance "version" }}
+        {{- $_ := set $release "version" $instance.version }}
+      {{- end }}
+
+      {{- if hasKey $instance "namespace" }}
+        # Namespace set
+        {{- $_ := set $release "namespace" $instance.namespace }}
+      {{- end }}
+
+      {{- if not (hasKey $release "namespace") }}
+        {{- fail "Release has no namespace defined" }}
+      {{- end }}
+
+      {{- if hasKey $release "values" }}
+        {{- $templateDir := printf "%s/%s/%s" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
+
+        {{- $returnValues := (include "convertPaths" (dict "targetPath" $templateDir "values" ($release.values | toJson))) | fromJson }}
+        {{- $_ := set $release "values" $returnValues }}
+      {{- end }}
+
+      {{- if hasKey $instance "values" }}
+        {{- if not (hasKey $release "values") }}
+          {{- $_ := set $release "values" list }}
+        {{- end }}
+
+        {{- $_ := set $release "values" (concat $release.values $instance.values) }}
+      {{- end }}
+
+      {{- if hasKey $release "strategicMergePatches" }}
+        {{- $templateDir := printf "%s/%s/%s" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
+
+        {{- $returnValues := (include "convertPaths" (dict "targetPath" $templateDir "values" ($release.strategicMergePatches | toJson))) | fromJson }}
+        {{- $_ := set $release "strategicMergePatches" $returnValues }}
+      {{- end }}
+
+      {{- if hasKey $instance "strategicMergePatches" }}
+        {{- if not (hasKey $release "strategicMergePatches") }}
+          {{- $_ := set $release "strategicMergePatches" list }}
+        {{- end }}
+
+        {{- $_ := set $release "strategicMergePatches" (concat $release.strategicMergePatches $instance.strategicMergePatches) }}
+      {{- end }}
+
+      {{- if hasKey $release "jsonPatches" }}
+        {{- $templateDir := printf "%s/%s/%s" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
+
+        {{- $returnValues := (include "convertPaths" (dict "targetPath" $templateDir "values" ($release.jsonPatches | toJson))) | fromJson }}
+        {{- $_ := set $release "jsonPatches" $returnValues }}
+      {{- end }}
+
+      {{- if hasKey $instance "jsonPatches" }}
+        {{- if not (hasKey $release "jsonPatches") }}
+          {{- $_ := set $release "jsonPatches" list }}
+        {{- end }}
+
+        {{- $_ := set $release "jsonPatches" (concat $release.jsonPatches $instance.jsonPatches) }}
+      {{- end }}
+
+      {{- if hasKey $release "transformers" }}
+        {{- $templateDir := printf "%s/%s/%s" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
+
+        {{- $returnValues := (include "convertPaths" (dict "targetPath" $templateDir "values" ($release.transformers | toJson))) | fromJson }}
+        {{- $_ := set $release "transformers" $returnValues }}
+      {{- end }}
+
+      {{- if hasKey $instance "transformers" }}
+        {{- if not (hasKey $release "transformers") }}
+          {{- $_ := set $release "transformers" list }}
+        {{- end }}
+
+        {{- $_ := set $release "transformers" (concat $release.transformers $instance.transformers) }}
+      {{- end }}
+
+      {{- if hasKey $release "secrets" }}
+        {{- $templateDir := printf "%s/%s/%s" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
+
+        {{- $returnValues := (include "convertPaths" (dict "targetPath" $templateDir "values" ($release.secrets | toJson))) | fromJson }}
+        {{- $_ := set $release "secrets" $returnValues }}
+      {{- end }}
+
+      {{- if hasKey $instance "labels" }}
+        {{- if not (hasKey $release "labels") }}
+          {{- $_ := set $release "labels" dict }}
+        {{- end }}
+        {{- $_ := set $release "labels" (mergeOverwrite $release.labels $instance.labels) }}
+      {{- end }}
+
+    {{- end }}
+    {{ $template | toYaml | nindent 0 }}
+    {{ "---" | nindent 0 }}
   {{- end }}
 {{- else }}
-{{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.path) }}
+  {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.path) }}
 {{- end }}
+
+
+helmDefaults:

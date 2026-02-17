@@ -1,5 +1,28 @@
+{{- /*
+# code:   language=helm
+*/ -}}
+
 {{- define "debugEnabled" -}}
   {{- .Values | get "atlas.debug" false -}}
+{{- end -}}
+
+{{- define "convertPaths" -}}
+  {{- $newValues := list }}
+
+  {{- /* # Iterate over values, check for file, adapt path */ -}}
+  {{- range $entry := (.values | fromJson) }}
+    {{- if kindIs "string" $entry }}
+      {{- if isFile (printf "%s/%s" $.targetPath $entry ) }}
+        {{- $newValues = append $newValues (printf "%s/%s" $.targetPath $entry) }}
+      {{- else }}
+        {{- fail "Referenced value file not resolved." }}
+      {{- end }}
+    {{- else }}
+      {{- $newValues = append $newValues $entry  }}
+    {{- end }}
+  {{- end }}
+
+  {{- $newValues | toJson -}}
 {{- end -}}
 
 {{- define "glob" -}}
