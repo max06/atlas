@@ -95,6 +95,12 @@ Key improvements in this version:
   {{- end }}
 {{- end }}
 
+environments:
+  default:
+    values:
+      - {{ $loadedValues | toYaml | nindent 8 }}
+{{ "---" | nindent 0 }}
+
 {{- /* ====================== LOAD DEPLOYMENT DEFINITION ====================== */ -}}
 {{- if not (isFile .Values.atlas.deployment.path) }}
   {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.path) }}
