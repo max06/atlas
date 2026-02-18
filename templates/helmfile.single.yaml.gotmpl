@@ -77,7 +77,7 @@ Key improvements in this version:
 {{- end }}
 
 {{- /* ====================== MERGE ALL VALUES (SOPS aware) ====================== */ -}}
-{{- $loadedValues := dict }}
+{{- $loadedValues := dict "atlas" .Values.atlas }}
 
 {{- range $source := $valueSources }}
   {{- if isFile $source }}
