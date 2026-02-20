@@ -108,7 +108,7 @@ environments:
 
 {{- $deployment := tpl (readFile .Values.atlas.deployment.path) $loadedValues | fromYaml }}
 
-{{- range $instance := (default list $deployment.apps) }}
+{{- range $instance := ($deployment | get "apps" list) }}
 
   {{- $templatePath := printf "%s/%s/%s/helmfile.yaml.gotmpl" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
   {{- if not (isFile $templatePath) }}
@@ -137,7 +137,7 @@ environments:
     {{- end }}
 
     {{- if not (hasKey $release "namespace") }}
-      {{- fail (printf "Release '%s' has no namespace defined" (default "unknown" (get $release "name"))) }}
+      {{- fail (printf "Release '%s' has no namespace defined" ($release | get "name" "unknown")) }}
     {{- end }}
 
     {{- /* === LIST OVERRIDES (values, patches, transformers, secrets) === */ -}}
