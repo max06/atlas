@@ -164,6 +164,7 @@ environments:
     {{- $allValues := merge $loadedValues $.Values }}
     {{- $curValues := default list ($release | get "values") }}
     {{- range $k, $v := $allValues }}
+# Current: {{ printf "%s, %s" $k $v }}
       {{- $curValues = append $curValues (dict $k $v) }}
     {{- end }}
     {{- $_ := set $release "values" $curValues }}
