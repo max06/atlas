@@ -1,5 +1,5 @@
 apps:
-  - template: app1
+  - template: app-novals
     namespace: test
 settings:
   branch: main

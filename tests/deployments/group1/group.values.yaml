@@ -1,0 +1,7 @@
+groupOnly: fromGroup
+overrideGroupUp: group
+overrideClusterUp: group
+overrideAll: group
+nested:
+  fromGroup: true
+  shared: group

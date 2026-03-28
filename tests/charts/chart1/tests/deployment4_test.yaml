@@ -1,0 +1,129 @@
+# Test: Grouped cluster (group1/cluster3) WITHOUT cluster or deployment values
+# Template: app-novals (no template-level values)
+# Scenario: Chart defaults → Global → Group (cluster and deployment levels have no value files)
+#
+# Hierarchy values loaded (sops → yaml → gotmpl per level):
+#   1. global.values.sops.yaml         (sopsGlobal, sopsString, sopsNumber, sopsBool, sopsOverride=global, sopsNested)
+#   2. global.values.yaml              (globalOnly, overrideGroupUp, overrideClusterUp, overrideAll, gotmplTest, nested)
+#   3. global.values.yaml.gotmpl       (gotmplTest override)
+#   4. group1/group.values.sops.yaml   (sopsGroup, sopsOverride=group, sopsList, sopsBoolTrue/False, sopsNested)
+#   5. group1/group.values.yaml        (groupOnly, overrideGroupUp, overrideClusterUp, overrideAll, nested)
+#   (no cluster or deployment files for cluster3/deployment4)
+#
+# This tests that when both cluster and deployment levels are absent,
+# the group level becomes the highest-priority source.
+tests:
+  - it: should load global values
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data.values.globalOnly
+          value: fromGlobal
+
+  - it: should load group values
+    asserts:
+      - equal:
+          path: data.values.groupOnly
+          value: fromGroup
+
+  - it: should NOT have cluster-only values (no cluster values file)
+    asserts:
+      - isNull:
+          path: data.values.clusterOnly
+
+  - it: should NOT have deployment-only values (no deployment values file)
+    asserts:
+      - isNull:
+          path: data.values.deploymentOnly
+
+  - it: should have group win overrideAll when no cluster or deployment values
+    asserts:
+      - equal:
+          path: data.values.overrideAll
+          value: group
+
+  - it: should have group win overrideGroupUp
+    asserts:
+      - equal:
+          path: data.values.overrideGroupUp
+          value: group
+
+  - it: should have group win overrideClusterUp (no cluster to override it)
+    asserts:
+      - equal:
+          path: data.values.overrideClusterUp
+          value: group
+
+  - it: should have group win nested shared key
+    asserts:
+      - equal:
+          path: data.values.nested.shared
+          value: group
+
+  - it: should deep merge nested values from global and group only
+    asserts:
+      - equal:
+          path: data.values.nested.fromGlobal
+          value: true
+      - equal:
+          path: data.values.nested.fromGroup
+          value: true
+      - isNull:
+          path: data.values.nested.fromCluster
+      - isNull:
+          path: data.values.nested.fromDeployment
+
+  # --- SOPS decryption (global + group only, no cluster/deployment sops) ---
+
+  - it: should decrypt sops values from global and group levels
+    asserts:
+      - equal:
+          path: data.values.sopsGlobal
+          value: secretGlobalValue
+      - equal:
+          path: data.values.sopsGroup
+          value: secretGroupValue
+
+  - it: should decrypt sops list from group level
+    asserts:
+      - equal:
+          path: data.values.sopsList[0]
+          value: itemOne
+      - equal:
+          path: data.values.sopsList[1]
+          value: itemTwo
+      - equal:
+          path: data.values.sopsList[2]
+          value: itemThree
+
+  - it: should NOT have cluster or deployment sops values
+    asserts:
+      - isNull:
+          path: data.values.sopsCluster
+      - isNull:
+          path: data.values.sopsDeployment
+
+  - it: should have group sops override global sops for sopsOverride
+    asserts:
+      - equal:
+          path: data.values.sopsOverride
+          value: group
+
+  - it: should deep merge sops nested from global and group
+    asserts:
+      - equal:
+          path: data.values.sopsNested.secretKey
+          value: groupNestedSecret
+      - equal:
+          path: data.values.sopsNested.level
+          value: group
+
+  - it: should set correct atlas deployment context
+    asserts:
+      - equal:
+          path: data.values.atlas.deployment.cluster
+          value: group1/cluster3
+      - equal:
+          path: data.values.atlas.deployment.deploymentName
+          value: deployment4

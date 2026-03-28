@@ -1,0 +1,8 @@
+globalOnly: fromGlobal
+overrideGroupUp: global
+overrideClusterUp: global
+overrideAll: global
+gotmplTest: yaml
+nested:
+  fromGlobal: true
+  shared: global

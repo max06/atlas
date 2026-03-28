@@ -1,12 +1,6 @@
 apps:
   - template: app1
     namespace: test
-    values:
-      - foo: bar
-  - template: app2
-    namespace: test
-    values:
-      - foo: bar
 settings:
   branch: main
   autoSync: false

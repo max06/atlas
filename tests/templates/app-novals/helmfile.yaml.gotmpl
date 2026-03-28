@@ -1,12 +1,7 @@
 releases:
-  - name: app1
+  - name: app-novals
     chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
     namespace: test
-    values:
-      - values.yaml.gotmpl
-      - templateDefault: fromDefault
-        templateOverride: default
-        overrideAll: templateDefault
 
     {{- if .Values.atlas.unittest }}
     unitTests:

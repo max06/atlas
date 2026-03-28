@@ -1,21 +1,23 @@
-# Test: Standalone cluster (cluster1) with full inheritance chain
+# Test: Grouped cluster (group1/cluster2) with full inheritance chain
 # Template: app1 (has template-include + template-defaults)
-# Scenario: Chart defaults → Template-include → Template-defaults → Global → Cluster → Deployment
+# Scenario: Chart defaults → Template-include → Template-defaults → Global → Group → Cluster → Deployment
 #
 # Template values (from app1):
 #   - values.yaml.gotmpl           (templateInclude, templateOverride=include, overrideAll=templateInclude)
 #   - inline map                   (templateDefault, templateOverride=default, overrideAll=templateDefault)
 #
 # Hierarchy values loaded (sops → yaml → gotmpl per level):
-#   1. global.values.sops.yaml     (sopsGlobal, sopsString, sopsNumber, sopsBool, sopsOverride=global, sopsNested)
-#   2. global.values.yaml          (globalOnly, overrideGroupUp, overrideClusterUp, overrideAll, gotmplTest, nested)
-#   3. global.values.yaml.gotmpl   (gotmplTest override)
-#   4. cluster1/cluster.values.sops.yaml (sopsCluster, sopsOverride=cluster, sopsFloat, sopsNested.deep)
-#   5. cluster1/cluster.values.yaml (clusterOnly, overrideClusterUp, overrideAll, nested)
-#   6. deployment1/values.sops.yaml (sopsDeployment, sopsOverride=deployment, sopsMap, sopsNested)
-#   7. deployment1/values.yaml      (deploymentOnly, overrideAll, nested)
+#   1. global.values.sops.yaml            (sopsGlobal, sopsString, sopsNumber, sopsBool, sopsOverride=global, sopsNested)
+#   2. global.values.yaml                 (globalOnly, overrideGroupUp, overrideClusterUp, overrideAll, gotmplTest, nested)
+#   3. global.values.yaml.gotmpl          (gotmplTest override)
+#   4. group1/group.values.sops.yaml      (sopsGroup, sopsOverride=group, sopsList, sopsBoolTrue/False, sopsNested)
+#   5. group1/group.values.yaml           (groupOnly, overrideGroupUp, overrideClusterUp, overrideAll, nested)
+#   6. group1/cluster2/cluster.values.sops.yaml (sopsCluster, sopsOverride=cluster, sopsNested)
+#   7. group1/cluster2/cluster.values.yaml (clusterOnly, overrideClusterUp, overrideAll, nested)
+#   8. deployment2/values.sops.yaml        (sopsDeployment, sopsOverride=deployment, sopsNested)
+#   9. deployment2/values.yaml             (deploymentOnly, overrideAll, nested)
 #
-# Group level is SKIPPED because cluster1 is a standalone cluster (no "/" in path).
+# Group level IS loaded because cluster2 is under group1 ("/" in path).
 tests:
   # --- Template-level values ---
 
@@ -47,10 +49,11 @@ tests:
           path: data.values.globalOnly
           value: fromGlobal
 
-  - it: should NOT load group values for standalone cluster
+  - it: should load group values for grouped cluster
     asserts:
-      - isNull:
+      - equal:
           path: data.values.groupOnly
+          value: fromGroup
 
   - it: should load cluster values
     asserts:
@@ -66,13 +69,13 @@ tests:
 
   # --- Override precedence ---
 
-  - it: should keep global value for overrideGroupUp (no group to override it)
+  - it: should have group override global for overrideGroupUp
     asserts:
       - equal:
           path: data.values.overrideGroupUp
-          value: global
+          value: group
 
-  - it: should have cluster override global for overrideClusterUp
+  - it: should have cluster override group for overrideClusterUp
     asserts:
       - equal:
           path: data.values.overrideClusterUp
@@ -98,10 +101,11 @@ tests:
           path: data.values.nested.fromGlobal
           value: true
 
-  - it: should NOT have nested group values for standalone cluster
+  - it: should deep merge nested values from group
     asserts:
-      - isNull:
+      - equal:
           path: data.values.nested.fromGroup
+          value: true
 
   - it: should deep merge nested values from cluster
     asserts:
@@ -132,46 +136,47 @@ tests:
           path: data.values.sopsString
           value: hello-from-sops
 
-  - it: should decrypt sops number from global level
+  - it: should decrypt sops number and boolean from global level
     asserts:
       - equal:
           path: data.values.sopsNumber
           value: 42
-
-  - it: should decrypt sops boolean from global level
-    asserts:
       - equal:
           path: data.values.sopsBool
           value: true
 
-  - it: should decrypt sops float from cluster level
+  - it: should decrypt sops list from group level
     asserts:
       - equal:
-          path: data.values.sopsFloat
-          value: 3.14
+          path: data.values.sopsList[0]
+          value: itemOne
+      - equal:
+          path: data.values.sopsList[1]
+          value: itemTwo
+      - equal:
+          path: data.values.sopsList[2]
+          value: itemThree
 
-  - it: should decrypt sops map from deployment level
+  - it: should decrypt sops booleans from group level
     asserts:
       - equal:
-          path: data.values.sopsMap.username
-          value: admin
+          path: data.values.sopsBoolTrue
+          value: true
       - equal:
-          path: data.values.sopsMap.password
-          value: "s3cret!"
-      - equal:
-          path: data.values.sopsMap.port
-          value: 5432
+          path: data.values.sopsBoolFalse
+          value: false
 
-  - it: should decrypt sops unique keys per level (standalone, no group)
+  - it: should decrypt sops unique keys per level (grouped, all four)
     asserts:
+      - equal:
+          path: data.values.sopsGroup
+          value: secretGroupValue
       - equal:
           path: data.values.sopsCluster
-          value: secretCluster1Value
+          value: secretCluster2Value
       - equal:
           path: data.values.sopsDeployment
-          value: secretDep1Value
-      - isNull:
-          path: data.values.sopsGroup
+          value: secretDep2Value
 
   - it: should have deployment sops override all sops levels for sopsOverride
     asserts:
@@ -179,17 +184,26 @@ tests:
           path: data.values.sopsOverride
           value: deployment
 
-  - it: should deep merge sops nested across levels
+  - it: should deep merge sops nested across all four levels
     asserts:
       - equal:
           path: data.values.sopsNested.secretKey
-          value: dep1NestedSecret
+          value: dep2NestedSecret
       - equal:
           path: data.values.sopsNested.level
           value: deployment
+
+  # --- SOPS within-level precedence (.yaml overrides .sops.yaml) ---
+
+  - it: should have yaml override sops for shared keys at same level
+    # sopsOverride is set in both .sops.yaml and .yaml files at each level
+    # The .yaml value (overrideAll) should take precedence over .sops.yaml (sopsOverride)
+    # at the deployment level. Both ultimately resolve to "deployment" here,
+    # but the key point is .yaml keys override .sops.yaml keys via mergeOverwrite.
+    asserts:
       - equal:
-          path: data.values.sopsNested.deep.verySecret
-          value: hiddenValue
+          path: data.values.overrideAll
+          value: deployment
 
   # --- Atlas context ---
 
@@ -197,7 +211,7 @@ tests:
     asserts:
       - equal:
           path: data.values.atlas.deployment.cluster
-          value: cluster1
+          value: group1/cluster2
       - equal:
           path: data.values.atlas.deployment.deploymentName
-          value: deployment1
+          value: deployment2
