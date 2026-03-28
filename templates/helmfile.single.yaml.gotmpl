@@ -7,23 +7,14 @@ Atlas Deployment Renderer (Cleaned & Refactored)
 
 Purpose:
   Renders a complete Helmfile snippet for ONE deployment.
-  - Loads/merges values in priority order (global → group → cluster → deployment)
-  - Supports SOPS-encrypted files (per-key decryption via fetchSecretValue)
-  - Loads the deployment.yaml (as Go template) to know which apps to instantiate
-  - For each app instance:
+  - Loads/merges values in priority order (global → group → cluster → deployment → component)
+  - Supports SOPS-encrypted files (nested per-key decryption via fetchSecretValue)
+  - Loads the deployment.yaml (as Go template) to know which components to instantiate from templates
+  - For each deployment component:
     • Loads the corresponding app template (helmfile.yaml.gotmpl)
     • Applies instance-level overrides (nameSuffix, version, namespace, values, patches, labels…)
     • Injects all loadedValues + root .Values as final value layers
     • Outputs a clean Helmfile block
-
-Key improvements in this version:
-  - Excellent comments & logical sections
-  - Single reusable helper (`atlas.applyListOverride`) eliminates massive duplication
-  - Structured, informative debug output (visible in rendered Helmfile)
-  - Safer list/map handling with `default`, `deepCopy` where useful, and explicit `set`
-  - Early validation (missing files, missing namespace)
-  - Preserves exact original behaviour and output format
-  - No side-effects between instances
 */}}
 
 {{- $debug := include "debugEnabled" . | trim | eq "true" }}
@@ -34,39 +25,39 @@ Key improvements in this version:
 
 {{- if $debug }}
 # DEBUG: === ATLAS DEPLOYMENT RENDERER START ===
-# DEBUG: basePath                = {{ $basePath }}
-# DEBUG: cluster                 = {{ .Values.atlas.deployment.cluster }}
-# DEBUG: hasGroup                = {{ $hasGroup }}
-# DEBUG: deployment.path         = {{ .Values.atlas.deployment.path }}
+# DEBUG: basePath                  = {{ $basePath }}
+# DEBUG: deployment.cluster        = {{ .Values.atlas.deployment.cluster }}
+# DEBUG: hasGroup                  = {{ $hasGroup }}
+# DEBUG: deployment.deploymentPath = {{ .Values.atlas.deployment.deploymentPath }}
 {{- end }}
 
 {{- /* ====================== VALUE SOURCE FILES (priority order) ====================== */ -}}
 {{- $valueSources := list
-  (printf "%s/global.values.sops.yaml"   $basePath)
-  (printf "%s/global.values.yaml"        $basePath)
-  (printf "%s/global.values.yaml.gotmpl" $basePath)
+  (dict "type" "secrets" "path" (printf "%s/global.values.sops.yaml" $basePath))
+  (dict "type" "values" "path" (printf "%s/global.values.yaml"        $basePath))
+  (dict "type" "templatedValues" "path" (printf "%s/global.values.yaml.gotmpl" $basePath))
 }}
 
 {{- if $hasGroup }}
   {{- $groupName := dir .Values.atlas.deployment.cluster }}
   {{- $valueSources = concat $valueSources (list
-    (printf "%s/%s/group.values.sops.yaml"   $basePath $groupName)
-    (printf "%s/%s/group.values.yaml"        $basePath $groupName)
-    (printf "%s/%s/group.values.yaml.gotmpl" $basePath $groupName)
+    (dict "type" "secrets" "path" (printf "%s/%s/group.values.sops.yaml"   $basePath $groupName))
+    (dict "type" "values" "path" (printf "%s/%s/group.values.yaml"        $basePath $groupName))
+    (dict "type" "templatedValues" "path" (printf "%s/%s/group.values.yaml.gotmpl" $basePath $groupName))
   )}}
 {{- end }}
 
 {{- $valueSources = concat $valueSources (list
-  (printf "%s/%s/cluster.values.sops.yaml"   $basePath .Values.atlas.deployment.cluster)
-  (printf "%s/%s/cluster.values.yaml"        $basePath .Values.atlas.deployment.cluster)
-  (printf "%s/%s/cluster.values.yaml.gotmpl" $basePath .Values.atlas.deployment.cluster)
+  (dict "type" "secrets" "path" (printf "%s/%s/cluster.values.sops.yaml"   $basePath .Values.atlas.deployment.cluster))
+  (dict "type" "values" "path" (printf "%s/%s/cluster.values.yaml"        $basePath .Values.atlas.deployment.cluster))
+  (dict "type" "templatedValues" "path" (printf "%s/%s/cluster.values.yaml.gotmpl" $basePath .Values.atlas.deployment.cluster))
 )}}
 
-{{- $deploymentDir := dir .Values.atlas.deployment.path }}
+{{- $deploymentDir := dir .Values.atlas.deployment.deploymentPath }}
 {{- $valueSources = concat $valueSources (list
-  (printf "%s/values.sops.yaml"   $deploymentDir)
-  (printf "%s/values.yaml"        $deploymentDir)
-  (printf "%s/values.yaml.gotmpl" $deploymentDir)
+  (dict "type" "secrets" "path" (printf "%s/values.sops.yaml"   $deploymentDir))
+  (dict "type" "values" "path" (printf "%s/values.yaml"        $deploymentDir))
+  (dict "type" "templatedValues" "path" (printf "%s/values.yaml.gotmpl" $deploymentDir))
 )}}
 
 {{- if $debug }}
@@ -80,13 +71,24 @@ Key improvements in this version:
 {{- $loadedValues := dict "atlas" .Values.atlas }}
 
 {{- range $source := $valueSources }}
-  {{- if isFile $source }}
-    {{- if contains ".sops.yaml" $source }}
-      {{- $content := readFile $source | fromYaml }}
-      {{- range $key, $_ := omit $content "sops" }}
-        {{- $decrypted := fetchSecretValue (printf "ref+sops://%s#%s" $source $key) }}
-        {{- $_ := set $loadedValues $key $decrypted }}
-      {{- end }}
+  {{- if isFile $source.path }}
+    # File found: {{ $source.path }}
+    {{- if (eq $source.type "secrets") }}
+      # File is a secret.
+      {{- $encrypted := readFile $source.path | fromYaml }}
+
+      {{- /* Decrypt the entire structure recursively */ -}}
+      {{- $decrypted := include "atlas.decryptSopsNested" (dict
+        "filePath" $source.path
+        "data" $encrypted
+        "keyPath" ""
+      ) | fromJson -}}
+
+      {{- $merged = mergeOverwrite $merged $decrypted -}}
+
+
+
+
     {{- else }}
       {{- $rendered := tpl (readFile $source) $loadedValues }}
       {{- $parsed   := fromYaml $rendered }}
@@ -100,80 +102,3 @@ environments:
     values:
       - {{ $loadedValues | toYaml | nindent 8 }}
 {{ "---" | nindent 0 }}
-
-{{- /* ====================== LOAD DEPLOYMENT DEFINITION ====================== */ -}}
-{{- if not (isFile .Values.atlas.deployment.path) }}
-  {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.path) }}
-{{- end }}
-
-{{- $deployment := tpl (readFile .Values.atlas.deployment.path) $loadedValues | fromYaml }}
-
-{{- range $instance := ($deployment | get "apps" list) }}
-
-  {{- $templatePath := printf "%s/%s/%s/helmfile.yaml.gotmpl" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
-  {{- if not (isFile $templatePath) }}
-    {{- fail (printf "App template not found: %s" $templatePath) }}
-  {{- end }}
-
-  {{- $template    := readFile $templatePath | fromYaml }}
-  {{- $templateDir := printf "%s/%s/%s" $.Values.atlas.cwd $.Values.atlas.appTemplates $instance.template }}
-
-  {{- $_ := set $template "commonLabels" (dict
-    "cluster"       $.Values.atlas.deployment.cluster
-    "deploymentName" $.Values.atlas.deployment.deploymentName
-  ) }}
-
-  {{- range $release := $template.releases }}
-
-    {{- /* Scalar overrides */ -}}
-    {{- if hasKey $instance "nameSuffix" }}
-      {{- $_ := set $release "name" (printf "%s-%s" $release.name $instance.nameSuffix) }}
-    {{- end }}
-    {{- if hasKey $instance "version" }}
-      {{- $_ := set $release "version" $instance.version }}
-    {{- end }}
-    {{- if hasKey $instance "namespace" }}
-      {{- $_ := set $release "namespace" $instance.namespace }}
-    {{- end }}
-
-    {{- if not (hasKey $release "namespace") }}
-      {{- fail (printf "Release '%s' has no namespace defined" ($release | get "name" "unknown")) }}
-    {{- end }}
-
-    {{- /* === LIST OVERRIDES (values, patches, transformers, secrets) === */ -}}
-    {{- $ctx := dict
-      "release"     $release
-      "instance"    $instance
-      "templateDir" $templateDir
-    }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $ctx (dict "field" "values")) }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $ctx (dict "field" "strategicMergePatches")) }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $ctx (dict "field" "jsonPatches")) }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $ctx (dict "field" "transformers")) }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $ctx (dict "field" "secrets")) }}
-
-    {{- /* Labels (map merge) */ -}}
-    {{- if hasKey $instance "labels" }}
-      {{- if not (hasKey $release "labels") }}
-        {{- $_ := set $release "labels" dict }}
-      {{- end }}
-      {{- $_ := set $release "labels" (mergeOverwrite ($release | get "labels") $instance.labels) }}
-    {{- end }}
-
-    {{- /* Final layer: inject all loadedValues + root .Values */ -}}
-    {{- $allValues := merge $loadedValues $.Values }}
-    {{- $curValues := default list ($release | get "values") }}
-    {{- range $k, $v := $allValues }}
-      {{- $curValues = append $curValues (dict $k $v) }}
-    {{- end }}
-    {{- $_ := set $release "values" $curValues }}
-
-  {{- end }} {{/* releases */}}
-
-  {{- /* Output the fully assembled Helmfile block for this instance */ -}}
-  {{- $template | toYaml | nindent 0 }}
-  {{- "---" | nindent 0 }}
-
-{{- end }} {{/* instances */}}
-
-helmDefaults:

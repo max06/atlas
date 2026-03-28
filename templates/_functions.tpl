@@ -8,6 +8,88 @@
 {{- end -}}
 
 
+{{- /*
+============================================================
+atlas.decryptSopsNested
+============================================================
+Recursively decrypts nested SOPS structures.
+
+Input:
+  .filePath  - Path to the SOPS file
+  .data      - The data structure to decrypt (map or primitive)
+  .keyPath   - Current key path for reference (e.g., "database.password")
+
+Returns: Decrypted data with same structure, preserving types
+
+Example SOPS file:
+  database:
+    host: ENC[...]
+    port: 5432  # not encrypted
+    credentials:
+      username: ENC[...]
+      password: ENC[...]
+
+This function will decrypt all ENC[...] values while preserving
+numbers, booleans, and structure.
+*/ -}}
+{{- define "atlas.decryptSopsNested" -}}
+  {{- $filePath := .filePath -}}
+  {{- $data := .data -}}
+  {{- $keyPath := .keyPath -}}
+
+  {{- if kindIs "map" $data -}}
+    {{- /* Recursively process map entries */ -}}
+    {{- $result := dict -}}
+    {{- range $key, $value := $data -}}
+      {{- $newKeyPath := $key -}}
+      {{- if ne $keyPath "" -}}
+        {{- $newKeyPath = printf "%s.%s" $keyPath $key -}}
+      {{- end -}}
+
+      {{- $decrypted := include "atlas.decryptSopsNested" (dict
+        "filePath" $filePath
+        "data" $value
+        "keyPath" $newKeyPath
+      ) | fromJson -}}
+
+      {{- $_ := set $result $key $decrypted -}}
+    {{- end -}}
+    {{- $result | toJson -}}
+
+  {{- else if kindIs "slice" $data -}}
+    {{- /* Recursively process list entries */ -}}
+    {{- $result := list -}}
+    {{- range $idx, $value := $data -}}
+      {{- $newKeyPath := printf "%s[%d]" $keyPath $idx -}}
+
+      {{- $decrypted := include "atlas.decryptSopsNested" (dict
+        "filePath" $filePath
+        "data" $value
+        "keyPath" $newKeyPath
+      ) | fromJson -}}
+
+      {{- $result = append $result $decrypted -}}
+    {{- end -}}
+    {{- $result | toJson -}}
+
+  {{- else if kindIs "string" $data -}}
+    {{- /* Check if string is SOPS encrypted (starts with ENC[) */ -}}
+    {{- if hasPrefix "ENC[" $data -}}
+      {{- /* Decrypt using fetchSecretValue */ -}}
+      {{- $secretRef := printf "ref+sops://%s#%s" $filePath $keyPath -}}
+      {{- fetchSecretValue $secretRef | toJson -}}
+    {{- else -}}
+      {{- /* Plain string, return as-is (as JSON for consistency) */ -}}
+      {{- $data | toJson -}}
+    {{- end -}}
+
+  {{- else -}}
+    {{- /* Preserve primitives (numbers, booleans, null) with type */ -}}
+    {{- $data | toJson -}}
+  {{- end -}}
+{{- end -}}
+
+
 {{- define "atlas.applyListOverride" -}}
   {{- /* Only scalar locals – never re-assign complex maps from . */ -}}
   {{- $field       := .field }}

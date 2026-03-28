@@ -1,0 +1,9 @@
+releases:
+  - name: app1
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+
+    {{- if .Values.atlas.unittest }}
+    unitTests:
+      - tests/{{ .Values.atlas.deployment.deploymentName }}_test.yaml
+    {{- end }}

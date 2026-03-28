@@ -1,0 +1,11 @@
+tests:
+      - it: should work
+        asserts:
+              - isKind:
+                      of: ConfigMap
+              - matchRegex:
+                      path: metadata.name
+                      pattern: -chart1$
+              - equal:
+                      path: data.values.aChartValue
+                      value: on default
