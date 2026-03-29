@@ -13,6 +13,7 @@
 #       branches: [main]
 #     pull_request:
 #       branches: [main]
+#     workflow_dispatch:
 #   jobs:
 #     review:
 #       uses: max06/atlas/.github/workflows/snapshot-review.yml@main
@@ -24,6 +25,7 @@
 name: ATLAS Snapshot Review
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       helmfile-path:
@@ -53,7 +55,7 @@ jobs:
   # Push to main: render manifests and store as baseline artifact
   # ────────────────────────────────────────────────────────────────────────────
   snapshot:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
