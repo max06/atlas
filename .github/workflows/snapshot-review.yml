@@ -110,8 +110,12 @@ jobs:
           install-kubectl: false
 
       - name: Configure SOPS decryption
-        if: secrets.sops-age-key != ''
-        run: echo "SOPS_AGE_KEY=${{ secrets.sops-age-key }}" >> "$GITHUB_ENV"
+        run: |
+          if [ -n "$SOPS_KEY" ]; then
+            echo "SOPS_AGE_KEY=$SOPS_KEY" >> "$GITHUB_ENV"
+          fi
+        env:
+          SOPS_KEY: ${{ secrets.sops-age-key }}
 
       - name: Render manifests (with secret redaction)
         run: |
