@@ -192,27 +192,25 @@ environments:
 
   {{- range $release := $template.releases }}
 
-    {{- /* Resolve relative file paths in the release's values list and
-         append the ATLAS hierarchy values as the highest-priority entry */ -}}
-    {{- $resolvedValues := list }}
-    {{- if hasKey $release "values" }}
-      {{- range $entry := $release.values }}
-        {{- if kindIs "string" $entry }}
-          {{- /* String entries are file paths -- resolve relative to the template directory */ -}}
-          {{- $resolvedValues = append $resolvedValues (printf "%s/%s" $templateDir $entry) }}
-        {{- else }}
-          {{- /* Map entries are inline values -- pass through as-is */ -}}
-          {{- $resolvedValues = append $resolvedValues $entry }}
-        {{- end }}
-      {{- end }}
-    {{- end }}
+    {{- /* Resolve relative file paths in all release list fields that can contain
+         file references (values, patches, transformers, secrets). For each field,
+         atlas.applyListOverride does two things:
+           1. Converts relative paths to absolute (relative to the template directory)
+           2. Appends any instance-level overrides from the deployment.yaml
+         This allows deployment.yaml to add patches, secrets, etc. per-instance. */ -}}
+    {{- $overrideContext := dict "release" $release "instance" $instance "templateDir" $templateDir }}
+    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "values")) }}
+    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "strategicMergePatches")) }}
+    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "jsonPatches")) }}
+    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "transformers")) }}
+    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "secrets")) }}
 
     {{- /* Append the ATLAS hierarchy + instance values as the final (highest priority) entry.
          This ensures deployment -> cluster -> group -> global values override any
          template-include files or template-defaults defined in the app template.
          Uses $instanceValues (not $loadedValues) so atlas.instance context is included. */ -}}
-    {{- $resolvedValues = append $resolvedValues $instanceValues }}
-    {{- $_ := set $release "values" $resolvedValues }}
+    {{- $currentValues := $release | get "values" list }}
+    {{- $_ := set $release "values" (append $currentValues $instanceValues) }}
 
   {{- end }}
 
