@@ -206,26 +206,27 @@ jobs:
           )
 
           for DEPLOY_PATH in $DEPLOY_PATHS; do
-            BASELINE_DIR="baseline/$DEPLOY_PATH"
-            PR_DIR="pr-snapshot/$DEPLOY_PATH"
+            BASELINE_FILE="baseline/$DEPLOY_PATH/manifests.yaml"
+            PR_FILE="pr-snapshot/$DEPLOY_PATH/manifests.yaml"
 
             # Determine change type
-            if [ ! -d "$BASELINE_DIR" ]; then
+            if [ ! -f "$BASELINE_FILE" ]; then
               CHANGE_TYPE="added"
-            elif [ ! -d "$PR_DIR" ]; then
+            elif [ ! -f "$PR_FILE" ]; then
               CHANGE_TYPE="removed"
             else
               CHANGE_TYPE="modified"
             fi
 
-            # Generate diff for this deployment
+            # Generate diff for this deployment — compare manifest files directly
+            # (diffing /dev/null against a directory silently fails, so we diff files)
             DEPLOY_DIFF=""
             if [ "$CHANGE_TYPE" = "added" ]; then
-              DEPLOY_DIFF=$(diff -ruN /dev/null "$PR_DIR" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
+              DEPLOY_DIFF=$(diff -uN /dev/null "$PR_FILE" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
             elif [ "$CHANGE_TYPE" = "removed" ]; then
-              DEPLOY_DIFF=$(diff -ruN "$BASELINE_DIR" /dev/null --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
+              DEPLOY_DIFF=$(diff -uN "$BASELINE_FILE" /dev/null --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
             else
-              DEPLOY_DIFF=$(diff -ruN "$BASELINE_DIR" "$PR_DIR" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
+              DEPLOY_DIFF=$(diff -uN "$BASELINE_FILE" "$PR_FILE" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
             fi
 
             # Skip if no actual diff
