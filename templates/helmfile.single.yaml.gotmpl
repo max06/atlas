@@ -205,6 +205,15 @@ environments:
     {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "transformers")) }}
     {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "secrets")) }}
 
+    {{- /* Merge instance-level labels from deployment.yaml into the release's labels.
+         This allows deployments to define labels (e.g., bootstrap: true) that are
+         inherited by all releases in the app template. Instance labels take priority
+         over any labels already defined in the template. */ -}}
+    {{- if hasKey $instance "labels" }}
+      {{- $currentLabels := $release | get "labels" dict }}
+      {{- $_ := set $release "labels" (mergeOverwrite $currentLabels $instance.labels) }}
+    {{- end }}
+
     {{- /* Append the ATLAS hierarchy + instance values as the final (highest priority) entry.
          This ensures deployment -> cluster -> group -> global values override any
          template-include files or template-defaults defined in the app template.
