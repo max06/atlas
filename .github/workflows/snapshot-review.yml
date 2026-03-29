@@ -81,9 +81,13 @@ jobs:
           # Uses helmfile list to discover deployments, then renders each with --selector.
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
 
+          # Labels are comma-separated key:value strings — extract cluster and deploymentName
           DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json --skip-schema-validation 2>/dev/null \
-            | jq -r '.[] | .labels.cluster + "/" + .labels.deploymentName' | sort -u)
+            --output json 2>/dev/null \
+            | jq -r '.[].labels | split(",")
+              | map(select(startswith("cluster:") or startswith("deploymentName:"))
+              | split(":") | {(.[0]): .[1]}) | add
+              | .cluster + "/" + .deploymentName' | sort -u)
 
           for DEPLOY in $DEPLOYMENTS; do
             CLUSTER="${DEPLOY%%/*}"
@@ -133,9 +137,13 @@ jobs:
           # collision issue (https://github.com/roboll/helmfile/issues/2095).
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
 
+          # Labels are comma-separated key:value strings — extract cluster and deploymentName
           DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json --skip-schema-validation 2>/dev/null \
-            | jq -r '.[] | .labels.cluster + "/" + .labels.deploymentName' | sort -u)
+            --output json 2>/dev/null \
+            | jq -r '.[].labels | split(",")
+              | map(select(startswith("cluster:") or startswith("deploymentName:"))
+              | split(":") | {(.[0]): .[1]}) | add
+              | .cluster + "/" + .deploymentName' | sort -u)
 
           for DEPLOY in $DEPLOYMENTS; do
             CLUSTER="${DEPLOY%%/*}"
