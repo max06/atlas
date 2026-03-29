@@ -31,13 +31,13 @@ on:
         type: string
         default: 'helmfile.yaml.gotmpl'
       helmfile-version:
-        description: 'Helmfile version to install (empty = latest)'
+        description: 'Helmfile version to install (omit to use action default)'
         type: string
-        default: ''
+        default: 'v1.2.3'
       helm-version:
-        description: 'Helm version to install (empty = latest)'
+        description: 'Helm version to install (omit to use action default)'
         type: string
-        default: ''
+        default: 'v3.19.4'
     secrets:
       sops-age-key:
         required: false
