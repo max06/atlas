@@ -1,0 +1,310 @@
+# ATLAS Snapshot Review — Reusable GitHub Actions Workflow
+#
+# Compares rendered Kubernetes manifests between the main branch and a pull request.
+# Posts a diff as a PR comment so reviewers can see the impact of deployment changes,
+# organized by cluster and deployment.
+#
+# Usage in consumer repos:
+#
+#   # .github/workflows/atlas-review.yml
+#   name: ATLAS Snapshot Review
+#   on:
+#     push:
+#       branches: [main]
+#     pull_request:
+#       branches: [main]
+#   jobs:
+#     review:
+#       uses: max06/atlas/.github/workflows/snapshot-review.yml@main
+#       with:
+#         helmfile-path: helmfile.yaml.gotmpl
+#       secrets:
+#         sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
+
+name: ATLAS Snapshot Review
+
+on:
+  workflow_call:
+    inputs:
+      helmfile-path:
+        description: 'Path to the helmfile entry point'
+        type: string
+        default: 'helmfile.yaml.gotmpl'
+      helmfile-version:
+        description: 'Helmfile version to install (empty = latest)'
+        type: string
+        default: ''
+      helm-version:
+        description: 'Helm version to install (empty = latest)'
+        type: string
+        default: ''
+    secrets:
+      sops-age-key:
+        required: false
+        description: 'SOPS Age private key — mandatory if your repo has *.values.sops.yaml files. Use a dedicated CI key (see README). Decrypted values are redacted in output.'
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+# Output directory template: organizes rendered manifests by cluster, deployment, and release.
+# Uses ATLAS's commonLabels (cluster, deploymentName) set on every release.
+env:
+  OUTPUT_DIR_TEMPLATE: '{{ .OutputDir }}/{{ .Release.Labels.cluster }}/{{ .Release.Labels.deploymentName }}/{{ .Release.Name }}'
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Push to main: render manifests and store as baseline artifact
+  # ────────────────────────────────────────────────────────────────────────────
+  snapshot:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Helm and Helmfile
+        uses: mamezou-tech/setup-helmfile@v2
+        with:
+          helmfile-version: ${{ inputs.helmfile-version }}
+          helm-version: ${{ inputs.helm-version }}
+          install-kubectl: false
+
+      - name: Configure SOPS decryption
+        if: secrets.sops-age-key != ''
+        run: echo "SOPS_AGE_KEY=${{ secrets.sops-age-key }}" >> "$GITHUB_ENV"
+
+      - name: Render manifests (with secret redaction)
+        run: |
+          ATLAS_REDACT_SECRETS=true helmfile -f "${{ inputs.helmfile-path }}" template \
+            --output-dir snapshot \
+            --output-dir-template "$OUTPUT_DIR_TEMPLATE"
+
+      - name: Upload baseline snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-snapshot
+          path: snapshot/
+          retention-days: 90
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Pull request: render, diff against baseline, post PR comment
+  # ────────────────────────────────────────────────────────────────────────────
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Helm and Helmfile
+        uses: mamezou-tech/setup-helmfile@v2
+        with:
+          helmfile-version: ${{ inputs.helmfile-version }}
+          helm-version: ${{ inputs.helm-version }}
+          install-kubectl: false
+
+      - name: Configure SOPS decryption
+        if: secrets.sops-age-key != ''
+        run: echo "SOPS_AGE_KEY=${{ secrets.sops-age-key }}" >> "$GITHUB_ENV"
+
+      - name: Render manifests (with secret redaction)
+        run: |
+          ATLAS_REDACT_SECRETS=true helmfile -f "${{ inputs.helmfile-path }}" template \
+            --output-dir pr-snapshot \
+            --output-dir-template "$OUTPUT_DIR_TEMPLATE"
+
+      - name: Find latest baseline snapshot
+        id: find-baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Find the most recent atlas-snapshot artifact
+          RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/artifacts?name=atlas-snapshot&per_page=1" \
+            --jq '.artifacts[0].workflow_run.id // empty')
+
+          if [ -z "$RUN_ID" ]; then
+            echo "No baseline snapshot found"
+            echo "has-baseline=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run-id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "has-baseline=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download baseline snapshot
+        if: steps.find-baseline.outputs.has-baseline == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-snapshot
+          path: baseline
+          run-id: ${{ steps.find-baseline.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Generate diff
+        id: diff
+        run: |
+          if [ ! -d baseline ] || [ -z "$(ls -A baseline 2>/dev/null)" ]; then
+            echo "status=no-baseline" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Generate per-deployment diffs by walking the directory structure.
+          # Structure: {dir}/{cluster}/{deploymentName}/{releaseName}/{chart}/templates/...
+          HAS_CHANGES=false
+          COMMENT_BODY=""
+          TOTAL_CHANGES=0
+          AFFECTED_DEPLOYMENTS=""
+
+          # Collect all cluster/deployment paths from both baseline and PR snapshot
+          DEPLOY_PATHS=$(
+            { find baseline -mindepth 2 -maxdepth 2 -type d 2>/dev/null | sed 's|^baseline/||'; \
+              find pr-snapshot -mindepth 2 -maxdepth 2 -type d 2>/dev/null | sed 's|^pr-snapshot/||'; \
+            } | sort -u
+          )
+
+          for DEPLOY_PATH in $DEPLOY_PATHS; do
+            BASELINE_DIR="baseline/$DEPLOY_PATH"
+            PR_DIR="pr-snapshot/$DEPLOY_PATH"
+
+            # Determine change type
+            if [ ! -d "$BASELINE_DIR" ]; then
+              CHANGE_TYPE="added"
+            elif [ ! -d "$PR_DIR" ]; then
+              CHANGE_TYPE="removed"
+            else
+              CHANGE_TYPE="modified"
+            fi
+
+            # Generate diff for this deployment
+            DEPLOY_DIFF=""
+            if [ "$CHANGE_TYPE" = "added" ]; then
+              DEPLOY_DIFF=$(diff -ruN /dev/null "$PR_DIR" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
+            elif [ "$CHANGE_TYPE" = "removed" ]; then
+              DEPLOY_DIFF=$(diff -ruN "$BASELINE_DIR" /dev/null --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
+            else
+              DEPLOY_DIFF=$(diff -ruN "$BASELINE_DIR" "$PR_DIR" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
+            fi
+
+            # Skip if no actual diff
+            if [ -z "$DEPLOY_DIFF" ]; then
+              continue
+            fi
+
+            HAS_CHANGES=true
+            TOTAL_CHANGES=$((TOTAL_CHANGES + 1))
+            DIFF_LINES=$(echo "$DEPLOY_DIFF" | wc -l)
+
+            # Extract cluster and deployment name from path
+            CLUSTER=$(dirname "$DEPLOY_PATH")
+            DEPLOYMENT=$(basename "$DEPLOY_PATH")
+
+            # Build a label for the change type
+            case "$CHANGE_TYPE" in
+              added)   LABEL="new" ;;
+              removed) LABEL="removed" ;;
+              *)       LABEL="" ;;
+            esac
+            HEADER="$CLUSTER / $DEPLOYMENT"
+            if [ -n "$LABEL" ]; then
+              HEADER="$HEADER ($LABEL)"
+            fi
+
+            AFFECTED_DEPLOYMENTS="${AFFECTED_DEPLOYMENTS}- **${HEADER}**
+            "
+
+            # Append to comment body (with size guard)
+            CURRENT_SIZE=${#COMMENT_BODY}
+            DIFF_SIZE=${#DEPLOY_DIFF}
+            if [ $((CURRENT_SIZE + DIFF_SIZE)) -gt 55000 ]; then
+              COMMENT_BODY="${COMMENT_BODY}
+          <details>
+          <summary>${HEADER} (${DIFF_LINES} lines)</summary>
+
+          > Diff truncated — download the snapshot artifact for full output.
+
+          </details>
+          "
+            else
+              COMMENT_BODY="${COMMENT_BODY}
+          <details>
+          <summary>${HEADER} (${DIFF_LINES} lines)</summary>
+
+          \`\`\`diff
+          ${DEPLOY_DIFF}
+          \`\`\`
+
+          </details>
+          "
+            fi
+          done
+
+          if [ "$HAS_CHANGES" = true ]; then
+            echo "status=changes" >> "$GITHUB_OUTPUT"
+            echo "total=$TOTAL_CHANGES" >> "$GITHUB_OUTPUT"
+
+            # Write comment body and affected list to files (too large for GITHUB_OUTPUT)
+            echo "$COMMENT_BODY" > comment-diff.md
+            echo "$AFFECTED_DEPLOYMENTS" > affected.md
+          else
+            echo "status=no-changes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build comment body
+        id: comment
+        run: |
+          {
+            echo 'body<<ATLAS_EOF'
+
+            if [ "${{ steps.diff.outputs.status }}" = "no-baseline" ]; then
+              cat <<'MSG'
+          ## ATLAS Snapshot Review
+
+          No baseline snapshot found — this is expected for the first run.
+          A baseline will be created after the next push to the default branch.
+
+          ---
+          *Generated by [ATLAS](https://github.com/max06/atlas) Snapshot Review*
+          MSG
+
+            elif [ "${{ steps.diff.outputs.status }}" = "no-changes" ]; then
+              cat <<'MSG'
+          ## ATLAS Snapshot Review
+
+          No changes detected in rendered Kubernetes manifests.
+
+          ---
+          *Generated by [ATLAS](https://github.com/max06/atlas) Snapshot Review*
+          MSG
+
+            else
+              echo '## ATLAS Snapshot Review'
+              echo ''
+              echo "Changes detected in **${{ steps.diff.outputs.total }}** deployment(s)."
+              echo 'Please review before merging.'
+              echo ''
+              echo '### Affected deployments'
+              echo ''
+              cat affected.md
+              echo ''
+              cat comment-diff.md
+              echo ''
+              echo '---'
+              echo '*Generated by [ATLAS](https://github.com/max06/atlas) Snapshot Review*'
+            fi
+
+            echo 'ATLAS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post or update PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: atlas-snapshot-review
+          message: ${{ steps.comment.outputs.body }}
+
+      - name: Upload PR snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-pr-snapshot
+          path: pr-snapshot/
+          retention-days: 30
