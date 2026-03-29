@@ -93,6 +93,18 @@ tests:
           path: data.values.gotmplTest
           value: gotmpl
 
+  - it: should have gotmpl reference values from earlier loaded sops file
+    asserts:
+      - equal:
+          path: data.values.gotmplFromSops
+          value: secretGlobalValue
+
+  - it: should have gotmpl reference values from earlier loaded yaml file
+    asserts:
+      - equal:
+          path: data.values.gotmplFromYaml
+          value: fromGlobal
+
   # --- Deep merge ---
 
   - it: should deep merge nested values from global

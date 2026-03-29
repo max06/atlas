@@ -49,7 +49,7 @@ tests:
 
   - it: should NOT load group values for standalone cluster
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.groupOnly
 
   - it: should load cluster values
@@ -90,6 +90,18 @@ tests:
           path: data.values.gotmplTest
           value: gotmpl
 
+  - it: should have gotmpl reference values from earlier loaded sops file
+    asserts:
+      - equal:
+          path: data.values.gotmplFromSops
+          value: secretGlobalValue
+
+  - it: should have gotmpl reference values from earlier loaded yaml file
+    asserts:
+      - equal:
+          path: data.values.gotmplFromYaml
+          value: fromGlobal
+
   # --- Deep merge ---
 
   - it: should deep merge nested values from global
@@ -100,7 +112,7 @@ tests:
 
   - it: should NOT have nested group values for standalone cluster
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.nested.fromGroup
 
   - it: should deep merge nested values from cluster
@@ -170,7 +182,7 @@ tests:
       - equal:
           path: data.values.sopsDeployment
           value: secretDep1Value
-      - isNull:
+      - notExists:
           path: data.values.sopsGroup
 
   - it: should have deployment sops override all sops levels for sopsOverride

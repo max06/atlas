@@ -1,0 +1,45 @@
+# Test: Duplicate-template deployment (deployment9), second instance: secondary
+# Template: app-named (used twice with different names)
+# Scenario: deployment9 uses app-named twice, disambiguated by name.
+#   This test verifies the SECOND named instance (secondary) gets its OWN
+#   atlas.instance.name, proving instances don't share state.
+tests:
+  - it: should use instance name as suffix in release name
+    release:
+      name: app-named-secondary
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: app-named-secondary-chart1
+
+  - it: should have atlas.instance.name set to secondary
+    asserts:
+      - equal:
+          path: data.values.atlas.instance.name
+          value: secondary
+
+  - it: should have atlas.instance.template set to app-named
+    asserts:
+      - equal:
+          path: data.values.atlas.instance.template
+          value: app-named
+
+  - it: should load the same hierarchy values as primary instance
+    asserts:
+      - equal:
+          path: data.values.globalOnly
+          value: fromGlobal
+      - equal:
+          path: data.values.clusterOnly
+          value: fromCluster
+
+  - it: should set same atlas deployment context
+    asserts:
+      - equal:
+          path: data.values.atlas.deployment.cluster
+          value: cluster1
+      - equal:
+          path: data.values.atlas.deployment.deploymentName
+          value: deployment9

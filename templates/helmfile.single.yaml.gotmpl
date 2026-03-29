@@ -2,19 +2,24 @@
 
 {{/*
 ============================================================
-Atlas Deployment Renderer (Cleaned & Refactored)
+Atlas Deployment Renderer
 ============================================================
 
 Purpose:
-  Renders a complete Helmfile snippet for ONE deployment.
-  - Loads/merges values in priority order (global → group → cluster → deployment → component)
-  - Supports SOPS-encrypted files (nested per-key decryption via fetchSecretValue)
-  - Loads the deployment.yaml (as Go template) to know which components to instantiate from templates
-  - For each deployment component:
-    • Loads the corresponding app template (helmfile.yaml.gotmpl)
-    • Applies instance-level overrides (nameSuffix, version, namespace, values, patches, labels…)
-    • Injects all loadedValues + root .Values as final value layers
-    • Outputs a clean Helmfile block
+  Renders a complete Helmfile for ONE deployment by:
+  1. Loading and merging values from the hierarchy (global -> group -> cluster -> deployment),
+     including SOPS-encrypted files (decrypted via fetchSecretValue).
+  2. Loading the deployment.yaml to discover which app templates to instantiate.
+  3. For each app template:
+     - Rendering it as a Go template (so .Values.atlas.* expressions resolve).
+     - Resolving relative file paths in the release values list.
+     - Appending the hierarchy values as the final (highest priority) values entry.
+     - Outputting the assembled helmfile block.
+
+Output format:
+  Two YAML documents separated by ---:
+  - Document 0: environments.default.values with the merged hierarchy values.
+  - Document 1+: One helmfile block per app instance with releases and values.
 */}}
 
 {{- $debug := include "debugEnabled" . | trim | eq "true" }}
@@ -32,38 +37,42 @@ Purpose:
 {{- end }}
 
 {{- /* ====================== VALUE SOURCE FILES (priority order) ====================== */ -}}
+{{- /* Each hierarchy level loads up to three files in order: .sops.yaml -> .yaml -> .yaml.gotmpl.
+     Later files override earlier ones via mergeOverwrite. SOPS files are detected by filename
+     pattern (.sops.yaml) and decrypted via fetchSecretValue. All other files are rendered as
+     Go templates with $loadedValues as context before parsing. */ -}}
 {{- $valueSources := list
-  (dict "type" "secrets" "path" (printf "%s/global.values.sops.yaml" $basePath))
-  (dict "type" "values" "path" (printf "%s/global.values.yaml"        $basePath))
-  (dict "type" "templatedValues" "path" (printf "%s/global.values.yaml.gotmpl" $basePath))
+  (printf "%s/global.values.sops.yaml"   $basePath)
+  (printf "%s/global.values.yaml"        $basePath)
+  (printf "%s/global.values.yaml.gotmpl" $basePath)
 }}
 
 {{- if $hasGroup }}
   {{- $groupName := dir .Values.atlas.deployment.cluster }}
   {{- $valueSources = concat $valueSources (list
-    (dict "type" "secrets" "path" (printf "%s/%s/group.values.sops.yaml"   $basePath $groupName))
-    (dict "type" "values" "path" (printf "%s/%s/group.values.yaml"        $basePath $groupName))
-    (dict "type" "templatedValues" "path" (printf "%s/%s/group.values.yaml.gotmpl" $basePath $groupName))
+    (printf "%s/%s/group.values.sops.yaml"   $basePath $groupName)
+    (printf "%s/%s/group.values.yaml"        $basePath $groupName)
+    (printf "%s/%s/group.values.yaml.gotmpl" $basePath $groupName)
   )}}
 {{- end }}
 
 {{- $valueSources = concat $valueSources (list
-  (dict "type" "secrets" "path" (printf "%s/%s/cluster.values.sops.yaml"   $basePath .Values.atlas.deployment.cluster))
-  (dict "type" "values" "path" (printf "%s/%s/cluster.values.yaml"        $basePath .Values.atlas.deployment.cluster))
-  (dict "type" "templatedValues" "path" (printf "%s/%s/cluster.values.yaml.gotmpl" $basePath .Values.atlas.deployment.cluster))
+  (printf "%s/%s/cluster.values.sops.yaml"   $basePath .Values.atlas.deployment.cluster)
+  (printf "%s/%s/cluster.values.yaml"        $basePath .Values.atlas.deployment.cluster)
+  (printf "%s/%s/cluster.values.yaml.gotmpl" $basePath .Values.atlas.deployment.cluster)
 )}}
 
 {{- $deploymentDir := dir .Values.atlas.deployment.deploymentPath }}
 {{- $valueSources = concat $valueSources (list
-  (dict "type" "secrets" "path" (printf "%s/values.sops.yaml"   $deploymentDir))
-  (dict "type" "values" "path" (printf "%s/values.yaml"        $deploymentDir))
-  (dict "type" "templatedValues" "path" (printf "%s/values.yaml.gotmpl" $deploymentDir))
+  (printf "%s/values.sops.yaml"   $deploymentDir)
+  (printf "%s/values.yaml"        $deploymentDir)
+  (printf "%s/values.yaml.gotmpl" $deploymentDir)
 )}}
 
 {{- if $debug }}
 # DEBUG: Value sources (later = higher priority):
 {{- range $path := $valueSources }}
-#   • {{ $path }}
+#   - {{ $path }}
 {{- end }}
 {{- end }}
 
@@ -71,25 +80,20 @@ Purpose:
 {{- $loadedValues := dict "atlas" .Values.atlas }}
 
 {{- range $source := $valueSources }}
-  {{- if isFile $source.path }}
-    # File found: {{ $source.path }}
-    {{- if (eq $source.type "secrets") }}
-      # File is a secret.
-      {{- $encrypted := readFile $source.path | fromYaml }}
-
-      {{- /* Decrypt the entire structure recursively */ -}}
-      {{- $decrypted := include "atlas.decryptSopsNested" (dict
-        "filePath" $source.path
-        "data" $encrypted
-        "keyPath" ""
-      ) | fromJson -}}
-
-      {{- $merged = mergeOverwrite $merged $decrypted -}}
-
-
-
-
+  {{- if isFile $source }}
+    {{- if contains ".sops.yaml" $source }}
+      {{- /* Decrypt the entire SOPS file at once using fetchSecretValue without a key fragment.
+           This returns the full decrypted YAML as a string, which fromYaml parses with correct
+           types (strings, numbers, booleans, lists, maps). Per-key fetchSecretValue is avoided
+           because it cannot return non-string types in Go templates. */ -}}
+      {{- $sopsRef       := printf "ref+sops://%s" $source }}
+      {{- $decryptedYaml := fetchSecretValue $sopsRef }}
+      {{- $decryptedData := $decryptedYaml | fromYaml }}
+      {{- $loadedValues   = mergeOverwrite $loadedValues $decryptedData -}}
     {{- else }}
+      {{- /* Render the file as a Go template (supports .yaml.gotmpl expressions) with
+           $loadedValues as context, so later files can reference values from earlier ones.
+           Plain .yaml files pass through tpl unchanged since they contain no expressions. */ -}}
       {{- $rendered := tpl (readFile $source) $loadedValues }}
       {{- $parsed   := fromYaml $rendered }}
       {{- $loadedValues = mergeOverwrite $loadedValues $parsed }}
@@ -97,8 +101,112 @@ Purpose:
   {{- end }}
 {{- end }}
 
+{{/* Output the first YAML document: environment values for subsequent documents */}}
 environments:
   default:
     values:
       - {{ $loadedValues | toYaml | nindent 8 }}
 {{ "---" | nindent 0 }}
+
+{{- /* ====================== LOAD DEPLOYMENT DEFINITION ====================== */ -}}
+{{- /* The deployment.yaml defines which app templates to instantiate for this deployment.
+     It is rendered as a Go template with $loadedValues as context, allowing
+     deployment definitions to reference hierarchy values via templating. */ -}}
+{{- if not (isFile .Values.atlas.deployment.deploymentPath) }}
+  {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
+{{- end }}
+{{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $loadedValues | fromYaml }}
+
+{{- if $debug }}
+# DEBUG: Deployment definition loaded from {{ .Values.atlas.deployment.deploymentPath }}
+# DEBUG: Apps defined: {{ len $deploymentDefinition.apps }}
+{{- range $deploymentDefinition.apps }}
+#   - template={{ .template }} namespace={{ .namespace }}
+{{- end }}
+{{- end }}
+
+{{- /* ====================== RENDER APP TEMPLATES ====================== */ -}}
+{{- /* For each app in the deployment definition:
+     1. Read the app template (helmfile.yaml.gotmpl) and render it as a Go template
+        with $loadedValues as context, so expressions like {{ .atlas.cwd }} resolve.
+     2. Parse the rendered YAML to get the release definitions.
+     3. For each release, process its values: list:
+        a. Resolve relative file paths to absolute (relative to the template directory).
+        b. Pass inline maps through as-is.
+        c. Append $loadedValues as the LAST entry so hierarchy values take priority
+           over template-include files and template-defaults.
+     4. Output the assembled release block directly. */ -}}
+{{- $appTemplatesDir := printf "%s/%s" .Values.atlas.cwd .Values.atlas.appTemplates }}
+
+{{- range $instance := $deploymentDefinition.apps }}
+  {{- $templateDir  := printf "%s/%s" $appTemplatesDir $instance.template }}
+  {{- $templateFile := printf "%s/helmfile.yaml.gotmpl" $templateDir }}
+
+  {{- if not (isFile $templateFile) }}
+    {{- fail (printf "App template not found: %s" $templateFile) }}
+  {{- end }}
+
+  {{- /* Build per-instance values by deep-copying $loadedValues and injecting
+       atlas.instance context. This provides the app template with:
+       - atlas.instance.template: the template name (always present)
+       - atlas.instance.name: the instance name (present when deployment.yaml specifies
+         a "name" property, used to disambiguate multiple uses of the same template)
+       Deep copy prevents mutation of $loadedValues across loop iterations. */ -}}
+  {{- $instanceValues := deepCopy $loadedValues }}
+  {{- /* The instance name defaults to the template name when not explicitly set.
+       This ensures atlas.instance.name is always available in app templates. */ -}}
+  {{- $instanceName := $instance.template }}
+  {{- if hasKey $instance "name" }}
+    {{- $instanceName = $instance.name }}
+  {{- end }}
+  {{- $instanceContext := dict "template" $instance.template "name" $instanceName }}
+  {{- $_ := set $instanceValues.atlas "instance" $instanceContext }}
+
+  {{- /* Render the app template as a Go template, then parse as YAML.
+       The tpl context wraps $instanceValues under a "Values" key so that
+       app templates can use .Values.atlas.* expressions as usual. */ -}}
+  {{- $tplContext := dict "Values" $instanceValues }}
+  {{- $template  := tpl (readFile $templateFile) $tplContext | fromYaml }}
+
+  {{- if $debug }}
+# DEBUG: Rendered app template '{{ $instance.template }}' from {{ $templateFile }}
+  {{- end }}
+
+  {{- /* Set commonLabels on the rendered template so every release gets
+       cluster and deployment identification labels applied by helmfile. */ -}}
+  {{- $_ := set $template "commonLabels" (dict
+    "cluster"        $.Values.atlas.deployment.cluster
+    "deploymentName" $.Values.atlas.deployment.deploymentName
+  ) }}
+
+  {{- range $release := $template.releases }}
+
+    {{- /* Resolve relative file paths in the release's values list and
+         append the ATLAS hierarchy values as the highest-priority entry */ -}}
+    {{- $resolvedValues := list }}
+    {{- if hasKey $release "values" }}
+      {{- range $entry := $release.values }}
+        {{- if kindIs "string" $entry }}
+          {{- /* String entries are file paths -- resolve relative to the template directory */ -}}
+          {{- $resolvedValues = append $resolvedValues (printf "%s/%s" $templateDir $entry) }}
+        {{- else }}
+          {{- /* Map entries are inline values -- pass through as-is */ -}}
+          {{- $resolvedValues = append $resolvedValues $entry }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
+    {{- /* Append the ATLAS hierarchy + instance values as the final (highest priority) entry.
+         This ensures deployment -> cluster -> group -> global values override any
+         template-include files or template-defaults defined in the app template.
+         Uses $instanceValues (not $loadedValues) so atlas.instance context is included. */ -}}
+    {{- $resolvedValues = append $resolvedValues $instanceValues }}
+    {{- $_ := set $release "values" $resolvedValues }}
+
+  {{- end }}
+
+  {{- /* Output the fully assembled helmfile block for this app instance */ -}}
+  {{- $template | toYaml | nindent 0 }}
+  {{- "---" | nindent 0 }}
+
+{{- end }}

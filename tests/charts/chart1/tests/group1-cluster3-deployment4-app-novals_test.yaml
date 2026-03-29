@@ -29,12 +29,12 @@ tests:
 
   - it: should NOT have cluster-only values (no cluster values file)
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.clusterOnly
 
   - it: should NOT have deployment-only values (no deployment values file)
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.deploymentOnly
 
   - it: should have group win overrideAll when no cluster or deployment values
@@ -69,9 +69,9 @@ tests:
       - equal:
           path: data.values.nested.fromGroup
           value: true
-      - isNull:
+      - notExists:
           path: data.values.nested.fromCluster
-      - isNull:
+      - notExists:
           path: data.values.nested.fromDeployment
 
   # --- SOPS decryption (global + group only, no cluster/deployment sops) ---
@@ -99,9 +99,9 @@ tests:
 
   - it: should NOT have cluster or deployment sops values
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.sopsCluster
-      - isNull:
+      - notExists:
           path: data.values.sopsDeployment
 
   - it: should have group sops override global sops for sopsOverride

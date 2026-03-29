@@ -1,0 +1,43 @@
+# Test: Multi-template deployment (deployment7), second app: app-novals-b
+# Template: app-novals-b (no template-level values)
+# Scenario: deployment7 defines two apps (app1 + app-novals-b). This test validates
+#   the SECOND app (app-novals-b) has only hierarchy values, no template values.
+#
+# This proves that each app in a multi-template deployment gets its own independent
+# values — app-novals-b does NOT leak values from app1.
+tests:
+  - it: should NOT have template-include values (app-novals-b has no template values)
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - notExists:
+          path: data.values.templateInclude
+
+  - it: should NOT have template-defaults
+    asserts:
+      - notExists:
+          path: data.values.templateDefault
+
+  - it: should have cluster as highest override for overrideAll (no deployment values)
+    asserts:
+      - equal:
+          path: data.values.overrideAll
+          value: cluster
+
+  - it: should load global and cluster values
+    asserts:
+      - equal:
+          path: data.values.globalOnly
+          value: fromGlobal
+      - equal:
+          path: data.values.clusterOnly
+          value: fromCluster
+
+  - it: should set correct atlas context for deployment7
+    asserts:
+      - equal:
+          path: data.values.atlas.deployment.cluster
+          value: cluster1
+      - equal:
+          path: data.values.atlas.deployment.deploymentName
+          value: deployment7

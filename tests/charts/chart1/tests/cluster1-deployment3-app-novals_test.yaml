@@ -23,7 +23,7 @@ tests:
 
   - it: should NOT load group values for standalone cluster
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.groupOnly
 
   - it: should load cluster values
@@ -34,7 +34,7 @@ tests:
 
   - it: should NOT have deployment-only values (no deployment values file)
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.deploymentOnly
 
   - it: should have cluster win overrideAll when no deployment values
@@ -63,7 +63,7 @@ tests:
 
   - it: should NOT have nested deployment values
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.nested.fromDeployment
 
   - it: should deep merge nested values from global and cluster
@@ -88,9 +88,9 @@ tests:
 
   - it: should NOT have deployment-level sops values
     asserts:
-      - isNull:
+      - notExists:
           path: data.values.sopsDeployment
-      - isNull:
+      - notExists:
           path: data.values.sopsMap
 
   - it: should have cluster sops override global sops for sopsOverride

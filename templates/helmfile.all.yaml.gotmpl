@@ -9,26 +9,26 @@
   #
   # DIRECTORY STRUCTURE OVERVIEW:
   #   deployments/
-  #     apps/                           ← Global deployments (applied to all clusters)
+  #     apps/                           <- Global deployments (applied to all clusters)
   #       global-app/
   #         deployment.yaml
   #
-  #     single-cluster/                 ← Standalone cluster (no group)
+  #     single-cluster/                 <- Standalone cluster (no group)
   #       apps/
   #         single-app/
   #           deployment.yaml
   #
-  #     group-name/                     ← Cluster group
-  #       apps/                         ← Group-level deployments (applied to all clusters in group)
+  #     group-name/                     <- Cluster group
+  #       apps/                         <- Group-level deployments (applied to all clusters in group)
   #         group-app/
   #           deployment.yaml
   #
-  #       cluster-a/                    ← Individual cluster in group
+  #       cluster-a/                    <- Individual cluster in group
   #         apps/
   #           cluster-app/
   #             deployment.yaml
   #
-  #       cluster-b/                    ← Another cluster in same group
+  #       cluster-b/                    <- Another cluster in same group
   #         apps/
   #           another-app/
   #             deployment.yaml

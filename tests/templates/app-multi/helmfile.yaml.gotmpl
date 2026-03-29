@@ -1,0 +1,22 @@
+releases:
+  - name: app-multi-first
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - multiRelease: first
+
+    {{- if .Values.atlas.unittest }}
+    unitTests:
+      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}-first_test.yaml
+    {{- end }}
+
+  - name: app-multi-second
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - multiRelease: second
+
+    {{- if .Values.atlas.unittest }}
+    unitTests:
+      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}-second_test.yaml
+    {{- end }}

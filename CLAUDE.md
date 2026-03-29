@@ -29,7 +29,7 @@ SOPS_AGE_KEY_FILE=tests/sops-secret.txt helmfile -f helmfile.tests.yaml.gotmpl u
 
 2. **templates/helmfile.single.yaml.gotmpl** — Renders a single deployment by loading values from multiple sources in priority order (global → group → cluster → deployment level), decrypting SOPS values, and rendering the deployment's `deployment.yaml` as a Go template.
 
-3. **templates/_functions.tpl** — Reusable helper library (~410 lines) providing: SOPS decryption (`atlas.decryptSopsNested`), list override application, path conversion, and custom glob pattern matching (`*`, `**`, `?`).
+3. **templates/_functions.tpl** — Reusable helper library providing: list override application (`atlas.applyListOverride`), path conversion (`convertPaths`), and custom glob pattern matching (`glob`, `globIterative`, `globRecursive`).
 
 ### Deployment Hierarchy
 
@@ -61,7 +61,7 @@ Located in a templates directory (production: configurable, tests: `tests/templa
 
 ### Secrets
 
-SOPS is used for per-key encryption in `*.values.sops.yaml` files. The `atlas.decryptSopsNested` function handles recursive decryption of nested encrypted structures via `fetchSecretValue`.
+SOPS is used for per-key encryption in `*.values.sops.yaml` files. Decryption uses `fetchSecretValue` with the `ref+sops://` protocol — whole-file decryption (no `#key` fragment) returns the full decrypted YAML as a string, preserving all value types. Do not use external CLI tools via `exec` for decryption.
 
 ### Atlas Config Object
 
@@ -72,3 +72,22 @@ Templates receive an `atlas` values object containing:
 - `debug` — Enable debug output
 - `unittest` — Enable unit test mode
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
+
+## Development Rules
+
+### Making Changes to Templates
+- Make small, incremental changes — fix one issue at a time, not everything at once.
+- Validate every change by running the tests.
+- If no test covers your change, create a new test case before or alongside the change.
+- Do **not** modify or remove existing tests. If a test seems wrong, flag it for review rather than changing it.
+- If tests keep failing after a fix attempt, write a note and move on instead of retrying different solutions.
+- After all fixes are done, review for code duplication, duplicate variables, missing comments, and unnecessary steps.
+- Do not refactor working code aggressively — refactoring is a separate step done before committing.
+
+### Template Readability
+- Templates are read and modified by humans. Use descriptive variable names (e.g., `$loadedValues` not `$vals`, `$deploymentDefinition` not `$dep`).
+- Add extensive documentation in the form of code comments, especially for non-obvious logic.
+
+### No External Tooling in Templates
+- Do not rely on external CLI tools via `exec` (e.g., `exec "sops"`). Templates may run in environments where such tools are not available.
+- Use helmfile's built-in functions (`fetchSecretValue`, `readFile`, `tpl`, etc.) for all template logic.

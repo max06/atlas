@@ -1,5 +1,5 @@
 releases:
-  - name: app-novals
+  - name: app-named-{{ .Values.atlas.instance.name }}
     chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
     namespace: test
 
