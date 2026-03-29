@@ -27,31 +27,26 @@ on:
   workflow_call:
     inputs:
       helmfile-path:
-        description: 'Path to the helmfile entry point'
+        description: "Path to the helmfile entry point"
         type: string
-        default: 'helmfile.yaml.gotmpl'
+        default: "helmfile.yaml.gotmpl"
       helmfile-version:
-        description: 'Helmfile version to install (omit to use action default)'
+        description: "Helmfile version to install (omit to use action default)"
         type: string
-        default: 'v1.2.3'
+        default: "v1.2.3"
       helm-version:
-        description: 'Helm version to install (omit to use action default)'
+        description: "Helm version to install (omit to use action default)"
         type: string
-        default: 'v3.19.4'
+        default: "v3.19.4"
     secrets:
       sops-age-key:
         required: false
-        description: 'SOPS Age private key — mandatory if your repo has *.values.sops.yaml files. Use a dedicated CI key (see README). Decrypted values are redacted in output.'
+        description: "SOPS Age private key — mandatory if your repo has *.values.sops.yaml files. Use a dedicated CI key (see README). Decrypted values are redacted in output."
 
 permissions:
   contents: read
   pull-requests: write
   actions: read
-
-# Output directory template: organizes rendered manifests by cluster, deployment, and release.
-# Uses ATLAS's commonLabels (cluster, deploymentName) set on every release.
-env:
-  OUTPUT_DIR_TEMPLATE: '{{ .OutputDir }}/{{ .Release.Labels.cluster }}/{{ .Release.Labels.deploymentName }}/{{ .Release.Name }}'
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
@@ -81,9 +76,24 @@ jobs:
 
       - name: Render manifests (with secret redaction)
         run: |
-          ATLAS_REDACT_SECRETS=true helmfile -f "${{ inputs.helmfile-path }}" template \
-            --output-dir snapshot \
-            --output-dir-template "$OUTPUT_DIR_TEMPLATE"
+          # Render each deployment separately to avoid helmfile's patched_resources.yaml
+          # collision issue (https://github.com/roboll/helmfile/issues/2095).
+          # Uses helmfile list to discover deployments, then renders each with --selector.
+          HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
+
+          DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
+            --output json --skip-schema-validation 2>/dev/null \
+            | jq -r '.[] | .labels.cluster + "/" + .labels.deploymentName' | sort -u)
+
+          for DEPLOY in $DEPLOYMENTS; do
+            CLUSTER="${DEPLOY%%/*}"
+            DEPLOYMENT="${DEPLOY#*/}"
+            mkdir -p "snapshot/$CLUSTER/$DEPLOYMENT"
+            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+              --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
+              --skip-schema-validation \
+              > "snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
+          done
 
       - name: Upload baseline snapshot
         uses: actions/upload-artifact@v4
@@ -119,9 +129,23 @@ jobs:
 
       - name: Render manifests (with secret redaction)
         run: |
-          ATLAS_REDACT_SECRETS=true helmfile -f "${{ inputs.helmfile-path }}" template \
-            --output-dir pr-snapshot \
-            --output-dir-template "$OUTPUT_DIR_TEMPLATE"
+          # Render each deployment separately to avoid helmfile's patched_resources.yaml
+          # collision issue (https://github.com/roboll/helmfile/issues/2095).
+          HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
+
+          DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
+            --output json --skip-schema-validation 2>/dev/null \
+            | jq -r '.[] | .labels.cluster + "/" + .labels.deploymentName' | sort -u)
+
+          for DEPLOY in $DEPLOYMENTS; do
+            CLUSTER="${DEPLOY%%/*}"
+            DEPLOYMENT="${DEPLOY#*/}"
+            mkdir -p "pr-snapshot/$CLUSTER/$DEPLOYMENT"
+            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+              --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
+              --skip-schema-validation \
+              > "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
+          done
 
       - name: Find latest baseline snapshot
         id: find-baseline
@@ -158,7 +182,7 @@ jobs:
           fi
 
           # Generate per-deployment diffs by walking the directory structure.
-          # Structure: {dir}/{cluster}/{deploymentName}/{releaseName}/{chart}/templates/...
+          # Structure: {dir}/{cluster}/{deploymentName}/manifests.yaml
           HAS_CHANGES=false
           COMMENT_BODY=""
           TOTAL_CHANGES=0
