@@ -261,3 +261,96 @@ ATLAS processes your repository in three steps:
 2. **Load Values** (`helmfile.single.yaml.gotmpl`) — For each cluster-deployment pair, loads and merges values from all hierarchy levels (global → group → cluster → deployment), including SOPS decryption. The result is a single merged values dict.
 
 3. **Render** (`helmfile.single.yaml.gotmpl`) — Reads the deployment's `deployment.yaml` to find which app templates to instantiate. For each app, renders the template with the merged values, resolves file paths, and appends the hierarchy values as the highest-priority entry. Outputs complete helmfile release blocks.
+
+---
+
+## CI / Snapshot Review
+
+ATLAS provides a reusable GitHub Actions workflow that compares rendered Kubernetes manifests between the main branch and a pull request. It posts a diff as a PR comment, letting reviewers see the exact impact of deployment changes before merging.
+
+### How it works
+
+1. **On push to main** — Renders all manifests via `helmfile template`, uploads the output as a baseline artifact.
+2. **On pull request** — Renders manifests from the PR branch, downloads the latest baseline from main, diffs the two, and posts a sticky comment on the PR.
+
+### Setup
+
+Create a workflow file in your repository:
+
+```yaml
+# .github/workflows/atlas-review.yml
+name: ATLAS Snapshot Review
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  review:
+    uses: max06/atlas/.github/workflows/snapshot-review.yml@main
+    with:
+      helmfile-path: helmfile.yaml.gotmpl
+    secrets:
+      sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
+```
+
+After creating the workflow, push it to main to generate the first baseline snapshot. Subsequent pull requests will show a diff comment.
+
+### Inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `helmfile-path` | `helmfile.yaml.gotmpl` | Path to the helmfile entry point |
+| `helmfile-version` | latest | Helmfile version to install |
+| `helm-version` | latest | Helm version to install |
+
+### Secrets
+
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `sops-age-key` | No | SOPS Age private key for decrypting encrypted value files |
+
+### SOPS Secret Redaction
+
+If your repository uses SOPS-encrypted value files (`*.values.sops.yaml`), the `sops-age-key` secret is **mandatory** — without it, `helmfile template` will fail when it encounters encrypted files. **All decrypted values are automatically redacted** — replaced with `*REDACTED*` in the rendered output — so that secrets are never exposed in PR comments or artifacts. The key structure is preserved, so diffs still show which secret keys were added, removed, or moved, without revealing actual values.
+
+**Recommended: create a dedicated CI age key** rather than reusing a personal or production key:
+
+```bash
+# Generate a new age key pair for CI
+age-keygen -o ci-key.txt
+# Output: Public key: age1...
+```
+
+Add the public key as an additional recipient to your `.sops.yaml` creation rules:
+
+```yaml
+creation_rules:
+  - path_regex: values\.sops\.yaml$
+    age: >-
+      age1your-existing-key...,
+      age1your-ci-key...
+```
+
+Re-encrypt all existing SOPS files so they include the new recipient:
+
+```bash
+# For each encrypted file:
+sops updatekeys deployments/global.values.sops.yaml
+```
+
+Then store the **private key** (the contents of `ci-key.txt`) as a GitHub repository secret named `SOPS_AGE_KEY`.
+
+This redaction is controlled by the `ATLAS_REDACT_SECRETS` environment variable, which the workflow sets automatically. You can also use it locally:
+
+```bash
+ATLAS_REDACT_SECRETS=true helmfile -f helmfile.yaml.gotmpl template
+```
+
+### What to expect
+
+- **First run**: The PR comment will say "No baseline snapshot found." Push to main first to create a baseline.
+- **No changes**: The comment will confirm no changes were detected.
+- **Changes detected**: The comment shows a collapsible diff with the full rendered output comparison.
+- **Large diffs**: If the diff exceeds GitHub's comment size limit, it is truncated with a note to download the full snapshot artifact.

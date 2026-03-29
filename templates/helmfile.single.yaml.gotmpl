@@ -77,6 +77,12 @@ Output format:
 {{- end }}
 
 {{- /* ====================== MERGE ALL VALUES (SOPS aware) ====================== */ -}}
+{{- /* When ATLAS_REDACT_SECRETS is set to "true", all values loaded from SOPS-encrypted
+     files are recursively replaced with "*REDACTED*" before merging. This ensures that
+     `helmfile template` output is safe for use in PR comments and other public contexts.
+     The structure of the secrets (key names, nesting) is preserved for meaningful diffs,
+     but actual secret values are never exposed. */ -}}
+{{- $redactSecrets := eq (env "ATLAS_REDACT_SECRETS") "true" }}
 {{- $loadedValues := dict "atlas" .Values.atlas }}
 
 {{- range $source := $valueSources }}
@@ -89,6 +95,11 @@ Output format:
       {{- $sopsRef       := printf "ref+sops://%s" $source }}
       {{- $decryptedYaml := fetchSecretValue $sopsRef }}
       {{- $decryptedData := $decryptedYaml | fromYaml }}
+      {{- if $redactSecrets }}
+        {{- /* Replace all leaf values with "*REDACTED*" to prevent secret exposure.
+             The redacted data preserves the key structure so diffs remain meaningful. */ -}}
+        {{- $decryptedData = include "atlas.redactValues" $decryptedData | fromYaml }}
+      {{- end }}
       {{- $loadedValues   = mergeOverwrite $loadedValues $decryptedData -}}
     {{- else }}
       {{- /* Render the file as a Go template (supports .yaml.gotmpl expressions) with

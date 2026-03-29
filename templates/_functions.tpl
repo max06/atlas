@@ -8,6 +8,37 @@
 {{- end -}}
 
 
+{{- /*
+atlas.redactValues — Recursively replaces all leaf values in a map with "*REDACTED*".
+Used to mask SOPS-decrypted secrets so that `helmfile template` output is safe for
+PR comments and other public contexts. Maps are traversed recursively; lists have
+each element redacted (map elements within lists are also traversed recursively).
+Controlled by the ATLAS_REDACT_SECRETS=true environment variable.
+*/ -}}
+{{- define "atlas.redactValues" -}}
+  {{- $result := dict -}}
+  {{- range $key, $value := . -}}
+    {{- if kindIs "map" $value -}}
+      {{- $redacted := include "atlas.redactValues" $value | fromYaml -}}
+      {{- $_ := set $result $key $redacted -}}
+    {{- else if kindIs "slice" $value -}}
+      {{- $redactedList := list -}}
+      {{- range $item := $value -}}
+        {{- if kindIs "map" $item -}}
+          {{- $redactedList = append $redactedList (include "atlas.redactValues" $item | fromYaml) -}}
+        {{- else -}}
+          {{- $redactedList = append $redactedList "*REDACTED*" -}}
+        {{- end -}}
+      {{- end -}}
+      {{- $_ := set $result $key $redactedList -}}
+    {{- else -}}
+      {{- $_ := set $result $key "*REDACTED*" -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $result | toYaml -}}
+{{- end -}}
+
+
 
 {{- define "atlas.applyListOverride" -}}
   {{- /* Only scalar locals -- never re-assign complex maps from . */ -}}
