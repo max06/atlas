@@ -1,0 +1,6 @@
+clusterOnly: fromCluster
+overrideClusterUp: cluster
+overrideAll: cluster
+nested:
+  fromCluster: true
+  shared: cluster

@@ -1,0 +1,45 @@
+# Test: Multi-template deployment (deployment7), first app: app1
+# Template: app1 (has template-include + template-defaults)
+# Scenario: deployment7 defines two apps (app1 + app-novals-b). This test validates
+#   the FIRST app (app1) has its template-level values AND hierarchy values.
+#
+# This proves that when a deployment.yaml lists multiple apps, each app template
+# is rendered independently with its own values.
+tests:
+  - it: should have template-include values from app1
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data.values.templateInclude
+          value: fromInclude
+
+  - it: should have template-defaults from app1
+    asserts:
+      - equal:
+          path: data.values.templateDefault
+          value: fromDefault
+
+  - it: should have hierarchy values override template for overrideAll
+    asserts:
+      - equal:
+          path: data.values.overrideAll
+          value: cluster
+
+  - it: should load global and cluster values
+    asserts:
+      - equal:
+          path: data.values.globalOnly
+          value: fromGlobal
+      - equal:
+          path: data.values.clusterOnly
+          value: fromCluster
+
+  - it: should set correct atlas context for deployment7
+    asserts:
+      - equal:
+          path: data.values.atlas.deployment.cluster
+          value: cluster1
+      - equal:
+          path: data.values.atlas.deployment.deploymentName
+          value: deployment7

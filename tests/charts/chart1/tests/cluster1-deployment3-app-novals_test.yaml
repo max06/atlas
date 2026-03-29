@@ -1,0 +1,118 @@
+# Test: Standalone cluster (cluster1) WITHOUT deployment-level values
+# Template: app-novals (no template-level values)
+# Scenario: Chart defaults → Global → Cluster (deployment level has no value files)
+#
+# Hierarchy values loaded (sops → yaml → gotmpl per level):
+#   1. global.values.sops.yaml         (sopsGlobal, sopsString, sopsNumber, sopsBool, sopsOverride=global, sopsNested)
+#   2. global.values.yaml              (globalOnly, overrideGroupUp, overrideClusterUp, overrideAll, gotmplTest, nested)
+#   3. global.values.yaml.gotmpl       (gotmplTest override)
+#   4. cluster1/cluster.values.sops.yaml (sopsCluster, sopsOverride=cluster, sopsFloat, sopsNested.deep)
+#   5. cluster1/cluster.values.yaml    (clusterOnly, overrideClusterUp, overrideAll, nested)
+#   (no deployment-level files exist for deployment3)
+#
+# This tests that missing value files are silently skipped and that the
+# cluster level becomes the highest-priority source when deployment values are absent.
+tests:
+  - it: should load global values
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data.values.globalOnly
+          value: fromGlobal
+
+  - it: should NOT load group values for standalone cluster
+    asserts:
+      - notExists:
+          path: data.values.groupOnly
+
+  - it: should load cluster values
+    asserts:
+      - equal:
+          path: data.values.clusterOnly
+          value: fromCluster
+
+  - it: should NOT have deployment-only values (no deployment values file)
+    asserts:
+      - notExists:
+          path: data.values.deploymentOnly
+
+  - it: should have cluster win overrideAll when no deployment values
+    asserts:
+      - equal:
+          path: data.values.overrideAll
+          value: cluster
+
+  - it: should have cluster win overrideClusterUp
+    asserts:
+      - equal:
+          path: data.values.overrideClusterUp
+          value: cluster
+
+  - it: should keep global value for overrideGroupUp (no group)
+    asserts:
+      - equal:
+          path: data.values.overrideGroupUp
+          value: global
+
+  - it: should have cluster win nested shared key (no deployment override)
+    asserts:
+      - equal:
+          path: data.values.nested.shared
+          value: cluster
+
+  - it: should NOT have nested deployment values
+    asserts:
+      - notExists:
+          path: data.values.nested.fromDeployment
+
+  - it: should deep merge nested values from global and cluster
+    asserts:
+      - equal:
+          path: data.values.nested.fromGlobal
+          value: true
+      - equal:
+          path: data.values.nested.fromCluster
+          value: true
+
+  # --- SOPS decryption (no deployment sops, cluster is final sops level) ---
+
+  - it: should decrypt sops values from global and cluster levels
+    asserts:
+      - equal:
+          path: data.values.sopsGlobal
+          value: secretGlobalValue
+      - equal:
+          path: data.values.sopsCluster
+          value: secretCluster1Value
+
+  - it: should NOT have deployment-level sops values
+    asserts:
+      - notExists:
+          path: data.values.sopsDeployment
+      - notExists:
+          path: data.values.sopsMap
+
+  - it: should have cluster sops override global sops for sopsOverride
+    asserts:
+      - equal:
+          path: data.values.sopsOverride
+          value: cluster
+
+  - it: should deep merge sops nested with cluster deep key preserved
+    asserts:
+      - equal:
+          path: data.values.sopsNested.secretKey
+          value: cluster1NestedSecret
+      - equal:
+          path: data.values.sopsNested.deep.verySecret
+          value: hiddenValue
+
+  - it: should set correct atlas deployment context
+    asserts:
+      - equal:
+          path: data.values.atlas.deployment.cluster
+          value: cluster1
+      - equal:
+          path: data.values.atlas.deployment.deploymentName
+          value: deployment3

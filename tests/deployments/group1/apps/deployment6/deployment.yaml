@@ -1,0 +1,6 @@
+apps:
+  - template: app-group
+    namespace: test
+settings:
+  branch: main
+  autoSync: false

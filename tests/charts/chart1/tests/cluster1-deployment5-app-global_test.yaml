@@ -1,0 +1,52 @@
+# Test: Global deployment (deployment5) rendered on standalone cluster (cluster1)
+# Template: app-global-test (no template-level values)
+# Scenario: Verifies that a global-level deployment (deployments/apps/deployment5/)
+#   is correctly assigned to a standalone cluster with the right atlas context.
+#
+# Hierarchy values loaded: Global + Cluster1 (no group for standalone)
+tests:
+  - it: should be assigned to cluster1 with correct atlas context
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data.values.atlas.deployment.cluster
+          value: cluster1
+      - equal:
+          path: data.values.atlas.deployment.deploymentName
+          value: deployment5
+
+  - it: should load global values
+    asserts:
+      - equal:
+          path: data.values.globalOnly
+          value: fromGlobal
+
+  - it: should NOT have group values (standalone cluster)
+    asserts:
+      - notExists:
+          path: data.values.groupOnly
+
+  - it: should load cluster1 values
+    asserts:
+      - equal:
+          path: data.values.clusterOnly
+          value: fromCluster
+
+  - it: should have cluster override global for overrideClusterUp
+    asserts:
+      - equal:
+          path: data.values.overrideClusterUp
+          value: cluster
+
+  - it: should decrypt global sops values
+    asserts:
+      - equal:
+          path: data.values.sopsGlobal
+          value: secretGlobalValue
+
+  - it: should decrypt cluster1 sops values
+    asserts:
+      - equal:
+          path: data.values.sopsCluster
+          value: secretCluster1Value

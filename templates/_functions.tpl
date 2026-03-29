@@ -8,8 +8,9 @@
 {{- end -}}
 
 
+
 {{- define "atlas.applyListOverride" -}}
-  {{- /* Only scalar locals – never re-assign complex maps from . */ -}}
+  {{- /* Only scalar locals -- never re-assign complex maps from . */ -}}
   {{- $field       := .field }}
   {{- $templateDir := .templateDir }}
 

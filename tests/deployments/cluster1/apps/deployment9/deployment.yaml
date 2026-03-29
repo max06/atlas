@@ -1,0 +1,10 @@
+apps:
+  - template: app-named
+    name: primary
+    namespace: test
+  - template: app-named
+    name: secondary
+    namespace: test
+settings:
+  branch: main
+  autoSync: false
