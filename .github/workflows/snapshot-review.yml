@@ -5,6 +5,12 @@
 # to render the changed manifests, and posts a diff as a PR comment so reviewers can see
 # the impact of deployment changes, organized by cluster and deployment.
 #
+# Error handling:
+#   - Baseline (target branch) render errors are reported as warnings but do NOT block
+#     merging, since the PR itself may be the fix for a broken target branch.
+#   - PR branch render errors are reported and FAIL the pipeline, since we cannot verify
+#     the PR produces valid manifests.
+#
 # Usage in consumer repos:
 #
 #   # .github/workflows/atlas-review.yml
@@ -70,43 +76,74 @@ jobs:
           SOPS_KEY: ${{ secrets.sops-age-key }}
 
       # ── Render baseline from target branch ──────────────────────────────────
+      # Errors here are non-blocking: the PR may be fixing a broken target branch.
       - name: Checkout target branch
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Render baseline manifests
+        id: baseline
         run: |
-          # Render each deployment separately to avoid helmfile's patched_resources.yaml
-          # collision issue (https://github.com/roboll/helmfile/issues/2095).
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
 
-          # Skip baseline render if helmfile doesn't exist on the target branch
-          # (e.g., first PR adding ATLAS to the repo)
+          # If helmfile doesn't exist on the target branch, this is a genuinely new setup
           if [ ! -f "${{ inputs.helmfile-path }}" ]; then
-            echo "Helmfile not found on target branch — skipping baseline render"
+            echo "Helmfile not found on target branch"
+            echo "status=missing" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Labels are comma-separated key:value strings — extract cluster and deploymentName
-          DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json 2>/dev/null \
+          # Discover deployments — capture stderr for error reporting
+          if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
+            --output json 2>baseline-stderr.log); then
+            echo "::warning::Failed to list deployments on target branch"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            cat baseline-stderr.log
+            exit 0  # Non-blocking
+          fi
+
+          # Save list output for the job summary
+          echo "$DEPLOY_JSON" > baseline-list.json
+
+          DEPLOYMENTS=$(echo "$DEPLOY_JSON" \
             | jq -r '.[].labels | split(",")
               | map(select(startswith("cluster:") or startswith("deploymentName:"))
               | split(":") | {(.[0]): .[1]}) | add
               | .cluster + "/" + .deploymentName' | sort -u)
 
+          # Render each deployment separately to avoid helmfile's patched_resources.yaml
+          # collision issue (https://github.com/roboll/helmfile/issues/2095).
+          FAILED=""
           for DEPLOY in $DEPLOYMENTS; do
             CLUSTER="${DEPLOY%%/*}"
             DEPLOYMENT="${DEPLOY#*/}"
             mkdir -p "baseline/$CLUSTER/$DEPLOYMENT"
-            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+            if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
               --skip-schema-validation \
-              > "baseline/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
+              > "baseline/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>>baseline-stderr.log; then
+              FAILED="${FAILED}${DEPLOY}\n"
+              rm -f "baseline/$CLUSTER/$DEPLOYMENT/manifests.yaml"
+            fi
           done
 
+          # Always print stderr to the pipeline log for debugging
+          if [ -s baseline-stderr.log ]; then
+            echo "::group::Baseline render output"
+            cat baseline-stderr.log
+            echo "::endgroup::"
+          fi
+
+          if [ -n "$FAILED" ]; then
+            echo "::warning::Some baseline deployments failed to render"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
       # ── Render PR manifests ─────────────────────────────────────────────────
+      # Errors here are blocking: the PR must produce valid manifests.
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
@@ -114,35 +151,69 @@ jobs:
           clean: false  # Preserve the baseline/ directory from the previous step
 
       - name: Render PR manifests
+        id: pr
         run: |
-          # Render each deployment separately to avoid helmfile's patched_resources.yaml
-          # collision issue (https://github.com/roboll/helmfile/issues/2095).
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
 
-          # Labels are comma-separated key:value strings — extract cluster and deploymentName
-          DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json 2>/dev/null \
+          # Discover deployments — capture stderr for error reporting
+          if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
+            --output json 2>pr-stderr.log); then
+            echo "::error::Failed to list deployments on PR branch"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            cat pr-stderr.log
+            exit 0  # Don't fail yet — post the comment first
+          fi
+
+          # Save list output for the job summary
+          echo "$DEPLOY_JSON" > pr-list.json
+
+          DEPLOYMENTS=$(echo "$DEPLOY_JSON" \
             | jq -r '.[].labels | split(",")
               | map(select(startswith("cluster:") or startswith("deploymentName:"))
               | split(":") | {(.[0]): .[1]}) | add
               | .cluster + "/" + .deploymentName' | sort -u)
 
+          # Render each deployment separately to avoid helmfile's patched_resources.yaml
+          # collision issue (https://github.com/roboll/helmfile/issues/2095).
+          FAILED=""
           for DEPLOY in $DEPLOYMENTS; do
             CLUSTER="${DEPLOY%%/*}"
             DEPLOYMENT="${DEPLOY#*/}"
             mkdir -p "pr-snapshot/$CLUSTER/$DEPLOYMENT"
-            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+            if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
               --skip-schema-validation \
-              > "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
+              > "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>>pr-stderr.log; then
+              FAILED="${FAILED}${DEPLOY}\n"
+              rm -f "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml"
+            fi
           done
+
+          # Always print stderr to the pipeline log for debugging
+          if [ -s pr-stderr.log ]; then
+            echo "::group::PR render output"
+            cat pr-stderr.log
+            echo "::endgroup::"
+          fi
+
+          if [ -n "$FAILED" ]; then
+            echo "::error::Some PR deployments failed to render"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
 
       # ── Diff and comment ────────────────────────────────────────────────────
       - name: Generate diff
         id: diff
         run: |
-          if [ ! -d baseline ] || [ -z "$(ls -A baseline 2>/dev/null)" ]; then
-            echo "status=no-baseline" >> "$GITHUB_OUTPUT"
+          HAS_BASELINE=false
+          HAS_PR=false
+          [ -d baseline ] && [ -n "$(ls -A baseline 2>/dev/null)" ] && HAS_BASELINE=true
+          [ -d pr-snapshot ] && [ -n "$(ls -A pr-snapshot 2>/dev/null)" ] && HAS_PR=true
+
+          if [ "$HAS_BASELINE" = false ] && [ "$HAS_PR" = false ]; then
+            echo "status=empty" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -174,7 +245,6 @@ jobs:
             fi
 
             # Generate diff for this deployment — compare manifest files directly
-            # (diffing /dev/null against a directory silently fails, so we diff files)
             DEPLOY_DIFF=""
             if [ "$CHANGE_TYPE" = "added" ]; then
               DEPLOY_DIFF=$(diff -uN /dev/null "$PR_FILE" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
@@ -219,7 +289,7 @@ jobs:
           <details>
           <summary>${HEADER} (${DIFF_LINES} lines)</summary>
 
-          > Diff truncated — download the snapshot artifact for full output.
+          > Diff truncated — too large for PR comment.
 
           </details>
           "
@@ -250,33 +320,76 @@ jobs:
 
       - name: Build comment body
         id: comment
+        if: always()
         run: |
+          BASELINE_STATUS="${{ steps.baseline.outputs.status }}"
+          PR_STATUS="${{ steps.pr.outputs.status }}"
+          DIFF_STATUS="${{ steps.diff.outputs.status }}"
+
+          # Read error logs if they exist (truncate to keep comment reasonable)
+          BASELINE_ERRORS=""
+          PR_ERRORS=""
+          if [ -f baseline-stderr.log ] && [ -s baseline-stderr.log ]; then
+            BASELINE_ERRORS=$(tail -50 baseline-stderr.log)
+          fi
+          if [ -f pr-stderr.log ] && [ -s pr-stderr.log ]; then
+            PR_ERRORS=$(tail -50 pr-stderr.log)
+          fi
+
           {
             echo 'body<<ATLAS_EOF'
+            echo '## ATLAS Review'
+            echo ''
 
-            if [ "${{ steps.diff.outputs.status }}" = "no-baseline" ]; then
-              cat <<'MSG'
-          ## ATLAS Review
-
-          No baseline found on the target branch — all deployments in this PR are new.
-
-          ---
-          *Generated by [ATLAS](https://github.com/max06/atlas) Review*
-          MSG
-
-            elif [ "${{ steps.diff.outputs.status }}" = "no-changes" ]; then
-              cat <<'MSG'
-          ## ATLAS Review
-
-          No changes detected in rendered Kubernetes manifests.
-
-          ---
-          *Generated by [ATLAS](https://github.com/max06/atlas) Review*
-          MSG
-
-            else
-              echo '## ATLAS Review'
+            # ── PR branch render error (blocking) ──
+            if [ "$PR_STATUS" = "error" ]; then
+              echo '> [!CAUTION]'
+              echo '> **This PR failed to render.** The pipeline will fail — fix the errors below before merging.'
               echo ''
+              if [ -n "$PR_ERRORS" ]; then
+                echo '<details>'
+                echo '<summary>Render errors (PR branch)</summary>'
+                echo ''
+                echo '```'
+                echo "$PR_ERRORS"
+                echo '```'
+                echo ''
+                echo '</details>'
+                echo ''
+              fi
+            fi
+
+            # ── Baseline render error or missing (non-blocking) ──
+            if [ "$BASELINE_STATUS" = "error" ]; then
+              echo '> [!WARNING]'
+              echo '> **Target branch failed to render.** Diff is unavailable, but merging is not blocked — this PR may be the fix.'
+              echo ''
+              if [ -n "$BASELINE_ERRORS" ]; then
+                echo '<details>'
+                echo '<summary>Render errors (target branch)</summary>'
+                echo ''
+                echo '```'
+                echo "$BASELINE_ERRORS"
+                echo '```'
+                echo ''
+                echo '</details>'
+                echo ''
+              fi
+            elif [ "$BASELINE_STATUS" = "missing" ]; then
+              echo '> [!NOTE]'
+              echo '> Helmfile not found on the target branch (`${{ inputs.helmfile-path }}`). This is expected if the PR introduces ATLAS to the repository.'
+              echo ''
+            fi
+
+            # ── Diff results ──
+            if [ "$PR_STATUS" = "error" ] && [ "$BASELINE_STATUS" != "success" ]; then
+              # Both sides have issues — nothing useful to diff
+              echo 'Unable to generate a diff.'
+
+            elif [ "$DIFF_STATUS" = "no-changes" ]; then
+              echo 'No changes detected in rendered Kubernetes manifests.'
+
+            elif [ "$DIFF_STATUS" = "changes" ]; then
               echo "Changes detected in **${{ steps.diff.outputs.total }}** deployment(s)."
               echo 'Please review before merging.'
               echo ''
@@ -285,16 +398,88 @@ jobs:
               cat affected.md
               echo ''
               cat comment-diff.md
-              echo ''
-              echo '---'
-              echo '*Generated by [ATLAS](https://github.com/max06/atlas) Review*'
+
+            elif [ "$DIFF_STATUS" = "empty" ]; then
+              echo 'No deployments were rendered on either branch.'
             fi
+
+            echo ''
+            echo '---'
+            echo '*Generated by [ATLAS](https://github.com/max06/atlas) Review*'
 
             echo 'ATLAS_EOF'
           } >> "$GITHUB_OUTPUT"
 
       - name: Post or update PR comment
+        if: always() && steps.comment.outputs.body
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: atlas-review
           message: ${{ steps.comment.outputs.body }}
+
+      # ── Job summary: deployment overview for the pipeline run page ─────────
+      - name: Write job summary
+        if: always()
+        run: |
+          BASELINE_STATUS="${{ steps.baseline.outputs.status }}"
+          PR_STATUS="${{ steps.pr.outputs.status }}"
+
+          # Helper: render a helmfile list JSON file as a markdown table.
+          # Extracts cluster, deployment name, release name, namespace, chart, and version.
+          render_table() {
+            local JSON_FILE="$1"
+            if [ ! -f "$JSON_FILE" ] || [ ! -s "$JSON_FILE" ]; then
+              echo '*No data available.*'
+              echo ''
+              return
+            fi
+            jq -r '
+              ["Cluster", "Deployment", "Release", "Namespace", "Chart", "Version"],
+              ["---", "---", "---", "---", "---", "---"],
+              (.[] |
+                (.labels | split(",") | map(select(startswith("cluster:") or startswith("deploymentName:"))
+                  | split(":") | {(.[0]): .[1]}) | add) as $lbl |
+                [ $lbl.cluster, $lbl.deploymentName, .name, .namespace,
+                  (.chart | split("/") | last), (.version | if . == "" then "—" else . end) ]
+              ) | "| " + join(" | ") + " |"
+            ' "$JSON_FILE"
+            echo ''
+          }
+
+          {
+            echo '## ATLAS Review Summary'
+            echo ''
+
+            # ── Target branch ──
+            echo "### Target branch (\`${{ github.event.pull_request.base.ref }}\`)"
+            echo ''
+            if [ "$BASELINE_STATUS" = "missing" ]; then
+              echo '> Helmfile not found on the target branch.'
+            elif [ "$BASELINE_STATUS" = "error" ]; then
+              echo '> :warning: Rendering failed — see step logs for details.'
+              echo ''
+              render_table baseline-list.json
+            else
+              render_table baseline-list.json
+            fi
+
+            # ── PR branch ──
+            echo "### PR branch (\`${{ github.head_ref }}\`)"
+            echo ''
+            if [ "$PR_STATUS" = "error" ]; then
+              echo '> :x: Rendering failed — see step logs for details.'
+              echo ''
+              render_table pr-list.json
+            else
+              render_table pr-list.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Final gate: fail the pipeline if the PR branch had render errors ──
+      - name: Check PR render status
+        if: always()
+        run: |
+          if [ "${{ steps.pr.outputs.status }}" = "error" ]; then
+            echo "::error::PR branch failed to render — see the PR comment for details"
+            exit 1
+          fi
