@@ -1,19 +1,17 @@
-# ATLAS Snapshot Review — Reusable GitHub Actions Workflow
+# ATLAS Review — Reusable GitHub Actions Workflow
 #
-# Compares rendered Kubernetes manifests between the main branch and a pull request.
-# Posts a diff as a PR comment so reviewers can see the impact of deployment changes,
-# organized by cluster and deployment.
+# Compares rendered Kubernetes manifests between the target branch and a pull request.
+# Checks out the target branch first to render a baseline, then checks out the PR branch
+# to render the changed manifests, and posts a diff as a PR comment so reviewers can see
+# the impact of deployment changes, organized by cluster and deployment.
 #
 # Usage in consumer repos:
 #
 #   # .github/workflows/atlas-review.yml
-#   name: ATLAS Snapshot Review
+#   name: ATLAS Review
 #   on:
-#     push:
-#       branches: [main]
 #     pull_request:
 #       branches: [main]
-#     workflow_dispatch:
 #   jobs:
 #     review:
 #       uses: max06/atlas/.github/workflows/snapshot-review.yml@main
@@ -22,10 +20,9 @@
 #       secrets:
 #         sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
 
-name: ATLAS Snapshot Review
+name: ATLAS Review
 
 on:
-  workflow_dispatch:
   workflow_call:
     inputs:
       helmfile-path:
@@ -48,19 +45,15 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  actions: read
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # Push to main: render manifests and store as baseline artifact
+  # Pull request: render baseline from target branch, render PR, diff, comment
   # ────────────────────────────────────────────────────────────────────────────
-  snapshot:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+  review:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Install Helm and Helmfile
         uses: mamezou-tech/setup-helmfile@v2.2.0
         with:
@@ -76,12 +69,24 @@ jobs:
         env:
           SOPS_KEY: ${{ secrets.sops-age-key }}
 
-      - name: Render manifests (with secret redaction)
+      # ── Render baseline from target branch ──────────────────────────────────
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Render baseline manifests
         run: |
           # Render each deployment separately to avoid helmfile's patched_resources.yaml
           # collision issue (https://github.com/roboll/helmfile/issues/2095).
-          # Uses helmfile list to discover deployments, then renders each with --selector.
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
+
+          # Skip baseline render if helmfile doesn't exist on the target branch
+          # (e.g., first PR adding ATLAS to the repo)
+          if [ ! -f "${{ inputs.helmfile-path }}" ]; then
+            echo "Helmfile not found on target branch — skipping baseline render"
+            exit 0
+          fi
 
           # Labels are comma-separated key:value strings — extract cluster and deploymentName
           DEPLOYMENTS=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
@@ -94,46 +99,21 @@ jobs:
           for DEPLOY in $DEPLOYMENTS; do
             CLUSTER="${DEPLOY%%/*}"
             DEPLOYMENT="${DEPLOY#*/}"
-            mkdir -p "snapshot/$CLUSTER/$DEPLOYMENT"
+            mkdir -p "baseline/$CLUSTER/$DEPLOYMENT"
             ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
               --skip-schema-validation \
-              > "snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
+              > "baseline/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
           done
 
-      - name: Upload baseline snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: atlas-snapshot
-          path: snapshot/
-          retention-days: 90
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Pull request: render, diff against baseline, post PR comment
-  # ────────────────────────────────────────────────────────────────────────────
-  review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
+      # ── Render PR manifests ─────────────────────────────────────────────────
+      - name: Checkout PR branch
         uses: actions/checkout@v4
-
-      - name: Install Helm and Helmfile
-        uses: mamezou-tech/setup-helmfile@v2.2.0
         with:
-          helmfile-version: ${{ inputs.helmfile-version }}
-          helm-version: ${{ inputs.helm-version }}
-          install-kubectl: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          clean: false  # Preserve the baseline/ directory from the previous step
 
-      - name: Configure SOPS decryption
-        run: |
-          if [ -n "$SOPS_KEY" ]; then
-            echo "SOPS_AGE_KEY=$SOPS_KEY" >> "$GITHUB_ENV"
-          fi
-        env:
-          SOPS_KEY: ${{ secrets.sops-age-key }}
-
-      - name: Render manifests (with secret redaction)
+      - name: Render PR manifests
         run: |
           # Render each deployment separately to avoid helmfile's patched_resources.yaml
           # collision issue (https://github.com/roboll/helmfile/issues/2095).
@@ -157,32 +137,7 @@ jobs:
               > "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>/dev/null
           done
 
-      - name: Find latest baseline snapshot
-        id: find-baseline
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Find the most recent atlas-snapshot artifact
-          RUN_ID=$(gh api "/repos/${{ github.repository }}/actions/artifacts?name=atlas-snapshot&per_page=1" \
-            --jq '.artifacts[0].workflow_run.id // empty')
-
-          if [ -z "$RUN_ID" ]; then
-            echo "No baseline snapshot found"
-            echo "has-baseline=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run-id=$RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "has-baseline=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download baseline snapshot
-        if: steps.find-baseline.outputs.has-baseline == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: atlas-snapshot
-          path: baseline
-          run-id: ${{ steps.find-baseline.outputs.run-id }}
-          github-token: ${{ github.token }}
-
+      # ── Diff and comment ────────────────────────────────────────────────────
       - name: Generate diff
         id: diff
         run: |
@@ -301,27 +256,26 @@ jobs:
 
             if [ "${{ steps.diff.outputs.status }}" = "no-baseline" ]; then
               cat <<'MSG'
-          ## ATLAS Snapshot Review
+          ## ATLAS Review
 
-          No baseline snapshot found — this is expected for the first run.
-          A baseline will be created after the next push to the default branch.
+          No baseline found on the target branch — all deployments in this PR are new.
 
           ---
-          *Generated by [ATLAS](https://github.com/max06/atlas) Snapshot Review*
+          *Generated by [ATLAS](https://github.com/max06/atlas) Review*
           MSG
 
             elif [ "${{ steps.diff.outputs.status }}" = "no-changes" ]; then
               cat <<'MSG'
-          ## ATLAS Snapshot Review
+          ## ATLAS Review
 
           No changes detected in rendered Kubernetes manifests.
 
           ---
-          *Generated by [ATLAS](https://github.com/max06/atlas) Snapshot Review*
+          *Generated by [ATLAS](https://github.com/max06/atlas) Review*
           MSG
 
             else
-              echo '## ATLAS Snapshot Review'
+              echo '## ATLAS Review'
               echo ''
               echo "Changes detected in **${{ steps.diff.outputs.total }}** deployment(s)."
               echo 'Please review before merging.'
@@ -333,7 +287,7 @@ jobs:
               cat comment-diff.md
               echo ''
               echo '---'
-              echo '*Generated by [ATLAS](https://github.com/max06/atlas) Snapshot Review*'
+              echo '*Generated by [ATLAS](https://github.com/max06/atlas) Review*'
             fi
 
             echo 'ATLAS_EOF'
@@ -342,12 +296,5 @@ jobs:
       - name: Post or update PR comment
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: atlas-snapshot-review
+          header: atlas-review
           message: ${{ steps.comment.outputs.body }}
-
-      - name: Upload PR snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: atlas-pr-snapshot
-          path: pr-snapshot/
-          retention-days: 30
