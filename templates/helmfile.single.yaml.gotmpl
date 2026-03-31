@@ -132,7 +132,7 @@ environments:
 # DEBUG: Deployment definition loaded from {{ .Values.atlas.deployment.deploymentPath }}
 # DEBUG: Apps defined: {{ len $deploymentDefinition.apps }}
 {{- range $deploymentDefinition.apps }}
-#   - template={{ .template }} namespace={{ .namespace }}
+#   - template={{ .template }}{{ if hasKey . "namespace" }} namespace={{ .namespace }}{{ end }}
 {{- end }}
 {{- end }}
 
@@ -191,6 +191,13 @@ environments:
   ) }}
 
   {{- range $release := $template.releases }}
+
+    {{- /* Apply instance-level namespace override from deployment.yaml.
+         If the deployment specifies a namespace, it takes priority over whatever
+         the app template defines. If omitted, the template's namespace is kept. */ -}}
+    {{- if hasKey $instance "namespace" }}
+      {{- $_ := set $release "namespace" $instance.namespace }}
+    {{- end }}
 
     {{- /* Resolve relative file paths in all release list fields that can contain
          file references (values, patches, transformers, secrets). For each field,

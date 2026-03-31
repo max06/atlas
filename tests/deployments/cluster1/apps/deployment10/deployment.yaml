@@ -1,0 +1,5 @@
+apps:
+  - template: app-novals
+settings:
+  branch: main
+  autoSync: false
