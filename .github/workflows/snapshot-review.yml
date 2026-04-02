@@ -165,7 +165,8 @@ jobs:
 
       - name: Test sops decryption
         run: |
-          sops exec-env example.sops.yaml "echo \"This is madness! No, $PIPELINE_TEST\" - Leonidas"
+          sops --version
+          sops exec-env example.sops.yaml 'echo "This is madness! No, $PIPELINE_TEST" - Leonidas'
 
       - name: Render PR manifests
         id: pr
