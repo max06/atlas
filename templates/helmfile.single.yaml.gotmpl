@@ -91,8 +91,11 @@ Output format:
       {{- /* Decrypt the entire SOPS file at once using fetchSecretValue without a key fragment.
            This returns the full decrypted YAML as a string, which fromYaml parses with correct
            types (strings, numbers, booleans, lists, maps). Per-key fetchSecretValue is avoided
-           because it cannot return non-string types in Go templates. */ -}}
-      {{- $sopsRef       := printf "ref+sops://%s" $source }}
+           because it cannot return non-string types in Go templates.
+           The ?format=yaml query parameter is required because vals reconstructs the file path
+           from the URI and can lose the extension, causing SOPS to try JSON parsing instead
+           (see helmfile/helmfile#2001). */ -}}
+      {{- $sopsRef       := printf "ref+sops://%s?format=yaml" $source }}
       {{- $decryptedYaml := fetchSecretValue $sopsRef }}
       {{- $decryptedData := $decryptedYaml | fromYaml }}
       {{- if $redactSecrets }}

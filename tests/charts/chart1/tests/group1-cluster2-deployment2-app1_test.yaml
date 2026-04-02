@@ -105,6 +105,66 @@ tests:
           path: data.values.gotmplFromYaml
           value: fromGlobal
 
+  # --- Group-level gotmpl ---
+
+  - it: should resolve group gotmpl referencing global yaml value
+    asserts:
+      - equal:
+          path: data.values.groupGotmplFromGlobalYaml
+          value: fromGlobal
+
+  - it: should resolve group gotmpl referencing global sops value
+    asserts:
+      - equal:
+          path: data.values.groupGotmplFromGlobalSops
+          value: secretGlobalValue
+
+  # --- Cluster-level gotmpl (grouped cluster) ---
+
+  - it: should resolve cluster gotmpl referencing global yaml value
+    asserts:
+      - equal:
+          path: data.values.clusterGotmplFromGlobalYaml
+          value: fromGlobal
+
+  - it: should resolve cluster gotmpl referencing group yaml value
+    asserts:
+      - equal:
+          path: data.values.clusterGotmplFromGroupYaml
+          value: fromGroup
+
+  - it: should resolve cluster gotmpl referencing group gotmpl value (chained)
+    asserts:
+      - equal:
+          path: data.values.clusterGotmplFromGroupGotmpl
+          value: fromGlobal
+
+  # --- Deployment-level gotmpl (grouped cluster) ---
+
+  - it: should resolve deploy gotmpl referencing global yaml value
+    asserts:
+      - equal:
+          path: data.values.deployGotmplFromGlobalYaml
+          value: fromGlobal
+
+  - it: should resolve deploy gotmpl referencing group yaml value
+    asserts:
+      - equal:
+          path: data.values.deployGotmplFromGroupYaml
+          value: fromGroup
+
+  - it: should resolve deploy gotmpl referencing cluster yaml value
+    asserts:
+      - equal:
+          path: data.values.deployGotmplFromClusterYaml
+          value: fromCluster
+
+  - it: should resolve deploy gotmpl referencing cluster gotmpl value (chained)
+    asserts:
+      - equal:
+          path: data.values.deployGotmplFromClusterGotmpl
+          value: fromGroup
+
   # --- Deep merge ---
 
   - it: should deep merge nested values from global
