@@ -7,7 +7,7 @@ releases:
 
     {{- if .Values.atlas.unittest }}
     unitTests:
-      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}-first_test.yaml
+      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}-{{ .Values.atlas.variant }}-first_test.yaml
     {{- end }}
 
   - name: app-multi-second
@@ -18,5 +18,5 @@ releases:
 
     {{- if .Values.atlas.unittest }}
     unitTests:
-      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}-second_test.yaml
+      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}-{{ .Values.atlas.variant }}-second_test.yaml
     {{- end }}

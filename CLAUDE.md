@@ -12,8 +12,14 @@ The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and
 
 ```bash
 # Run ATLAS unit tests (verifies value inheritance logic using mocked templates/deployments)
-# Requires SOPS_AGE_KEY_FILE to be set for sops decryption tests
-SOPS_AGE_KEY_FILE=tests/sops-secret.txt helmfile -f helmfile.tests.yaml.gotmpl unittest
+helmfile -f helmfile.tests.yaml.gotmpl unittest
+
+# Run redaction integration tests (verifies post-renderer secret redaction)
+# Requires the atlas-redact plugin to be in HELM_PLUGINS path
+./tests/test-redaction.sh
+
+# View value loading trace for debugging
+helmfile -f helmfile.tests.yaml.gotmpl build --debug --selector cluster=cluster1,deploymentName=deployment1
 ```
 
 ## Architecture
@@ -69,8 +75,9 @@ Templates receive an `atlas` values object containing:
 - `cwd` — Absolute working directory path
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
-- `debug` — Enable debug output
 - `unittest` — Enable unit test mode
+- `redactSecrets` — Enable type-aware secret redaction
+- `variant` — Test variant label (defaults to `default`)
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
 
 ## Development Rules

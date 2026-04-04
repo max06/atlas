@@ -260,25 +260,92 @@ ATLAS processes your repository in three steps:
 
 ---
 
-## CI / Snapshot Review
+## Debugging
 
-ATLAS provides a reusable GitHub Actions workflow that compares rendered Kubernetes manifests between the main branch and a pull request. It posts a diff as a PR comment, letting reviewers see the exact impact of deployment changes before merging.
+ATLAS emits a visual trace of the value loading process — showing every file loaded, every key added or overwritten, types, and taint annotations for SOPS secrets. This trace is embedded as YAML comments in the rendered helmfile and is visible via:
+
+```bash
+helmfile build --debug
+```
+
+Example output:
+
+```
+# STORE: Loading global.values.sops.yaml (sops)
+#  + sopsGlobal = "secretGlobalValue" [taint: direct]
+#  + sopsNested: [taint: direct]
+#      + level = "global"
+#      + secretKey = "nestedSecretValue"
+# STORE: Loading global.values.yaml
+#  + globalOnly = "fromGlobal"
+#  + overrideAll = "global"
+# STORE: Loading global.values.yaml.gotmpl (gotmpl)
+#  + gotmplFromSops = "secretGlobalValue" [taint: pointer → sopsGlobal]
+#  ~ gotmplTest = "gotmpl" ← was "yaml"
+# STORE: Loading cluster.values.sops.yaml (sops)
+#  ~ sopsOverride = "cluster" ← was "global" [taint: direct]
+```
+
+Legend:
+- `+` new key
+- `~` overwrite (shows previous value)
+- `[taint: direct]` — value from SOPS-encrypted file
+- `[taint: pointer → key]` — value derived from a tainted key via `.gotmpl` template expression
+- Types annotated: `(bool)`, `(num)` for non-strings
+- Maps expanded recursively with indentation
+- Long strings truncated at 40 characters
+
+To see the trace for a specific deployment, add a selector:
+
+```bash
+helmfile build --debug --selector cluster=staging/cluster-a,deploymentName=my-app
+```
+
+---
+
+## Secret Redaction
+
+ATLAS tracks which values originate from SOPS-encrypted files using **taint tracking**. When `redactSecrets` is enabled, tainted values are redacted in the rendered output based on their type:
+
+| Type | Rule | Replacement |
+|------|------|-------------|
+| String | Always redacted | `REDACTED` |
+| Number >= 5 digits | Redacted (enough entropy) | `0` |
+| Number < 5 digits | Kept (ports, counts) | *(unchanged)* |
+| Boolean | Kept (50/50 odds) | *(unchanged)* |
+
+Taint propagation works across `.gotmpl` files — if a gotmpl value references a tainted key (e.g., `dbUrl: "postgres://{{ .dbPassword }}@..."`), the resulting key inherits the taint and is also redacted.
+
+Enable redaction via the `ATLAS_REDACT_SECRETS` environment variable:
+
+```bash
+ATLAS_REDACT_SECRETS=true helmfile -f helmfile.yaml.gotmpl template
+```
+
+---
+
+## CI / Review Workflow
+
+ATLAS provides a reusable GitHub Actions workflow that compares rendered Kubernetes manifests between the target branch and a pull request. It renders both branches in a single job and posts a diff as a PR comment.
 
 ### How it works
 
-1. **On push to main** — Renders all manifests via `helmfile template`, uploads the output as a baseline artifact.
-2. **On pull request** — Renders manifests from the PR branch, downloads the latest baseline from main, diffs the two, and posts a sticky comment on the PR.
+1. Checks out the **target branch**, renders all manifests as a baseline
+2. Checks out the **PR branch**, renders manifests
+3. Generates per-deployment diffs, posts a sticky PR comment
+
+### Error handling
+
+- **Target branch render errors** — reported as warnings but do not block merging (the PR may be the fix)
+- **PR branch render errors** — reported and fail the pipeline
+- A **job summary** on the pipeline run page shows which deployments were discovered on each branch
 
 ### Setup
 
-Create a workflow file in your repository:
-
 ```yaml
 # .github/workflows/atlas-review.yml
-name: ATLAS Snapshot Review
+name: ATLAS Review
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -291,15 +358,13 @@ jobs:
       sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
 ```
 
-After creating the workflow, push it to main to generate the first baseline snapshot. Subsequent pull requests will show a diff comment.
-
 ### Inputs
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `helmfile-path` | `helmfile.yaml.gotmpl` | Path to the helmfile entry point |
-| `helmfile-version` | latest | Helmfile version to install |
-| `helm-version` | latest | Helm version to install |
+| `helmfile-version` | `v1.4.3` | Helmfile version to install |
+| `helm-version` | `v4.1.3` | Helm version to install |
 
 ### Secrets
 
@@ -307,46 +372,16 @@ After creating the workflow, push it to main to generate the first baseline snap
 |--------|----------|-------------|
 | `sops-age-key` | No | SOPS Age private key for decrypting encrypted value files |
 
-### SOPS Secret Redaction
-
-If your repository uses SOPS-encrypted value files (`*.values.sops.yaml`), the `sops-age-key` secret is **mandatory** — without it, `helmfile template` will fail when it encounters encrypted files. **All decrypted values are automatically redacted** — replaced with `*REDACTED*` in the rendered output — so that secrets are never exposed in PR comments or artifacts. The key structure is preserved, so diffs still show which secret keys were added, removed, or moved, without revealing actual values.
-
-**Recommended: create a dedicated CI age key** rather than reusing a personal or production key:
+If your repository uses SOPS-encrypted value files, the `sops-age-key` secret is **mandatory**. **Recommended: create a dedicated CI age key** rather than reusing a personal or production key:
 
 ```bash
-# Generate a new age key pair for CI
 age-keygen -o ci-key.txt
-# Output: Public key: age1...
 ```
 
-Add the public key as an additional recipient to your `.sops.yaml` creation rules:
-
-```yaml
-creation_rules:
-  - path_regex: values\.sops\.yaml$
-    age: >-
-      age1your-existing-key...,
-      age1your-ci-key...
-```
-
-Re-encrypt all existing SOPS files so they include the new recipient:
+Add the public key as an additional recipient to your `.sops.yaml` and re-encrypt:
 
 ```bash
-# For each encrypted file:
 sops updatekeys deployments/global.values.sops.yaml
 ```
 
-Then store the **private key** (the contents of `ci-key.txt`) as a GitHub repository secret named `SOPS_AGE_KEY`.
-
-This redaction is controlled by the `ATLAS_REDACT_SECRETS` environment variable, which the workflow sets automatically. You can also use it locally:
-
-```bash
-ATLAS_REDACT_SECRETS=true helmfile -f helmfile.yaml.gotmpl template
-```
-
-### What to expect
-
-- **First run**: The PR comment will say "No baseline snapshot found." Push to main first to create a baseline.
-- **No changes**: The comment will confirm no changes were detected.
-- **Changes detected**: The comment shows a collapsible diff with the full rendered output comparison.
-- **Large diffs**: If the diff exceeds GitHub's comment size limit, it is truncated with a note to download the full snapshot artifact.
+Store the private key as a GitHub repository secret named `SOPS_AGE_KEY`.

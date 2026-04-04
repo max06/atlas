@@ -74,6 +74,22 @@ jobs:
       - name: Initialize Helmfile plugins
         run: helmfile init --force
 
+      - name: Install ATLAS post-renderer plugin
+        run: |
+          # Fetch the atlas-redact plugin from the ATLAS repo and register it
+          # with Helm by adding its parent directory to HELM_PLUGINS.
+          PLUGIN_DIR="${RUNNER_TEMP}/atlas-plugins/atlas-redact"
+          mkdir -p "$PLUGIN_DIR"
+          gh api repos/max06/atlas/contents/templates/helm-plugin/atlas-redact \
+            --jq '.[] | "\(.name) \(.download_url)"' | while read -r NAME URL; do
+            curl -fsSL "$URL" -o "$PLUGIN_DIR/$NAME"
+          done
+          chmod +x "$PLUGIN_DIR"/*.sh
+          DEFAULT_PLUGINS=$(helm env HELM_PLUGINS)
+          echo "HELM_PLUGINS=${DEFAULT_PLUGINS}:${RUNNER_TEMP}/atlas-plugins" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Install SOPS
         uses: nhedger/setup-sops@v2
 

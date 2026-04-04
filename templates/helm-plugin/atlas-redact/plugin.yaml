@@ -1,0 +1,8 @@
+apiVersion: v1
+name: "atlas-redact"
+version: "0.1.0"
+type: postrenderer/v1
+runtime: subprocess
+runtimeConfig:
+  platformCommand:
+    - command: "${HELM_PLUGIN_DIR}/atlas-redact.sh"

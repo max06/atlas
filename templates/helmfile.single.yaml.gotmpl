@@ -22,20 +22,14 @@ Output format:
   - Document 1+: One helmfile block per app instance with releases and values.
 */}}
 
-{{- $debug := include "debugEnabled" . | trim | eq "true" }}
-
 {{- /* ====================== BASE VARIABLES ====================== */ -}}
 {{- $basePath := printf "%s/%s" .Values.atlas.cwd .Values.atlas.deploymentDefinitions }}
 {{- $hasGroup := contains "/" .Values.atlas.deployment.cluster }}
 
-{{- if $debug }}
-# DEBUG: === ATLAS DEPLOYMENT RENDERER START ===
-# DEBUG: basePath                  = {{ $basePath }}
-# DEBUG: deployment.cluster        = {{ .Values.atlas.deployment.cluster }}
-# DEBUG: hasGroup                  = {{ $hasGroup }}
-# DEBUG: deployment.deploymentPath = {{ .Values.atlas.deployment.deploymentPath }}
-{{- end }}
-
+# Rendering deployment:
+#   cluster: {{ .Values.atlas.deployment.cluster }}
+#   deploymentName: {{ .Values.atlas.deployment.deploymentName }}
+{{ "" }}
 {{- /* ====================== VALUE SOURCE FILES (priority order) ====================== */ -}}
 {{- /* Each hierarchy level loads up to three files in order: .sops.yaml -> .yaml -> .yaml.gotmpl.
      Later files override earlier ones via mergeOverwrite. SOPS files are detected by filename
@@ -69,50 +63,36 @@ Output format:
   (printf "%s/values.yaml.gotmpl" $deploymentDir)
 )}}
 
-{{- if $debug }}
-# DEBUG: Value sources (later = higher priority):
-{{- range $path := $valueSources }}
-#   - {{ $path }}
-{{- end }}
-{{- end }}
-
-{{- /* ====================== MERGE ALL VALUES (SOPS aware) ====================== */ -}}
-{{- /* When ATLAS_REDACT_SECRETS is set to "true", all values loaded from SOPS-encrypted
-     files are recursively replaced with "*REDACTED*" before merging. This ensures that
-     `helmfile template` output is safe for use in PR comments and other public contexts.
-     The structure of the secrets (key names, nesting) is preserved for meaningful diffs,
-     but actual secret values are never exposed. */ -}}
-{{- $redactSecrets := eq (env "ATLAS_REDACT_SECRETS") "true" }}
-{{- $loadedValues := dict "atlas" .Values.atlas }}
+{{- /* ====================== LOAD AND MERGE VALUES ====================== */ -}}
+{{- /* Initialize the values store with atlas config. The store tracks both values
+     and taint metadata (which keys originated from SOPS-encrypted sources).
+     Values are always loaded with their real content — redaction happens after
+     all template resolution is complete. */ -}}
+{{- $store := include "atlas.store.init" .Values.atlas | fromYaml }}
 
 {{- range $source := $valueSources }}
   {{- if isFile $source }}
     {{- if contains ".sops.yaml" $source }}
-      {{- /* Decrypt the entire SOPS file at once using fetchSecretValue without a key fragment.
-           This returns the full decrypted YAML as a string, which fromYaml parses with correct
-           types (strings, numbers, booleans, lists, maps). Per-key fetchSecretValue is avoided
-           because it cannot return non-string types in Go templates.
-           The ?format=yaml query parameter is required because vals reconstructs the file path
-           from the URI and can lose the extension, causing SOPS to try JSON parsing instead
-           (see helmfile/helmfile#2001). */ -}}
-      {{- $sopsRef       := printf "ref+sops://%s?format=yaml" $source }}
-      {{- $decryptedYaml := fetchSecretValue $sopsRef }}
-      {{- $decryptedData := $decryptedYaml | fromYaml }}
-      {{- if $redactSecrets }}
-        {{- /* Replace all leaf values with "*REDACTED*" to prevent secret exposure.
-             The redacted data preserves the key structure so diffs remain meaningful. */ -}}
-        {{- $decryptedData = include "atlas.redactValues" $decryptedData | fromYaml }}
-      {{- end }}
-      {{- $loadedValues   = mergeOverwrite $loadedValues $decryptedData -}}
+      {{- include "atlas.store.mergeSops" (dict "store" $store "source" $source) }}
+    {{- else if hasSuffix ".gotmpl" $source }}
+      {{- include "atlas.store.mergeTpl" (dict "store" $store "source" $source) }}
     {{- else }}
-      {{- /* Render the file as a Go template (supports .yaml.gotmpl expressions) with
-           $loadedValues as context, so later files can reference values from earlier ones.
-           Plain .yaml files pass through tpl unchanged since they contain no expressions. */ -}}
-      {{- $rendered := tpl (readFile $source) $loadedValues }}
-      {{- $parsed   := fromYaml $rendered }}
-      {{- $loadedValues = mergeOverwrite $loadedValues $parsed }}
+      {{- include "atlas.store.mergeYaml" (dict "store" $store "source" $source) }}
     {{- end }}
   {{- end }}
+{{- end }}
+
+{{- /* Extract the plain values map from the store. Real (unredacted) values are always
+     passed to Helm so chart validations and template logic work correctly. When
+     redactSecrets is enabled, a post-renderer plugin handles redaction on the
+     rendered output instead. */ -}}
+{{- $loadedValues := include "atlas.store.values" $store | fromYaml }}
+
+{{- /* Build the post-renderer args: resolve all tainted keys to a ||-delimited string
+     of their values. Only built when redactSecrets is enabled. */ -}}
+{{- $postRendererArgs := "" }}
+{{- if .Values.atlas.redactSecrets }}
+  {{- $postRendererArgs = include "atlas.store.taintedValues" $store }}
 {{- end }}
 
 {{/* Output the first YAML document: environment values for subsequent documents */}}
@@ -130,14 +110,6 @@ environments:
   {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
 {{- end }}
 {{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $loadedValues | fromYaml }}
-
-{{- if $debug }}
-# DEBUG: Deployment definition loaded from {{ .Values.atlas.deployment.deploymentPath }}
-# DEBUG: Apps defined: {{ len $deploymentDefinition.apps }}
-{{- range $deploymentDefinition.apps }}
-#   - template={{ .template }}{{ if hasKey . "namespace" }} namespace={{ .namespace }}{{ end }}
-{{- end }}
-{{- end }}
 
 {{- /* ====================== RENDER APP TEMPLATES ====================== */ -}}
 {{- /* For each app in the deployment definition:
@@ -182,15 +154,12 @@ environments:
   {{- $tplContext := dict "Values" $instanceValues }}
   {{- $template  := tpl (readFile $templateFile) $tplContext | fromYaml }}
 
-  {{- if $debug }}
-# DEBUG: Rendered app template '{{ $instance.template }}' from {{ $templateFile }}
-  {{- end }}
-
   {{- /* Set commonLabels on the rendered template so every release gets
        cluster and deployment identification labels applied by helmfile. */ -}}
   {{- $_ := set $template "commonLabels" (dict
     "cluster"        $.Values.atlas.deployment.cluster
     "deploymentName" $.Values.atlas.deployment.deploymentName
+    "variant"        $.Values.atlas.variant
   ) }}
 
   {{- range $release := $template.releases }}
@@ -230,6 +199,14 @@ environments:
          Uses $instanceValues (not $loadedValues) so atlas.instance context is included. */ -}}
     {{- $currentValues := $release | get "values" list }}
     {{- $_ := set $release "values" (append $currentValues $instanceValues) }}
+
+    {{- /* Inject the post-renderer for secret redaction when enabled.
+         The atlas-redact Helm plugin receives tainted values as a ||-delimited
+         argument and replaces them in the rendered output based on type rules. */ -}}
+    {{- if $postRendererArgs }}
+      {{- $_ := set $release "postRenderer" "atlas-redact" }}
+      {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
+    {{- end }}
 
   {{- end }}
 

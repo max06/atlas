@@ -7,5 +7,7 @@ helmfiles:
           appTemplates: tests/templates
           deploymentDefinitions: tests/deployments
           cwd: {{ exec "pwd" (list) }}
-          debug: true
+
           unittest: true
+          redactSecrets: {{ eq (env "ATLAS_REDACT_SECRETS") "true" }}
+          variant: default
