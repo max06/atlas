@@ -1,8 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(SOPS_AGE_KEY_FILE=tests/sops-secret.txt helmfile -f helmfile.tests.yaml.gotmpl unittest)",
-      "Bash(helmfile -f helmfile.tests.yaml.gotmpl unittest)",
+      "Bash(bats tests/bats/*)",
       "WebSearch"
     ]
   }

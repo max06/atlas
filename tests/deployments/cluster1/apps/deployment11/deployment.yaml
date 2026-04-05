@@ -1,0 +1,11 @@
+# Fixture: instance-level labels propagate from deployment.yaml into release labels.
+# Verifies that `apps[].labels` merges into the helmfile release state, which is
+# what atlas-template relies on for `bootstrap: true` selector matching.
+apps:
+  - template: app-novals
+    labels:
+      bootstrap: true
+      role: platform
+settings:
+  branch: main
+  autoSync: false

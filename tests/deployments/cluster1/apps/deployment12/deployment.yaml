@@ -1,0 +1,24 @@
+# Fixture: instance-level inline values (apps[].values list in deployment.yaml)
+# merge into the release's values with precedence between template-defaults
+# (below) and hierarchy values (above). Uses the app1 template so we have
+# template-include + template-defaults layers to test against.
+#
+# Expected precedence (established by helmfile.single.yaml.gotmpl):
+#   chart defaults < template-include < template-defaults < instance inline < hierarchy
+#
+# Keys set here to probe each boundary:
+#   - instanceOnly:    unique key — proves instance values are delivered at all
+#   - templateInclude: collides with app1/values.yaml.gotmpl — instance should win
+#   - templateDefault: collides with app1 inline template-defaults — instance should win
+#   - globalOnly:      collides with hierarchy — hierarchy should win over instance
+apps:
+  - template: app1
+    namespace: test
+    values:
+      - instanceOnly: fromInstance
+        templateInclude: fromInstance
+        templateDefault: fromInstance
+        globalOnly: fromInstance
+settings:
+  branch: main
+  autoSync: false

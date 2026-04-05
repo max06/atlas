@@ -11,17 +11,30 @@ The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and
 ## Common Commands
 
 ```bash
-# Run ATLAS unit tests (verifies value inheritance logic using mocked templates/deployments)
-# Requires SOPS_AGE_KEY_FILE to be set for sops decryption tests
-SOPS_AGE_KEY_FILE=tests/sops-secret.txt helmfile -f helmfile.tests.yaml.gotmpl unittest
+# Run bats integration tests (value inheritance, SOPS, instances, multi-template)
+bats tests/bats/
+
+# Render a single deployment for debugging (uses the same entry point as consumer repos,
+# with state-values pointing at the tests/ fixtures)
+helmfile -f helmfile.yaml.gotmpl \
+  --state-values-set atlas.appTemplates=tests/templates \
+  --state-values-set atlas.deploymentDefinitions=tests/deployments \
+  --state-values-set atlas.cwd=$(pwd) \
+  template --skip-schema-validation --selector cluster=cluster1,deploymentName=deployment1
+
+# View value loading trace for debugging
+helmfile -f helmfile.yaml.gotmpl \
+  --state-values-set atlas.appTemplates=tests/templates \
+  --state-values-set atlas.deploymentDefinitions=tests/deployments \
+  --state-values-set atlas.cwd=$(pwd) \
+  build --debug --selector cluster=cluster1,deploymentName=deployment1
 ```
 
 ## Architecture
 
 ### Entry Points
 
-- **helmfile.yaml.gotmpl** — Main entry point for GitOps repositories consuming ATLAS; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values.
-- **helmfile.tests.yaml.gotmpl** — Test entry point for verifying ATLAS's own logic; uses mocked templates (`tests/templates/`) and deployments (`tests/deployments/`) with a testable Helm chart (`tests/charts/chart1/`) to validate value inheritance. The chart's test files (`tests/charts/chart1/tests/`) assert ATLAS's inheritance behavior, not the chart itself.
+- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments.
 
 ### Core Template Pipeline
 
@@ -69,8 +82,8 @@ Templates receive an `atlas` values object containing:
 - `cwd` — Absolute working directory path
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
-- `debug` — Enable debug output
-- `unittest` — Enable unit test mode
+- `redactSecrets` — Enable type-aware secret redaction
+- `variant` — Variant label applied to every rendered resource (defaults to `default`)
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
 
 ## Development Rules

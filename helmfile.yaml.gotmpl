@@ -3,4 +3,7 @@
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
     values:
-      - atlas: {{ .Values.atlas | toYaml | nindent 10 }}
+      - atlas:
+          {{- .Values.atlas | toYaml | nindent 10 }}
+          redactSecrets: {{ eq (env "ATLAS_REDACT_SECRETS") "true" }}
+          variant: default

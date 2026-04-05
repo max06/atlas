@@ -3,8 +3,3 @@ releases:
     chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
     values:
       - aChartValue: overwritten
-
-    {{- if .Values.atlas.unittest }}
-    unitTests:
-      - tests/{{ .Values.atlas.instance.template }}_test.yaml
-    {{- end }}

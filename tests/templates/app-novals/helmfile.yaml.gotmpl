@@ -2,8 +2,3 @@ releases:
   - name: app-novals
     chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
     namespace: test
-
-    {{- if .Values.atlas.unittest }}
-    unitTests:
-      - tests/{{ .Values.atlas.deployment.cluster | replace "/" "-" }}-{{ .Values.atlas.deployment.deploymentName }}-{{ .Values.atlas.instance.name | default .Values.atlas.instance.template }}_test.yaml
-    {{- end }}
