@@ -1,0 +1,55 @@
+# ATLAS internal tests — verifies the inheritance pipeline, SOPS decryption,
+# named instances, and multi-template rendering against the mocked fixtures
+# under tests/deployments/ and tests/templates/.
+#
+# Runs on every push and PR touching test inputs or template code.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    runs-on: ubuntu-latest
+    env:
+      # The SOPS age key lives in the repo (for testing only) — see tests/sops-secret.txt.
+      SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SOPS
+        uses: nhedger/setup-sops@v2
+
+      - name: Install helm
+        uses: Azure/setup-helm@v5
+        with:
+          version: v4.1.3
+
+      - name: Install helmfile
+        uses: helmfile/helmfile-action@v2.4.1
+        with:
+          helmfile-version: v1.4.3
+          helmfile-args: "version"
+
+      - name: Install helmfile plugins
+        run: helmfile init --force
+
+      - name: Install bats and yq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats bats-assert bats-support
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+          bats --version
+
+      - name: Run bats tests
+        run: bats tests/bats/
