@@ -123,7 +123,7 @@ jobs:
             exit 0
           fi
 
-          # Discover deployments — capture stderr for error reporting
+          # Discover deployments — captured for the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
             --output json 2>baseline-stderr.log); then
             echo "::warning::Failed to list deployments on target branch"
@@ -131,44 +131,27 @@ jobs:
             cat baseline-stderr.log
             exit 0  # Non-blocking
           fi
-
-          # Save list output for the job summary
           echo "$DEPLOY_JSON" > baseline-list.json
 
-          DEPLOYMENTS=$(echo "$DEPLOY_JSON" \
-            | jq -r '.[].labels | split(",")
-              | map(select(startswith("cluster:") or startswith("deploymentName:"))
-              | split(":") | {(.[0]): .[1]}) | add
-              | .cluster + "/" + .deploymentName' | sort -u)
-
-          # Render each deployment separately to avoid helmfile's patched_resources.yaml
-          # collision issue (https://github.com/roboll/helmfile/issues/2095).
-          FAILED=""
-          for DEPLOY in $DEPLOYMENTS; do
-            CLUSTER="${DEPLOY%%/*}"
-            DEPLOYMENT="${DEPLOY#*/}"
-            mkdir -p "baseline/$CLUSTER/$DEPLOYMENT"
-            if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-              --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
-              --skip-schema-validation \
-              > "baseline/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>>baseline-stderr.log; then
-              FAILED="${FAILED}${DEPLOY}\n"
-              rm -f "baseline/$CLUSTER/$DEPLOYMENT/manifests.yaml"
-            fi
-          done
+          # Single helmfile template invocation — sub-helmfiles render in parallel
+          # internally, and --output-dir-template keys each release by
+          # cluster/deployment/release so outputs never collide.
+          if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+            --skip-schema-validation \
+            --output-dir baseline \
+            --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+            2>>baseline-stderr.log; then
+            echo "::warning::Baseline render failed"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
 
           # Always print stderr to the pipeline log for debugging
           if [ -s baseline-stderr.log ]; then
             echo "::group::Baseline render output"
             cat baseline-stderr.log
             echo "::endgroup::"
-          fi
-
-          if [ -n "$FAILED" ]; then
-            echo "::warning::Some baseline deployments failed to render"
-            echo "status=error" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
       # ── Render PR manifests ─────────────────────────────────────────────────
@@ -189,7 +172,7 @@ jobs:
         run: |
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
 
-          # Discover deployments — capture stderr for error reporting
+          # Discover deployments — captured for the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
             --output json 2>pr-stderr.log); then
             echo "::error::Failed to list deployments on PR branch"
@@ -197,44 +180,27 @@ jobs:
             cat pr-stderr.log
             exit 0  # Don't fail yet — post the comment first
           fi
-
-          # Save list output for the job summary
           echo "$DEPLOY_JSON" > pr-list.json
 
-          DEPLOYMENTS=$(echo "$DEPLOY_JSON" \
-            | jq -r '.[].labels | split(",")
-              | map(select(startswith("cluster:") or startswith("deploymentName:"))
-              | split(":") | {(.[0]): .[1]}) | add
-              | .cluster + "/" + .deploymentName' | sort -u)
-
-          # Render each deployment separately to avoid helmfile's patched_resources.yaml
-          # collision issue (https://github.com/roboll/helmfile/issues/2095).
-          FAILED=""
-          for DEPLOY in $DEPLOYMENTS; do
-            CLUSTER="${DEPLOY%%/*}"
-            DEPLOYMENT="${DEPLOY#*/}"
-            mkdir -p "pr-snapshot/$CLUSTER/$DEPLOYMENT"
-            if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-              --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
-              --skip-schema-validation \
-              > "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml" 2>>pr-stderr.log; then
-              FAILED="${FAILED}${DEPLOY}\n"
-              rm -f "pr-snapshot/$CLUSTER/$DEPLOYMENT/manifests.yaml"
-            fi
-          done
+          # Single helmfile template invocation — sub-helmfiles render in parallel
+          # internally, and --output-dir-template keys each release by
+          # cluster/deployment/release so outputs never collide.
+          if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+            --skip-schema-validation \
+            --output-dir pr-snapshot \
+            --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+            2>>pr-stderr.log; then
+            echo "::error::PR render failed"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
 
           # Always print stderr to the pipeline log for debugging
           if [ -s pr-stderr.log ]; then
             echo "::group::PR render output"
             cat pr-stderr.log
             echo "::endgroup::"
-          fi
-
-          if [ -n "$FAILED" ]; then
-            echo "::error::Some PR deployments failed to render"
-            echo "status=error" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
       # ── Diff and comment ────────────────────────────────────────────────────
@@ -251,42 +217,62 @@ jobs:
             exit 0
           fi
 
-          # Generate per-deployment diffs by walking the directory structure.
-          # Structure: {dir}/{cluster}/{deploymentName}/manifests.yaml
+          # Generate per-release diffs by walking the directory structure.
+          # --output-dir-template produced: {dir}/{cluster}/{deployment}/{release}/…
+          # For cluster paths that contain a slash (e.g. group1/cluster2), the
+          # path is 4 segments deep instead of 3.
           HAS_CHANGES=false
           COMMENT_BODY=""
           TOTAL_CHANGES=0
           AFFECTED_DEPLOYMENTS=""
 
-          # Collect all cluster/deployment paths from both baseline and PR snapshot
-          DEPLOY_PATHS=$(
-            { find baseline -mindepth 2 -maxdepth 2 -type d 2>/dev/null | sed 's|^baseline/||'; \
-              find pr-snapshot -mindepth 2 -maxdepth 2 -type d 2>/dev/null | sed 's|^pr-snapshot/||'; \
-            } | sort -u
+          # release_paths emits every leaf release directory under $1, stripped
+          # of the top-level prefix. A release dir is the one containing
+          # chart-subdirs (helm template wrote its manifests under a chart name
+          # directly inside it), so we identify releases by finding directories
+          # that themselves contain a directory. Paths are emitted as
+          # {cluster…}/{deployment}/{release}.
+          release_paths() {
+            local root="$1"
+            [ -d "$root" ] || return 0
+            # A release dir is 1 level above the chart dir, which is 1 level
+            # above templates/. Find the deepest directories that contain
+            # only yaml files (the release's chart/templates/ dir's parent).
+            find "$root" -type d -name templates 2>/dev/null | \
+              sed -E "s|^${root}/(.*)/[^/]+/templates\$|\1|" | sort -u
+          }
+
+          # Collect all release paths from both sides (relative to snapshot root).
+          RELEASE_PATHS=$(
+            { release_paths baseline; release_paths pr-snapshot; } | sort -u
           )
 
-          for DEPLOY_PATH in $DEPLOY_PATHS; do
-            BASELINE_FILE="baseline/$DEPLOY_PATH/manifests.yaml"
-            PR_FILE="pr-snapshot/$DEPLOY_PATH/manifests.yaml"
+          # concat_release dumps all yaml files beneath a release dir as a
+          # single multi-doc YAML stream, in a stable order. This is what we
+          # diff — a single-release unit of change.
+          concat_release() {
+            local dir="$1/$2"
+            [ -d "$dir" ] || return 0
+            find "$dir" -name '*.yaml' -type f 2>/dev/null | sort | xargs cat
+          }
+
+          for RELEASE_PATH in $RELEASE_PATHS; do
+            BASELINE_CONTENT=$(concat_release baseline "$RELEASE_PATH")
+            PR_CONTENT=$(concat_release pr-snapshot "$RELEASE_PATH")
 
             # Determine change type
-            if [ ! -f "$BASELINE_FILE" ]; then
+            if [ -z "$BASELINE_CONTENT" ]; then
               CHANGE_TYPE="added"
-            elif [ ! -f "$PR_FILE" ]; then
+            elif [ -z "$PR_CONTENT" ]; then
               CHANGE_TYPE="removed"
             else
               CHANGE_TYPE="modified"
             fi
 
-            # Generate diff for this deployment — compare manifest files directly
-            DEPLOY_DIFF=""
-            if [ "$CHANGE_TYPE" = "added" ]; then
-              DEPLOY_DIFF=$(diff -uN /dev/null "$PR_FILE" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
-            elif [ "$CHANGE_TYPE" = "removed" ]; then
-              DEPLOY_DIFF=$(diff -uN "$BASELINE_FILE" /dev/null --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
-            else
-              DEPLOY_DIFF=$(diff -uN "$BASELINE_FILE" "$PR_FILE" --label "baseline/$DEPLOY_PATH" --label "current/$DEPLOY_PATH" 2>/dev/null || true)
-            fi
+            # diff -uN treats missing-file as empty; feed content via process substitution.
+            DEPLOY_DIFF=$(diff -uN \
+              --label "baseline/$RELEASE_PATH" --label "current/$RELEASE_PATH" \
+              <(printf '%s' "$BASELINE_CONTENT") <(printf '%s' "$PR_CONTENT") 2>/dev/null || true)
 
             # Skip if no actual diff
             if [ -z "$DEPLOY_DIFF" ]; then
@@ -297,9 +283,12 @@ jobs:
             TOTAL_CHANGES=$((TOTAL_CHANGES + 1))
             DIFF_LINES=$(echo "$DEPLOY_DIFF" | wc -l)
 
-            # Extract cluster and deployment name from path
-            CLUSTER=$(dirname "$DEPLOY_PATH")
-            DEPLOYMENT=$(basename "$DEPLOY_PATH")
+            # RELEASE_PATH = {cluster…}/{deployment}/{release}. Split from the right:
+            # last segment = release, second-to-last = deployment, rest = cluster.
+            RELEASE=$(basename "$RELEASE_PATH")
+            REMAINDER=$(dirname "$RELEASE_PATH")
+            DEPLOYMENT=$(basename "$REMAINDER")
+            CLUSTER=$(dirname "$REMAINDER")
 
             # Build a label for the change type
             case "$CHANGE_TYPE" in
@@ -307,7 +296,7 @@ jobs:
               removed) LABEL="removed" ;;
               *)       LABEL="" ;;
             esac
-            HEADER="$CLUSTER / $DEPLOYMENT"
+            HEADER="$CLUSTER / $DEPLOYMENT / $RELEASE"
             if [ -n "$LABEL" ]; then
               HEADER="$HEADER ($LABEL)"
             fi
@@ -379,6 +368,14 @@ jobs:
             if [ "$PR_STATUS" = "error" ]; then
               echo '> [!CAUTION]'
               echo '> **This PR failed to render.** The pipeline will fail — fix the errors below before merging.'
+              echo '>'
+              echo '> To diagnose locally, run:'
+              echo '>'
+              echo '> ```bash'
+              echo "> helmfile -f ${{ inputs.helmfile-path }} template --skip-schema-validation"
+              echo '> ```'
+              echo '>'
+              echo '> If the local render succeeds but CI still fails, please file an issue at <https://github.com/max06/atlas/issues>.'
               echo ''
               if [ -n "$PR_ERRORS" ]; then
                 echo '<details>'
@@ -424,17 +421,17 @@ jobs:
               echo 'No changes detected in rendered Kubernetes manifests.'
 
             elif [ "$DIFF_STATUS" = "changes" ]; then
-              echo "Changes detected in **${{ steps.diff.outputs.total }}** deployment(s)."
+              echo "Changes detected in **${{ steps.diff.outputs.total }}** release(s)."
               echo 'Please review before merging.'
               echo ''
-              echo '### Affected deployments'
+              echo '### Affected releases'
               echo ''
               cat affected.md
               echo ''
               cat comment-diff.md
 
             elif [ "$DIFF_STATUS" = "empty" ]; then
-              echo 'No deployments were rendered on either branch.'
+              echo 'No releases were rendered on either branch.'
             fi
 
             echo ''
