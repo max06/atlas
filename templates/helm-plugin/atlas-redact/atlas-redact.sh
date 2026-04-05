@@ -11,6 +11,17 @@
 #
 # Dependencies: yq (mikefarah/yq v4+), base64.
 
+# (A) Dump what the plugin actually receives, from inside the plugin:
+#     add this as the first line of atlas-redact.sh temporarily
+echo "GOT ARG SIZE: ${#1}" >&2
+printf '%s' "$1" | head -c 80 >&2; echo "..." >&2
+printf '%s' "$1" | tail -c 80 >&2; echo "" >&2
+# then look for odd characters or truncation
+
+# (B) Check helmfile→helm arg handoff:
+helmfile ... template --selector <yours> 2>&1 | head -40
+# see if the stderr mentions the arg anywhere
+
 set -euo pipefail
 
 REPL_B64="${1:-}"
