@@ -1,90 +1,40 @@
 #!/usr/bin/env bash
-# ATLAS post-renderer: redacts tainted secret values in rendered YAML output.
+# ATLAS post-renderer: structurally replaces tainted values in rendered YAML.
 #
 # Receives rendered manifests on stdin, writes redacted manifests to stdout.
-# Arguments are ||-delimited tainted values to redact.
+# The single argument is a base64-encoded JSON document {real: redacted}
+# produced by atlas.diff.values inside templates/helmfile.single.yaml.gotmpl.
+# We walk every scalar leaf in stdin; if its stringified form is a key in the
+# map, we swap it for the corresponding redacted value. Parsing (via yq)
+# rather than text-matching is what lets us handle multi-line block scalars,
+# flow vs. block style, and types uniformly.
 #
-# Redaction rules:
-#   - Strings: always replaced with "REDACTED"
-#   - Numbers >= 5 digits: replaced with "0"
-#   - Numbers < 5 digits: kept (not enough entropy)
-#   - Booleans (true/false): kept (50/50 odds)
-#
-# Replaces longest values first to avoid partial matches.
+# Dependencies: yq (mikefarah/yq v4+), base64.
 
 set -euo pipefail
 
-TAINTED_VALUES="${1:-}"
+REPL_B64="${1:-}"
+INPUT="$(cat)"
 
-# Read rendered YAML from stdin
-INPUT=$(cat)
-
-# If no tainted values, pass through unchanged
-if [ -z "$TAINTED_VALUES" ]; then
-  printf '%s\n' "$INPUT"
+# No replacements → nothing to redact.
+if [ -z "$REPL_B64" ]; then
+  printf '%s' "$INPUT"
   exit 0
 fi
 
-# Split values by || delimiter into an array, deduplicate
-IFS='|' read -ra RAW_VALUES <<< "$TAINTED_VALUES"
-declare -A SEEN
-CLEAN_VALUES=()
-for val in "${RAW_VALUES[@]}"; do
-  # Trim whitespace
-  val="${val#"${val%%[![:space:]]*}"}"
-  val="${val%"${val##*[![:space:]]}"}"
-  [ -z "$val" ] && continue
-  [ "${SEEN[$val]+_}" ] && continue
-  SEEN[$val]=1
-  CLEAN_VALUES+=("$val")
-done
+# Bash's `$(...)` strips trailing newlines from captured output, which would
+# break multi-line real values that end in a newline (e.g. PEM block scalars).
+# Append a sentinel BEFORE capture and peel it off afterward so every byte
+# of the decoded JSON survives intact.
+REPL_TMP="$(printf '%s' "$REPL_B64" | base64 -d; printf X)"
+REPL_JSON="${REPL_TMP%X}"
 
-# Sort by length descending (longest first) to avoid partial replacements
-IFS=$'\n' SORTED=($(for val in "${CLEAN_VALUES[@]}"; do
-  echo "${#val} $val"
-done | sort -t' ' -k1 -rn | sed 's/^[0-9]* //'))
-unset IFS
-
-# Build sed replacement expressions
-SED_ARGS=()
-for val in "${SORTED[@]}"; do
-  # Skip booleans
-  if [ "$val" = "true" ] || [ "$val" = "false" ]; then
-    continue
-  fi
-
-  # Check if it's a number
-  if [[ "$val" =~ ^-?[0-9]*\.?[0-9]+$ ]]; then
-    # Count significant digits (strip minus, decimal point)
-    DIGITS="${val//[-.]}"
-    if [ "${#DIGITS}" -ge 5 ]; then
-      # Redact large numbers
-      ESCAPED=$(printf '%s\n' "$val" | sed 's/[&/\\.^$*+?()[\]{}|]/\\&/g')
-      SED_ARGS+=(-e "s/${ESCAPED}/0/g")
-    fi
-    # Small numbers: skip (keep as-is)
-    continue
-  fi
-
-  # String value: skip very short strings (< 4 chars) which are unlikely to be
-  # meaningful secrets and could cause false positives in replacements.
-  if [ "${#val}" -lt 4 ]; then
-    continue
-  fi
-  ESCAPED=$(printf '%s\n' "$val" | sed 's/[&/\\.^$*+?()[\]{}|]/\\&/g')
-  # Only replace complete YAML values — match the tainted value when it appears
-  # as the entire value after ": " (end of line) or as a list item after "- ".
-  # This prevents substring matches in keys, paths, or longer values.
-  SED_ARGS+=(-e "s/\(: \)${ESCAPED}$/\1REDACTED/g")
-  SED_ARGS+=(-e "s/\(- \)${ESCAPED}$/\1REDACTED/g")
-  # Also handle quoted values (single and double quotes)
-  SED_ARGS+=(-e "s/\(: '\)${ESCAPED}'/\1REDACTED'/g")
-  SED_ARGS+=(-e "s/\(: \"\)${ESCAPED}\"/\1REDACTED\"/g")
-done
-
-# Apply all replacements
-if [ ${#SED_ARGS[@]} -gt 0 ]; then
-  printf '%s\n' "$INPUT" | sed "${SED_ARGS[@]}"
-else
-  printf '%s\n' "$INPUT"
-fi
+# Walk every scalar in the input and replace if a matching key exists in the
+# map. Stringify the scalar for lookup (so int 42 matches a "42" key) — the
+# redacted side already carries the right type shape from atlas.redact.value.
+printf '%s' "$INPUT" | REPL_JSON="$REPL_JSON" yq eval-all '
+  (strenv(REPL_JSON) | from_json) as $repl |
+  (.. | select(tag == "!!str" or tag == "!!int" or tag == "!!float")
+      | select(. as $v | $repl | has($v | tostring))
+  ) |= ($repl[(. | tostring)])
+'

@@ -33,8 +33,9 @@ setup_file() { ensure_rendered_redacted; }
 }
 
 @test "redact d1: sopsString (global string) redacted" {
+  # "hello-from-sops" → segment-preserving redaction around dashes
   run get_path_redacted cluster1 deployment1 app1 .sopsString
-  [ "$output" = "REDACTED" ]
+  [ "$output" = "REDAC-REDA-REDA" ]
 }
 
 @test "redact d1: sopsCluster (cluster string) redacted" {
@@ -53,13 +54,15 @@ setup_file() { ensure_rendered_redacted; }
 }
 
 @test "redact d1: sopsMap.username redacted" {
+  # "admin" (5 alphanumeric chars) → first 5 of "REDACTED"
   run get_path_redacted cluster1 deployment1 app1 .sopsMap.username
-  [ "$output" = "REDACTED" ]
+  [ "$output" = "REDAC" ]
 }
 
 @test "redact d1: sopsMap.password redacted" {
+  # "s3cret!" (6 alphanumeric + "!") → "REDACT!" (6 from REDACTED, "!" preserved)
   run get_path_redacted cluster1 deployment1 app1 .sopsMap.password
-  [ "$output" = "REDACTED" ]
+  [ "$output" = "REDACT!" ]
 }
 
 @test "redact d1: sopsNested.secretKey redacted" {
@@ -194,13 +197,15 @@ setup_file() { ensure_rendered_redacted; }
 }
 
 @test "redact d2: sopsList[0] (group list) redacted" {
+  # "itemOne" (7 alphanumeric chars) → first 7 of "REDACTED"
   run get_path_redacted group1/cluster2 deployment2 app1 '.sopsList[0]'
-  [ "$output" = "REDACTED" ]
+  [ "$output" = "REDACTE" ]
 }
 
 @test "redact d2: sopsList[1] redacted" {
+  # "itemTwo" (7 alphanumeric chars) → first 7 of "REDACTED"
   run get_path_redacted group1/cluster2 deployment2 app1 '.sopsList[1]'
-  [ "$output" = "REDACTED" ]
+  [ "$output" = "REDACTE" ]
 }
 
 @test "redact d2: sopsBoolTrue preserved" {
@@ -257,4 +262,36 @@ setup_file() { ensure_rendered_redacted; }
 @test "redact d8/second: template-defaults multiRelease preserved" {
   run get_path_redacted group1/cluster2 deployment8 app-multi-second .multiRelease
   [ "$output" = "second" ]
+}
+
+# ============================================================================
+# Multi-line values (deployment13) — block-scalar-aware redaction
+# ============================================================================
+
+@test "redact d13: multi-line SOPS secret replaced, preserving block shape" {
+  # Multi-line values get structure-preserving redaction per the atlas.redact
+  # rules: each alphanumeric run becomes REDACTED[:min(len,8)], delimiters
+  # (dashes, spaces, newlines) kept in place. Original content (key bytes,
+  # real PEM markers) must not appear anywhere in the redacted string.
+  run get_path_redacted cluster1 deployment13 app-novals .multilineSecret
+  [[ "$output" != *"BEGIN FAKE"* ]]
+  [[ "$output" != *"MIIE"* ]]
+  [[ "$output" != *"testkey"* ]]
+  [[ "$output" == *"REDACTED"* ]]   # at least one full REDACTED run
+  [[ "$output" == *"-----"* ]]       # dashes preserved
+  [[ "$output" == *$'\n'* ]]         # newlines preserved
+}
+
+@test "redact d13: multi-line plain-yaml value preserved (not tainted)" {
+  run get_path_redacted cluster1 deployment13 app-novals .multilinePlain
+  [[ "$output" == *"first line from plain yaml"* ]]
+  [[ "$output" == *"third line"* ]]
+}
+
+@test "redact d13: multi-line gotmpl value preserved (not tainted)" {
+  # gotmpl file here only references non-SOPS values (globalOnly, clusterOnly),
+  # so the resulting multi-line string inherits no pointer taint.
+  run get_path_redacted cluster1 deployment13 app-novals .multilineGotmpl
+  [[ "$output" == *"line one renders fromGlobal"* ]]
+  [[ "$output" == *"line three is static"* ]]
 }

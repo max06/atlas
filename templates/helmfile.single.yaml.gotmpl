@@ -7,10 +7,16 @@ Atlas Deployment Renderer
 
 Purpose:
   Renders a complete Helmfile for ONE deployment by:
-  1. Loading and merging values from the hierarchy (global -> group -> cluster -> deployment),
-     including SOPS-encrypted files (decrypted via fetchSecretValue).
-  2. Loading the deployment.yaml to discover which app templates to instantiate.
-  3. For each app template:
+  1. Twin-loading the hierarchy (global -> group -> cluster -> deployment):
+       $realValues      — sops values as-is (passed to helm)
+       $redactedValues  — sops values substituted via atlas.redact.value before
+                          merge, so any gotmpl that references a sops key
+                          produces a redacted derivative too (transitive taint
+                          falls out of re-rendering, no separate tracking).
+  2. Deep-comparing $realValues and $redactedValues to build a list of
+     base64-encoded (real, redacted) pairs for the atlas-redact post-renderer.
+  3. Loading the deployment.yaml to discover which app templates to instantiate.
+  4. For each app template:
      - Rendering it as a Go template (so .Values.atlas.* expressions resolve).
      - Resolving relative file paths in the release values list.
      - Appending the hierarchy values as the final (highest priority) values entry.
@@ -63,36 +69,68 @@ Output format:
   (printf "%s/values.yaml.gotmpl" $deploymentDir)
 )}}
 
-{{- /* ====================== LOAD AND MERGE VALUES ====================== */ -}}
-{{- /* Initialize the values store with atlas config. The store tracks both values
-     and taint metadata (which keys originated from SOPS-encrypted sources).
-     Values are always loaded with their real content — redaction happens after
-     all template resolution is complete. */ -}}
-{{- $store := include "atlas.store.init" .Values.atlas | fromYaml }}
+{{- /* ====================== TWIN-LOAD MERGED VALUES ====================== */ -}}
+{{- /* We load the hierarchy TWICE in parallel:
+       $realValues      — sops values decrypted as-is (fed to helm for rendering)
+       $redactedValues  — sops values rewritten via atlas.redact.value before merge,
+                          so any gotmpl downstream that references a sops key produces
+                          a redacted derivative on its own (transitive taint, for free)
+     A deep-compare between the two trees identifies every (real, redacted) pair
+     that needs substitution in the rendered output. Non-sops values appear the
+     same in both trees and emit nothing from the diff. */ -}}
+{{- $realValues     := dict "atlas" .Values.atlas }}
+{{- $redactedValues := dict "atlas" .Values.atlas }}
 
 {{- range $source := $valueSources }}
   {{- if isFile $source }}
     {{- if contains ".sops.yaml" $source }}
-      {{- include "atlas.store.mergeSops" (dict "store" $store "source" $source) }}
-    {{- else if hasSuffix ".gotmpl" $source }}
-      {{- include "atlas.store.mergeTpl" (dict "store" $store "source" $source) }}
+      {{- /* Decrypt once — used in both trees. Real tree gets it verbatim;
+           redacted tree walks the tree and substitutes each leaf via
+           atlas.redact.value. */ -}}
+      {{- $sopsRef       := printf "ref+sops://%s?format=yaml" $source }}
+      {{- $decrypted     := fetchSecretValue $sopsRef | fromYaml }}
+      {{- $realValues    = mergeOverwrite $realValues $decrypted }}
+      {{- $redactedLeaves := index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
+      {{- $redactedValues = mergeOverwrite $redactedValues $redactedLeaves }}
     {{- else }}
-      {{- include "atlas.store.mergeYaml" (dict "store" $store "source" $source) }}
+      {{- /* Both .yaml and .yaml.gotmpl files are rendered through `tpl` so
+           deployments can reference hierarchy values via template
+           expressions. Rendering twice with different contexts is the key
+           trick: any expression that pulls from a sops-derived key yields
+           a redacted result in the redacted tree, exposing transitive taint
+           without any explicit tracking. */ -}}
+      {{- $body              := readFile $source }}
+      {{- $realRendered      := tpl $body $realValues | fromYaml }}
+      {{- $realValues        = mergeOverwrite $realValues $realRendered }}
+      {{- $redactedRendered  := tpl $body $redactedValues | fromYaml }}
+      {{- $redactedValues    = mergeOverwrite $redactedValues $redactedRendered }}
     {{- end }}
   {{- end }}
 {{- end }}
 
-{{- /* Extract the plain values map from the store. Real (unredacted) values are always
-     passed to Helm so chart validations and template logic work correctly. When
-     redactSecrets is enabled, a post-renderer plugin handles redaction on the
-     rendered output instead. */ -}}
-{{- $loadedValues := include "atlas.store.values" $store | fromYaml }}
+{{- /* The real values are what helm sees — schema validations and template
+     logic stay intact. */ -}}
+{{- $loadedValues := $realValues }}
 
-{{- /* Build the post-renderer args: resolve all tainted keys to a ||-delimited string
-     of their values. Only built when redactSecrets is enabled. */ -}}
+{{- /* Build the post-renderer arg: a single base64-encoded JSON document
+     {real: redacted, ...} consumed by the atlas-redact helm plugin. Only
+     populated when redactSecrets is enabled. */ -}}
 {{- $postRendererArgs := "" }}
 {{- if .Values.atlas.redactSecrets }}
-  {{- $postRendererArgs = include "atlas.store.taintedValues" $store }}
+  {{- $replMap := index (include "atlas.diff.values" (dict "real" $realValues "redacted" $redactedValues) | fromJson) "v" }}
+  {{- if gt (len $replMap) 0 }}
+    {{- $postRendererArgs = $replMap | toJson | b64enc }}
+  {{- end }}
+  {{- /* Safety check: the argument is passed to atlas-redact as a single
+       argv entry, subject to the kernel's ARG_MAX limit (~2MB on Linux,
+       shared with the rest of argv+envp). 1 MiB gives comfortable headroom;
+       anything beyond that almost certainly means this deployment has an
+       unusually large number of sops-derived secrets and should be split,
+       or the plugin should switch to a file-based argument scheme. */ -}}
+  {{- if gt (len $postRendererArgs) 1048576 }}
+    {{- $sizeKb := divf (len $postRendererArgs) 1024 }}
+    {{- fail (printf "atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Split this deployment into smaller ones or file an issue at https://github.com/max06/atlas/issues to request a file-based argument scheme. Cluster=%s Deployment=%s" $sizeKb $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName) }}
+  {{- end }}
 {{- end }}
 
 {{/* Output the first YAML document: environment values for subsequent documents */}}
