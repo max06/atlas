@@ -22,13 +22,14 @@ if [ -z "$REPL_B64" ]; then
   exit 0
 fi
 
-# Decode the map directly to a tempfile and let yq's load() read it —
-# load() auto-detects JSON, handles every byte faithfully, and avoids the
-# env-var quoting layer that strenv() sometimes stumbles over with large
-# payloads containing embedded newlines / escape sequences.
+# Decode the map into a tempfile. yq's load() auto-detects the format via
+# YAML parsing, which rejects some valid JSON payloads (it stumbles on
+# certain escape-sequence combinations inside flow-style maps). Convert
+# JSON → YAML upfront using yq's explicit JSON parser so load() below sees
+# native YAML and parses cleanly regardless of content.
 REPL_FILE="$(mktemp)"
 trap 'rm -f "$REPL_FILE"' EXIT
-printf '%s' "$REPL_B64" | base64 -d > "$REPL_FILE"
+printf '%s' "$REPL_B64" | base64 -d | yq -p json -o yaml > "$REPL_FILE"
 
 # Walk every scalar in the input and replace if a matching key exists in the
 # map. Stringify the scalar for lookup (so int 42 matches a "42" key) — the
