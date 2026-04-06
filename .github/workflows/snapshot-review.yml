@@ -276,11 +276,31 @@ jobs:
           release_paths() {
             local root="$1"
             [ -d "$root" ] || return 0
-            # A release dir is 1 level above the chart dir, which is 1 level
-            # above templates/. Find the deepest directories that contain
-            # only yaml files (the release's chart/templates/ dir's parent).
             find "$root" -type d -name templates 2>/dev/null | \
               sed -E "s|^${root}/(.*)/[^/]+/templates\$|\1|" | sort -u
+          }
+
+          # split_resources takes a snapshot root and a release path, then
+          # splits all YAML files for that release into individual resource
+          # files under $out_dir, keyed by "Kind_name.yml". Handles both
+          # single-resource files and multi-doc streams (patched_resources.yaml).
+          # yq's --split-exp writes each YAML document to a separate file
+          # named by the expression result (with .yml appended automatically).
+          split_resources() {
+            local snapshot_root="$1"
+            local release_path="$2"
+            local out_dir="$3"
+            local release_dir="${snapshot_root}/${release_path}"
+            [ -d "$release_dir" ] || return 0
+            mkdir -p "$out_dir"
+
+            # Concatenate all yaml files and split into per-resource files.
+            # cd into out_dir so yq writes files there directly.
+            find "$release_dir" -name '*.yaml' -type f 2>/dev/null | sort | xargs cat | \
+              (cd "$out_dir" && yq eval-all --split-exp '.kind + "_" + .metadata.name' -) 2>/dev/null || true
+
+            # Remove any null_null.yml produced by empty YAML document separators
+            rm -f "${out_dir}/null_null.yml"
           }
 
           # Collect all release paths from both sides (relative to snapshot root).
@@ -288,68 +308,84 @@ jobs:
             { release_paths "$BASELINE_DIR"; release_paths "$PR_DIR"; } | sort -u
           )
 
-          # concat_release dumps all yaml files beneath a release dir as a
-          # single multi-doc YAML stream, in a stable order. This is what we
-          # diff — a single-release unit of change.
-          concat_release() {
-            local dir="$1/$2"
-            [ -d "$dir" ] || return 0
-            find "$dir" -name '*.yaml' -type f 2>/dev/null | sort | xargs cat
-          }
+          SPLIT_DIR="${RUNNER_TEMP}/split-resources"
 
           for RELEASE_PATH in $RELEASE_PATHS; do
-            BASELINE_CONTENT=$(concat_release "$BASELINE_DIR" "$RELEASE_PATH")
-            PR_CONTENT=$(concat_release "$PR_DIR" "$RELEASE_PATH")
-
-            # Determine change type
-            if [ -z "$BASELINE_CONTENT" ]; then
-              CHANGE_TYPE="added"
-            elif [ -z "$PR_CONTENT" ]; then
-              CHANGE_TYPE="removed"
-            else
-              CHANGE_TYPE="modified"
-            fi
-
-            # diff -uN treats missing-file as empty; feed content via process substitution.
-            DEPLOY_DIFF=$(diff -uN \
-              --label "baseline/$RELEASE_PATH" --label "current/$RELEASE_PATH" \
-              <(printf '%s' "$BASELINE_CONTENT") <(printf '%s' "$PR_CONTENT") 2>/dev/null || true)
-
-            # Skip if no actual diff
-            if [ -z "$DEPLOY_DIFF" ]; then
-              continue
-            fi
-
-            HAS_CHANGES=true
-            TOTAL_CHANGES=$((TOTAL_CHANGES + 1))
-            DIFF_LINES=$(echo "$DEPLOY_DIFF" | wc -l)
-
-            # RELEASE_PATH = {cluster…}/{deployment}/{release}. Split from the right:
-            # last segment = release, second-to-last = deployment, rest = cluster.
+            # RELEASE_PATH = {cluster…}/{deployment}/{release}. Split from the right.
             RELEASE=$(basename "$RELEASE_PATH")
             REMAINDER=$(dirname "$RELEASE_PATH")
             DEPLOYMENT=$(basename "$REMAINDER")
             CLUSTER=$(dirname "$REMAINDER")
 
-            # Build a label for the change type
-            case "$CHANGE_TYPE" in
-              added)   LABEL="new" ;;
-              removed) LABEL="removed" ;;
-              *)       LABEL="" ;;
-            esac
-            HEADER="$CLUSTER / $DEPLOYMENT / $RELEASE"
-            if [ -n "$LABEL" ]; then
-              HEADER="$HEADER ($LABEL)"
-            fi
+            # Split both sides into per-resource files
+            BASELINE_SPLIT="${SPLIT_DIR}/baseline/${RELEASE_PATH}"
+            PR_SPLIT="${SPLIT_DIR}/pr/${RELEASE_PATH}"
+            split_resources "$BASELINE_DIR" "$RELEASE_PATH" "$BASELINE_SPLIT"
+            split_resources "$PR_DIR" "$RELEASE_PATH" "$PR_SPLIT"
 
-            AFFECTED_DEPLOYMENTS="${AFFECTED_DEPLOYMENTS}- **${HEADER}**
-            "
+            # Collect all resource keys from both sides
+            RESOURCE_KEYS=$(
+              { [ -d "$BASELINE_SPLIT" ] && ls "$BASELINE_SPLIT" 2>/dev/null; \
+                [ -d "$PR_SPLIT" ] && ls "$PR_SPLIT" 2>/dev/null; } | sort -u
+            )
 
-            # Append to comment body (with size guard)
-            CURRENT_SIZE=${#COMMENT_BODY}
-            DIFF_SIZE=${#DEPLOY_DIFF}
-            if [ $((CURRENT_SIZE + DIFF_SIZE)) -gt 55000 ]; then
-              COMMENT_BODY="${COMMENT_BODY}
+            [ -z "$RESOURCE_KEYS" ] && continue
+
+            for RESOURCE_FILE in $RESOURCE_KEYS; do
+              BASELINE_FILE="${BASELINE_SPLIT}/${RESOURCE_FILE}"
+              PR_FILE="${PR_SPLIT}/${RESOURCE_FILE}"
+
+              BASELINE_CONTENT=""
+              PR_CONTENT=""
+              [ -f "$BASELINE_FILE" ] && BASELINE_CONTENT=$(cat "$BASELINE_FILE")
+              [ -f "$PR_FILE" ] && PR_CONTENT=$(cat "$PR_FILE")
+
+              # Determine change type
+              if [ -z "$BASELINE_CONTENT" ]; then
+                CHANGE_TYPE="added"
+              elif [ -z "$PR_CONTENT" ]; then
+                CHANGE_TYPE="removed"
+              else
+                CHANGE_TYPE="modified"
+              fi
+
+              # Diff this resource
+              RESOURCE_DIFF=$(diff -uN \
+                --label "baseline/$RELEASE_PATH/$RESOURCE_FILE" \
+                --label "current/$RELEASE_PATH/$RESOURCE_FILE" \
+                <(printf '%s' "$BASELINE_CONTENT") <(printf '%s' "$PR_CONTENT") 2>/dev/null || true)
+
+              [ -z "$RESOURCE_DIFF" ] && continue
+
+              HAS_CHANGES=true
+              TOTAL_CHANGES=$((TOTAL_CHANGES + 1))
+              DIFF_LINES=$(echo "$RESOURCE_DIFF" | wc -l)
+
+              # Build a human-readable resource label from the filename (Kind_name.yml).
+              # Only replace the first underscore (kind vs name separator);
+              # resource names themselves may contain underscores.
+              RESOURCE_LABEL="${RESOURCE_FILE%.*}"
+              RESOURCE_LABEL="${RESOURCE_LABEL/_//}"  # Kind_name → Kind/name
+
+              # Build a label for the change type
+              case "$CHANGE_TYPE" in
+                added)   LABEL="new" ;;
+                removed) LABEL="removed" ;;
+                *)       LABEL="" ;;
+              esac
+              HEADER="$CLUSTER / $DEPLOYMENT / $RELEASE / $RESOURCE_LABEL"
+              if [ -n "$LABEL" ]; then
+                HEADER="$HEADER ($LABEL)"
+              fi
+
+              AFFECTED_DEPLOYMENTS="${AFFECTED_DEPLOYMENTS}- **${HEADER}**
+              "
+
+              # Append to comment body (with size guard)
+              CURRENT_SIZE=${#COMMENT_BODY}
+              DIFF_SIZE=${#RESOURCE_DIFF}
+              if [ $((CURRENT_SIZE + DIFF_SIZE)) -gt 55000 ]; then
+                COMMENT_BODY="${COMMENT_BODY}
           <details>
           <summary>${HEADER} (${DIFF_LINES} lines)</summary>
 
@@ -357,18 +393,19 @@ jobs:
 
           </details>
           "
-            else
-              COMMENT_BODY="${COMMENT_BODY}
+              else
+                COMMENT_BODY="${COMMENT_BODY}
           <details>
           <summary>${HEADER} (${DIFF_LINES} lines)</summary>
 
           \`\`\`diff
-          ${DEPLOY_DIFF}
+          ${RESOURCE_DIFF}
           \`\`\`
 
           </details>
           "
-            fi
+              fi
+            done
           done
 
           if [ "$HAS_CHANGES" = true ]; then
