@@ -136,6 +136,7 @@ jobs:
         id: baseline
         run: |
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
+          STDERR_LOG="${RUNNER_TEMP}/baseline-stderr.log"
 
           # If helmfile doesn't exist on the target branch, this is a genuinely new setup
           if [ ! -f "${{ inputs.helmfile-path }}" ]; then
@@ -146,22 +147,23 @@ jobs:
 
           # Discover deployments — captured for the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json 2>baseline-stderr.log); then
+            --output json 2>"$STDERR_LOG"); then
             echo "::warning::Failed to list deployments on target branch"
             echo "status=error" >> "$GITHUB_OUTPUT"
-            cat baseline-stderr.log
+            cat "$STDERR_LOG"
             exit 0  # Non-blocking
           fi
-          echo "$DEPLOY_JSON" > baseline-list.json
+          echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/baseline-list.json"
 
-          # Single helmfile template invocation — sub-helmfiles render in parallel
-          # internally, and --output-dir-template keys each release by
-          # cluster/deployment/release so outputs never collide.
+          # Render into $RUNNER_TEMP so the output survives subsequent checkout
+          # steps (actions/checkout wipes untracked files in the workspace even
+          # with clean: false).
+          BASELINE_DIR="${RUNNER_TEMP}/baseline"
           if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
             --skip-schema-validation \
-            --output-dir baseline \
+            --output-dir "$BASELINE_DIR" \
             --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-            2>>baseline-stderr.log; then
+            2>>"$STDERR_LOG"; then
             echo "::warning::Baseline render failed"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
@@ -169,9 +171,9 @@ jobs:
           fi
 
           # Always print stderr to the pipeline log for debugging
-          if [ -s baseline-stderr.log ]; then
+          if [ -s "$STDERR_LOG" ]; then
             echo "::group::Baseline render output"
-            cat baseline-stderr.log
+            cat "$STDERR_LOG"
             echo "::endgroup::"
           fi
 
@@ -186,7 +188,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          clean: false # Preserve the baseline/ directory from the previous step
+          clean: false
         continue-on-error: true
 
       - name: Fallback to PR branch if merge ref unavailable
@@ -201,25 +203,26 @@ jobs:
         run: |
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
           MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
+          STDERR_LOG="${RUNNER_TEMP}/pr-stderr.log"
 
           # Discover deployments — captured for the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json 2>pr-stderr.log); then
+            --output json 2>"$STDERR_LOG"); then
             echo "::error::Failed to list deployments on merge result"
             echo "status=error" >> "$GITHUB_OUTPUT"
-            cat pr-stderr.log
+            cat "$STDERR_LOG"
             exit 0  # Don't fail yet — post the comment first
           fi
-          echo "$DEPLOY_JSON" > pr-list.json
+          echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/pr-list.json"
 
-          # Single helmfile template invocation — sub-helmfiles render in parallel
-          # internally, and --output-dir-template keys each release by
-          # cluster/deployment/release so outputs never collide.
+          # Render into $RUNNER_TEMP so the output is co-located with the
+          # baseline snapshot (both outside the workspace).
+          PR_DIR="${RUNNER_TEMP}/pr-snapshot"
           if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
             --skip-schema-validation \
-            --output-dir pr-snapshot \
+            --output-dir "$PR_DIR" \
             --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-            2>>pr-stderr.log; then
+            2>>"$STDERR_LOG"; then
             echo "::error::Merge-result render failed"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
@@ -232,41 +235,23 @@ jobs:
           fi
 
           # Always print stderr to the pipeline log for debugging
-          if [ -s pr-stderr.log ]; then
+          if [ -s "$STDERR_LOG" ]; then
             echo "::group::Merge-result render output"
-            cat pr-stderr.log
+            cat "$STDERR_LOG"
             echo "::endgroup::"
           fi
 
       # ── Diff and comment ────────────────────────────────────────────────────
-      - name: Debug snapshot directories
-        if: always()
-        run: |
-          echo "::group::Workspace contents"
-          echo "Working directory: $(pwd)"
-          echo ""
-          echo "=== baseline/ ==="
-          if [ -d baseline ]; then
-            find baseline -type f | head -20
-          else
-            echo "Directory does not exist"
-          fi
-          echo ""
-          echo "=== pr-snapshot/ ==="
-          if [ -d pr-snapshot ]; then
-            find pr-snapshot -type f | head -20
-          else
-            echo "Directory does not exist"
-          fi
-          echo "::endgroup::"
-
       - name: Generate diff
         id: diff
         run: |
+          BASELINE_DIR="${RUNNER_TEMP}/baseline"
+          PR_DIR="${RUNNER_TEMP}/pr-snapshot"
+
           HAS_BASELINE=false
           HAS_PR=false
-          [ -d baseline ] && [ -n "$(ls -A baseline 2>/dev/null)" ] && HAS_BASELINE=true
-          [ -d pr-snapshot ] && [ -n "$(ls -A pr-snapshot 2>/dev/null)" ] && HAS_PR=true
+          [ -d "$BASELINE_DIR" ] && [ -n "$(ls -A "$BASELINE_DIR" 2>/dev/null)" ] && HAS_BASELINE=true
+          [ -d "$PR_DIR" ] && [ -n "$(ls -A "$PR_DIR" 2>/dev/null)" ] && HAS_PR=true
 
           if [ "$HAS_BASELINE" = false ] && [ "$HAS_PR" = false ]; then
             echo "status=empty" >> "$GITHUB_OUTPUT"
@@ -300,7 +285,7 @@ jobs:
 
           # Collect all release paths from both sides (relative to snapshot root).
           RELEASE_PATHS=$(
-            { release_paths baseline; release_paths pr-snapshot; } | sort -u
+            { release_paths "$BASELINE_DIR"; release_paths "$PR_DIR"; } | sort -u
           )
 
           # concat_release dumps all yaml files beneath a release dir as a
@@ -313,8 +298,8 @@ jobs:
           }
 
           for RELEASE_PATH in $RELEASE_PATHS; do
-            BASELINE_CONTENT=$(concat_release baseline "$RELEASE_PATH")
-            PR_CONTENT=$(concat_release pr-snapshot "$RELEASE_PATH")
+            BASELINE_CONTENT=$(concat_release "$BASELINE_DIR" "$RELEASE_PATH")
+            PR_CONTENT=$(concat_release "$PR_DIR" "$RELEASE_PATH")
 
             # Determine change type
             if [ -z "$BASELINE_CONTENT" ]; then
@@ -391,8 +376,8 @@ jobs:
             echo "total=$TOTAL_CHANGES" >> "$GITHUB_OUTPUT"
 
             # Write comment body and affected list to files (too large for GITHUB_OUTPUT)
-            echo "$COMMENT_BODY" > comment-diff.md
-            echo "$AFFECTED_DEPLOYMENTS" > affected.md
+            echo "$COMMENT_BODY" > "${RUNNER_TEMP}/comment-diff.md"
+            echo "$AFFECTED_DEPLOYMENTS" > "${RUNNER_TEMP}/affected.md"
           else
             echo "status=no-changes" >> "$GITHUB_OUTPUT"
           fi
@@ -409,11 +394,11 @@ jobs:
           # Read error logs if they exist (truncate to keep comment reasonable)
           BASELINE_ERRORS=""
           PR_ERRORS=""
-          if [ -f baseline-stderr.log ] && [ -s baseline-stderr.log ]; then
-            BASELINE_ERRORS=$(tail -50 baseline-stderr.log)
+          if [ -f "${RUNNER_TEMP}/baseline-stderr.log" ] && [ -s "${RUNNER_TEMP}/baseline-stderr.log" ]; then
+            BASELINE_ERRORS=$(tail -50 "${RUNNER_TEMP}/baseline-stderr.log")
           fi
-          if [ -f pr-stderr.log ] && [ -s pr-stderr.log ]; then
-            PR_ERRORS=$(tail -50 pr-stderr.log)
+          if [ -f "${RUNNER_TEMP}/pr-stderr.log" ] && [ -s "${RUNNER_TEMP}/pr-stderr.log" ]; then
+            PR_ERRORS=$(tail -50 "${RUNNER_TEMP}/pr-stderr.log")
           fi
 
           {
@@ -490,9 +475,9 @@ jobs:
               echo ''
               echo '### Affected releases'
               echo ''
-              cat affected.md
+              cat "${RUNNER_TEMP}/affected.md"
               echo ''
-              cat comment-diff.md
+              cat "${RUNNER_TEMP}/comment-diff.md"
 
             elif [ "$DIFF_STATUS" = "empty" ]; then
               echo 'No releases were rendered on either side. Check your helmfile configuration if this is unexpected.'
@@ -553,9 +538,9 @@ jobs:
             elif [ "$BASELINE_STATUS" = "error" ]; then
               echo '> :warning: Rendering failed — see step logs for details.'
               echo ''
-              render_table baseline-list.json
+              render_table "${RUNNER_TEMP}/baseline-list.json"
             else
-              render_table baseline-list.json
+              render_table "${RUNNER_TEMP}/baseline-list.json"
             fi
 
             # ── Merge result ──
@@ -564,9 +549,9 @@ jobs:
             if [ "$PR_STATUS" = "error" ]; then
               echo '> :x: Rendering failed — see step logs for details.'
               echo ''
-              render_table pr-list.json
+              render_table "${RUNNER_TEMP}/pr-list.json"
             else
-              render_table pr-list.json
+              render_table "${RUNNER_TEMP}/pr-list.json"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
