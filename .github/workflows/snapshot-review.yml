@@ -1,15 +1,34 @@
 # ATLAS Review — Reusable GitHub Actions Workflow
 #
-# Compares rendered Kubernetes manifests between the target branch and a pull request.
-# Checks out the target branch first to render a baseline, then checks out the PR branch
-# to render the changed manifests, and posts a diff as a PR comment so reviewers can see
-# the impact of deployment changes, organized by cluster and deployment.
+# Compares rendered Kubernetes manifests between the current target branch HEAD
+# and the merge result of a pull request. This "merge-result" strategy answers
+# the question: "If I hit merge right now, what changes in the rendered output?"
+#
+# Why merge-result instead of branch-origin (base.sha)?
+#
+#   A naive approach checks out the commit the PR branched from (base.sha) as
+#   the baseline. That works when main hasn't moved, but becomes misleading as
+#   soon as other PRs merge:
+#
+#   - Template or value changes merged to main after the PR was created affect
+#     rendered output but won't appear in a base.sha diff. A reviewer sees a
+#     clean diff that hides real-world impact.
+#   - Conversely, comparing the PR branch directly against the current target
+#     HEAD shows new deployments added to main as "removed" in the PR — false
+#     noise that drowns out real changes.
+#
+#   The merge-result approach avoids both problems:
+#     Baseline = target branch HEAD  (what is deployed right now)
+#     PR side  = merge result        (what will be deployed after merging)
+#   GitHub maintains a trial merge ref (refs/pull/<number>/merge) that combines
+#   the PR branch with the current target HEAD. If that merge has conflicts,
+#   the ref is absent and we fall back to the PR branch with a warning.
 #
 # Error handling:
-#   - Baseline (target branch) render errors are reported as warnings but do NOT block
-#     merging, since the PR itself may be the fix for a broken target branch.
-#   - PR branch render errors are reported and FAIL the pipeline, since we cannot verify
-#     the PR produces valid manifests.
+#   - Baseline (target HEAD) render errors are reported as warnings but do NOT
+#     block merging, since the PR itself may be the fix for a broken target.
+#   - Merge-result render errors are reported and FAIL the pipeline, since we
+#     cannot verify the PR produces valid manifests.
 #
 # Usage in consumer repos:
 #
@@ -54,7 +73,7 @@ permissions:
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # Pull request: render baseline from target branch, render PR, diff, comment
+  # Pull request: render baseline from target HEAD, render merge result, diff
   # ────────────────────────────────────────────────────────────────────────────
   review:
     if: github.event_name == 'pull_request'
@@ -104,12 +123,14 @@ jobs:
         env:
           SOPS_KEY: ${{ secrets.sops-age-key }}
 
-      # ── Render baseline from target branch ──────────────────────────────────
+      # ── Render baseline from current target branch HEAD ─────────────────────
+      # Uses the live HEAD of the target branch (not the frozen base.sha) so the
+      # baseline reflects what is currently deployed / on main.
       # Errors here are non-blocking: the PR may be fixing a broken target branch.
-      - name: Checkout target branch
+      - name: Checkout target branch HEAD
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
 
       - name: Render baseline manifests
         id: baseline
@@ -154,28 +175,42 @@ jobs:
             echo "::endgroup::"
           fi
 
-      # ── Render PR manifests ─────────────────────────────────────────────────
-      # Errors here are blocking: the PR must produce valid manifests.
-      - name: Checkout PR branch
+      # ── Render merge result ──────────────────────────────────────────────────
+      # Check out the trial merge ref that GitHub maintains for every PR. This
+      # is the result of merging the PR branch into the current target HEAD —
+      # exactly what will be deployed if the PR is merged. If the merge ref is
+      # unavailable (e.g., merge conflicts), we fall back to the PR branch and
+      # warn the reviewer.
+      - name: Checkout merge result
+        id: merge-checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          clean: false # Preserve the baseline/ directory from the previous step
+        continue-on-error: true
+
+      - name: Fallback to PR branch if merge ref unavailable
+        if: steps.merge-checkout.outcome == 'failure'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          clean: false # Preserve the baseline/ directory from the previous step
+          clean: false
 
       - name: Test sops decryption
         run: |
           sops --version
           sops exec-env example.sops.yaml 'echo "This is madness! No, $PIPELINE_TEST" - Leonidas'
 
-      - name: Render PR manifests
+      - name: Render merge-result manifests
         id: pr
         run: |
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
+          MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
 
           # Discover deployments — captured for the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
             --output json 2>pr-stderr.log); then
-            echo "::error::Failed to list deployments on PR branch"
+            echo "::error::Failed to list deployments on merge result"
             echo "status=error" >> "$GITHUB_OUTPUT"
             cat pr-stderr.log
             exit 0  # Don't fail yet — post the comment first
@@ -190,15 +225,20 @@ jobs:
             --output-dir pr-snapshot \
             --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
             2>>pr-stderr.log; then
-            echo "::error::PR render failed"
+            echo "::error::Merge-result render failed"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
             echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
+          # Flag when we fell back to the raw PR branch (merge ref unavailable)
+          if [ "$MERGE_FALLBACK" = "true" ]; then
+            echo "merge_fallback=true" >> "$GITHUB_OUTPUT"
+          fi
+
           # Always print stderr to the pipeline log for debugging
           if [ -s pr-stderr.log ]; then
-            echo "::group::PR render output"
+            echo "::group::Merge-result render output"
             cat pr-stderr.log
             echo "::endgroup::"
           fi
@@ -348,6 +388,7 @@ jobs:
           BASELINE_STATUS="${{ steps.baseline.outputs.status }}"
           PR_STATUS="${{ steps.pr.outputs.status }}"
           DIFF_STATUS="${{ steps.diff.outputs.status }}"
+          MERGE_FALLBACK="${{ steps.pr.outputs.merge_fallback }}"
 
           # Read error logs if they exist (truncate to keep comment reasonable)
           BASELINE_ERRORS=""
@@ -364,7 +405,7 @@ jobs:
             echo '## ATLAS Review'
             echo ''
 
-            # ── PR branch render error (blocking) ──
+            # ── Merge-result render error (blocking) ──
             if [ "$PR_STATUS" = "error" ]; then
               echo '> [!CAUTION]'
               echo '> **This PR failed to render.** The pipeline will fail — fix the errors below before merging.'
@@ -379,7 +420,7 @@ jobs:
               echo ''
               if [ -n "$PR_ERRORS" ]; then
                 echo '<details>'
-                echo '<summary>Render errors (PR branch)</summary>'
+                echo '<summary>Render errors (merge result)</summary>'
                 echo ''
                 echo '```'
                 echo "$PR_ERRORS"
@@ -388,6 +429,13 @@ jobs:
                 echo '</details>'
                 echo ''
               fi
+            fi
+
+            # ── Merge ref fallback warning ──
+            if [ "$MERGE_FALLBACK" = "true" ]; then
+              echo '> [!WARNING]'
+              echo '> **Merge ref unavailable** — this likely means the PR has merge conflicts with the target branch. The diff below was generated from the PR branch alone and may not reflect the actual merge result. Please rebase or merge the target branch into your PR.'
+              echo ''
             fi
 
             # ── Baseline render error or missing (non-blocking) ──
@@ -494,8 +542,8 @@ jobs:
               render_table baseline-list.json
             fi
 
-            # ── PR branch ──
-            echo "### PR branch (\`${{ github.head_ref }}\`)"
+            # ── Merge result ──
+            echo "### Merge result (\`${{ github.head_ref }}\` → \`${{ github.event.pull_request.base.ref }}\`)"
             echo ''
             if [ "$PR_STATUS" = "error" ]; then
               echo '> :x: Rendering failed — see step logs for details.'
@@ -506,11 +554,11 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # ── Final gate: fail the pipeline if the PR branch had render errors ──
-      - name: Check PR render status
+      # ── Final gate: fail the pipeline if the merge result had render errors ──
+      - name: Check merge-result render status
         if: always()
         run: |
           if [ "${{ steps.pr.outputs.status }}" = "error" ]; then
-            echo "::error::PR branch failed to render — see the PR comment for details"
+            echo "::error::Merge result failed to render — see the PR comment for details"
             exit 1
           fi
