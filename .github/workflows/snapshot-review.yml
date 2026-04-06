@@ -553,8 +553,6 @@ jobs:
               fi
               echo '### Affected releases'
               echo ''
-              cat "${RUNNER_TEMP}/affected.md"
-              echo ''
               cat "${RUNNER_TEMP}/comment-diff.md"
 
             elif [ "$DIFF_STATUS" = "empty" ]; then
