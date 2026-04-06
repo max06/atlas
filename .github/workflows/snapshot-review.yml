@@ -264,8 +264,11 @@ jobs:
           # path is 4 segments deep instead of 3.
           HAS_CHANGES=false
           COMMENT_BODY=""
+          SUMMARY_BODY=""
           TOTAL_CHANGES=0
+          TOTAL_RELEASES=0
           AFFECTED_DEPLOYMENTS=""
+          HAS_TRUNCATION=false
 
           # release_paths emits every leaf release directory under $1, stripped
           # of the top-level prefix. A release dir is the one containing
@@ -316,6 +319,7 @@ jobs:
             REMAINDER=$(dirname "$RELEASE_PATH")
             DEPLOYMENT=$(basename "$REMAINDER")
             CLUSTER=$(dirname "$REMAINDER")
+            RELEASE_HEADER="$CLUSTER / $DEPLOYMENT / $RELEASE"
 
             # Split both sides into per-resource files
             BASELINE_SPLIT="${SPLIT_DIR}/baseline/${RELEASE_PATH}"
@@ -330,6 +334,12 @@ jobs:
             )
 
             [ -z "$RESOURCE_KEYS" ] && continue
+
+            # Accumulate per-resource diffs for this release, then wrap them
+            # in a single outer <details> block grouped by release.
+            RELEASE_BODY=""
+            RELEASE_SUMMARY_BODY=""
+            RELEASE_RESOURCE_COUNT=0
 
             for RESOURCE_FILE in $RESOURCE_KEYS; do
               BASELINE_FILE="${BASELINE_SPLIT}/${RESOURCE_FILE}"
@@ -357,7 +367,7 @@ jobs:
 
               [ -z "$RESOURCE_DIFF" ] && continue
 
-              HAS_CHANGES=true
+              RELEASE_RESOURCE_COUNT=$((RELEASE_RESOURCE_COUNT + 1))
               TOTAL_CHANGES=$((TOTAL_CHANGES + 1))
               DIFF_LINES=$(echo "$RESOURCE_DIFF" | wc -l)
 
@@ -369,34 +379,15 @@ jobs:
 
               # Build a label for the change type
               case "$CHANGE_TYPE" in
-                added)   LABEL="new" ;;
-                removed) LABEL="removed" ;;
+                added)   LABEL=" (new)" ;;
+                removed) LABEL=" (removed)" ;;
                 *)       LABEL="" ;;
               esac
-              HEADER="$CLUSTER / $DEPLOYMENT / $RELEASE / $RESOURCE_LABEL"
-              if [ -n "$LABEL" ]; then
-                HEADER="$HEADER ($LABEL)"
-              fi
 
-              AFFECTED_DEPLOYMENTS="${AFFECTED_DEPLOYMENTS}- **${HEADER}**
-              "
-
-              # Append to comment body (with size guard)
-              CURRENT_SIZE=${#COMMENT_BODY}
-              DIFF_SIZE=${#RESOURCE_DIFF}
-              if [ $((CURRENT_SIZE + DIFF_SIZE)) -gt 55000 ]; then
-                COMMENT_BODY="${COMMENT_BODY}
+              # Full diff block for the job summary (no size limit concerns)
+              DIFF_BLOCK="
           <details>
-          <summary>${HEADER} (${DIFF_LINES} lines)</summary>
-
-          > Diff truncated — too large for PR comment.
-
-          </details>
-          "
-              else
-                COMMENT_BODY="${COMMENT_BODY}
-          <details>
-          <summary>${HEADER} (${DIFF_LINES} lines)</summary>
+          <summary>${RESOURCE_LABEL}${LABEL} (${DIFF_LINES} lines)</summary>
 
           \`\`\`diff
           ${RESOURCE_DIFF}
@@ -404,17 +395,62 @@ jobs:
 
           </details>
           "
+              RELEASE_SUMMARY_BODY="${RELEASE_SUMMARY_BODY}${DIFF_BLOCK}"
+
+              # PR comment version — truncate if adding this diff would exceed
+              # the GitHub comment size limit (~65 KB, we cap at 55 KB).
+              CURRENT_SIZE=$(( ${#COMMENT_BODY} + ${#RELEASE_BODY} ))
+              DIFF_SIZE=${#RESOURCE_DIFF}
+              if [ $((CURRENT_SIZE + DIFF_SIZE)) -gt 55000 ]; then
+                HAS_TRUNCATION=true
+                RELEASE_BODY="${RELEASE_BODY}
+
+          - ${RESOURCE_LABEL}${LABEL} (${DIFF_LINES} lines, truncated)
+          "
+              else
+                RELEASE_BODY="${RELEASE_BODY}${DIFF_BLOCK}"
               fi
             done
+
+            # Only emit a release section if it had changed resources
+            if [ "$RELEASE_RESOURCE_COUNT" -gt 0 ]; then
+              HAS_CHANGES=true
+              TOTAL_RELEASES=$((TOTAL_RELEASES + 1))
+              AFFECTED_DEPLOYMENTS="$(printf '%s\n%s' "$AFFECTED_DEPLOYMENTS" "- **${RELEASE_HEADER}** (${RELEASE_RESOURCE_COUNT} resources)")"
+
+              # Wrap all resource diffs in an outer release-level <details>
+              COMMENT_BODY="${COMMENT_BODY}
+          <details>
+          <summary>${RELEASE_HEADER} (${RELEASE_RESOURCE_COUNT} resources)</summary>
+
+          ${RELEASE_BODY}
+
+          </details>
+          "
+              SUMMARY_BODY="${SUMMARY_BODY}
+          <details>
+          <summary>${RELEASE_HEADER} (${RELEASE_RESOURCE_COUNT} resources)</summary>
+
+          ${RELEASE_SUMMARY_BODY}
+
+          </details>
+          "
+            fi
           done
 
           if [ "$HAS_CHANGES" = true ]; then
             echo "status=changes" >> "$GITHUB_OUTPUT"
             echo "total=$TOTAL_CHANGES" >> "$GITHUB_OUTPUT"
+            echo "releases=$TOTAL_RELEASES" >> "$GITHUB_OUTPUT"
 
             # Write comment body and affected list to files (too large for GITHUB_OUTPUT)
             echo "$COMMENT_BODY" > "${RUNNER_TEMP}/comment-diff.md"
             echo "$AFFECTED_DEPLOYMENTS" > "${RUNNER_TEMP}/affected.md"
+            echo "$SUMMARY_BODY" > "${RUNNER_TEMP}/summary-diff.md"
+
+            if [ "$HAS_TRUNCATION" = true ]; then
+              echo "truncated=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "status=no-changes" >> "$GITHUB_OUTPUT"
           fi
@@ -507,9 +543,14 @@ jobs:
               echo 'No changes detected in rendered Kubernetes manifests.'
 
             elif [ "$DIFF_STATUS" = "changes" ]; then
-              echo "Changes detected in **${{ steps.diff.outputs.total }}** release(s)."
+              echo "Changes detected in **${{ steps.diff.outputs.total }}** resource(s) across **${{ steps.diff.outputs.releases }}** release(s)."
               echo 'Please review before merging.'
               echo ''
+              if [ "${{ steps.diff.outputs.truncated }}" = "true" ]; then
+                echo "> [!NOTE]"
+                echo "> Some diffs were truncated to fit the PR comment size limit. See the [job summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for the full output."
+                echo ''
+              fi
               echo '### Affected releases'
               echo ''
               cat "${RUNNER_TEMP}/affected.md"
@@ -589,6 +630,13 @@ jobs:
               render_table "${RUNNER_TEMP}/pr-list.json"
             else
               render_table "${RUNNER_TEMP}/pr-list.json"
+            fi
+
+            # ── Full diff (untruncated) ──
+            if [ -f "${RUNNER_TEMP}/summary-diff.md" ] && [ -s "${RUNNER_TEMP}/summary-diff.md" ]; then
+              echo '### Manifest diff'
+              echo ''
+              cat "${RUNNER_TEMP}/summary-diff.md"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
