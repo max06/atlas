@@ -50,61 +50,22 @@ fi
 # Walk every scalar in the input and replace if a matching key exists in the
 # map. Stringify the scalar for lookup (so int 42 matches a "42" key) — the
 # redacted side already carries the right type shape from atlas.redact.value.
-YQ_OUT="$(printf '%s' "$INPUT" | yq eval-all '
-  (load("'"$REPL_FILE"'")) as $repl |
+#
+# We use `eval` (not `eval-all`) so each YAML document in the multi-doc
+# stream is processed independently. `eval-all` merges all documents into
+# one context; combined with the recursive `..` descent, that causes cross-
+# document leakage and output explosion on larger manifests. The replacement
+# map is loaded via strenv() → from_yaml inline — no load(), no eval-all.
+REPL_YAML="$(cat "$REPL_FILE")"
+OUTPUT="$(printf '%s' "$INPUT" | REPL="$REPL_YAML" yq eval '
+  (strenv(REPL) | from_yaml) as $repl |
   (.. | select(tag == "!!str" or tag == "!!int" or tag == "!!float")
       | select(. as $v | $repl | has($v | tostring))
   ) |= ($repl[(. | tostring)])
 ')" || {
-  echo "atlas-redact: yq eval-all failed on input stream" >&2
+  echo "atlas-redact: yq eval failed on input stream" >&2
   exit 1
 }
-
-# yq strips trailing whitespace from every line, including "empty" lines
-# inside block scalars (`|`, `|-`, `|+`, `>`, `>-`, `>+`). That output is
-# spec-valid YAML, but helm's downstream manifest-merge step choked on the
-# zero-width empty lines, reporting parse errors inside unrelated ConfigMaps.
-# Restore the content indentation on empty lines within block scalars so the
-# stream matches the shape helm originally emitted.
-OUTPUT="$(printf '%s\n' "$YQ_OUT" | awk '
-  BEGIN { in_block = 0; content_indent = -1 }
-
-  # Block scalar header: "  key: |" / "|-" / "|+" / ">" / ">-" / ">+"
-  /^[[:space:]]*[^[:space:]#].*:[[:space:]]*[|>][+-]?[[:space:]]*$/ {
-    if (!in_block) {
-      tmp = $0; sub(/[^[:space:]].*/, "", tmp)
-      key_indent = length(tmp)
-      in_block = 1
-      content_indent = -1
-      print; next
-    }
-  }
-
-  in_block {
-    if ($0 == "") {
-      # Empty line in the block — restore content_indent spaces if we know
-      # them yet (i.e. if we have seen any non-empty block content).
-      if (content_indent > 0) {
-        pad = ""; for (i = 0; i < content_indent; i++) pad = pad " "
-        print pad
-      } else {
-        print ""
-      }
-      next
-    }
-    tmp = $0; sub(/[^[:space:]].*/, "", tmp)
-    this_indent = length(tmp)
-    if (this_indent <= key_indent) {
-      # Block ended — fall through to default print rule
-      in_block = 0
-      content_indent = -1
-    } else if (content_indent < 0) {
-      content_indent = this_indent
-    }
-  }
-
-  { print }
-')"
 
 if [ -z "$OUTPUT" ]; then
   echo "atlas-redact: yq produced empty output" >&2
