@@ -15,6 +15,8 @@ Navigate your GitOps deployments across any cluster topology with hierarchical i
 
 ATLAS is a pre-configured Helmfile that automatically discovers clusters in your GitOps repository and assigns applications to them using a hierarchical inheritance model. Define applications once at the global level, override at the group level, or specify at the cluster level — ATLAS handles the rest.
 
+Think of it as an **atlas of charts** — a structured collection of Helm releases mapped across your cluster topology, with values flowing down through the hierarchy.
+
 ATLAS is **cluster-aware but not cluster-connected** — it knows which deployments belong to which clusters and renders the correct values, but it does not know how to reach the target cluster. Cluster targeting is the responsibility of a deployment automation tool like ArgoCD. ATLAS is designed to work as the rendering backend behind an ArgoCD ApplicationSet (or similar), which handles cluster selection and delivery. It can also be used standalone with `helmfile apply`, but in that case the user must ensure the correct kubeconfig context is active.
 
 ### Key Features
@@ -25,6 +27,41 @@ ATLAS is **cluster-aware but not cluster-connected** — it knows which deployme
 - 🎯 **Flexible Structure** - Support for standalone clusters and cluster groups
 - 🔐 **SOPS Integration** - Per-key encrypted values at every hierarchy level
 - 🚀 **GitOps Native** - Designed for ArgoCD, Fleet, or any declarative workflow
+
+---
+
+## Getting Started
+
+The easiest way to start using ATLAS is to use the [atlas-template](https://github.com/max06/atlas-template) repository as a starting point. It includes:
+
+- A pre-configured `helmfile.yaml.gotmpl` that references ATLAS remotely (no local copy needed)
+- An ArgoCD ApplicationSet that automatically discovers and deploys all configured applications
+- Example deployments (ArgoCD, Traefik, echo-server) to learn from
+
+```bash
+# Clone the starter template
+git clone https://github.com/max06/atlas-template my-deployments
+cd my-deployments
+
+# List all discovered deployments
+helmfile list
+
+# Render a specific deployment
+helmfile template --selector cluster=in-cluster,deploymentName=argocd
+```
+
+ATLAS is consumed as a remote helmfile reference — your repository only contains your deployments, templates, and values:
+
+```yaml
+# helmfile.yaml.gotmpl — your entry point
+helmfiles:
+  - path: git::https://github.com/max06/atlas.git@helmfile.yaml.gotmpl?ref=v0.1.0
+    values:
+      - atlas:
+          appTemplates: templates
+          deploymentDefinitions: deployments
+          cwd: {{ exec "pwd" (list) }}
+```
 
 ---
 
@@ -90,10 +127,10 @@ Each deployment is a `deployment.yaml` that declares which app templates to inst
 ```yaml
 apps:
   - template: my-app           # Required: references templates/my-app/
-    namespace: production      # Required: target namespace
+    namespace: production      # Optional: target namespace
   - template: database         # Multiple apps per deployment
     namespace: production
-settings:
+settings:                      # Settings affecting your argocd application
   branch: main
   autoSync: false
 ```
@@ -125,7 +162,7 @@ ATLAS automatically adds `commonLabels` to every rendered release:
 | `cluster` | Cluster path (e.g., `staging/cluster-a`) | Identifies the target cluster |
 | `deploymentName` | Deployment directory name (e.g., `my-app`) | Identifies the deployment |
 
-These labels are applied at the Kubernetes resource level by helmfile and serve two purposes:
+These labels are only applied to helmfile releases by helmfile and serve two purposes:
 
 1. **Deployment automation** — Tools like ArgoCD use these labels to select which deployment to render. For example, an ApplicationSet can pass `--selector cluster=staging/cluster-a,deploymentName=my-app` to helmfile to render a specific cluster-deployment pair.
 
@@ -195,14 +232,15 @@ ATLAS loads and merges values from multiple levels. Later sources override earli
 | 1 | Chart defaults | Chart's `values.yaml` | Always present |
 | 2 | Template-include | File references in template `values:` list | Per app template |
 | 3 | Template-defaults | Inline maps in template `values:` list | Per app template |
-| 4 | Global | `global.values.*` | All clusters, all deployments |
-| 5 | Group | `{group}/group.values.*` | All clusters in that group |
-| 6 | Cluster | `{cluster}/cluster.values.*` | All deployments on that cluster |
-| 7 | Deployment | `{deployment}/values.*` | Only that specific deployment |
+| 4 | Instance inline | `apps[].values` list in `deployment.yaml` | Per app instance |
+| 5 | Global | `global.values.*` | All clusters, all deployments |
+| 6 | Group | `{group}/group.values.*` | All clusters in that group |
+| 7 | Cluster | `{cluster}/cluster.values.*` | All deployments on that cluster |
+| 8 | Deployment | `{deployment}/values.*` | Only that specific deployment |
 
 Template-include and template-defaults are entries in the Helmfile release's `values:` list inside an app template. The list is ordered — the **last element has highest priority**. The table above shows the conventional ordering.
 
-### File Types (for hierarchy levels 4–7, loaded in this order per level)
+### File Types (for hierarchy levels 5–8, loaded in this order per level)
 
 | Order | Suffix | Description |
 |-------|------------------|----------------------------------------------|
@@ -220,21 +258,22 @@ For a deployment at `deployments/{group}/{cluster}/apps/{name}/deployment.yaml` 
  1. charts/{chart}/values.yaml                                         ← chart defaults
  2. templates/{template}/values.yaml.gotmpl (or other included files)  ← template-include
  3. inline maps in templates/{template}/helmfile.yaml.gotmpl           ← template-defaults
- 4. deployments/global.values.sops.yaml                                ← ATLAS hierarchy begins
- 5. deployments/global.values.yaml
- 6. deployments/global.values.yaml.gotmpl
- 7. deployments/{group}/group.values.sops.yaml
- 8. deployments/{group}/group.values.yaml
- 9. deployments/{group}/group.values.yaml.gotmpl
-10. deployments/{group}/{cluster}/cluster.values.sops.yaml
-11. deployments/{group}/{cluster}/cluster.values.yaml
-12. deployments/{group}/{cluster}/cluster.values.yaml.gotmpl
-13. deployments/{group}/{cluster}/apps/{name}/values.sops.yaml
-14. deployments/{group}/{cluster}/apps/{name}/values.yaml
-15. deployments/{group}/{cluster}/apps/{name}/values.yaml.gotmpl       ← highest priority
+ 4. apps[].values in deployment.yaml                                   ← instance inline
+ 5. deployments/global.values.sops.yaml                                ← ATLAS hierarchy begins
+ 6. deployments/global.values.yaml
+ 7. deployments/global.values.yaml.gotmpl
+ 8. deployments/{group}/group.values.sops.yaml
+ 9. deployments/{group}/group.values.yaml
+10. deployments/{group}/group.values.yaml.gotmpl
+11. deployments/{group}/{cluster}/cluster.values.sops.yaml
+12. deployments/{group}/{cluster}/cluster.values.yaml
+13. deployments/{group}/{cluster}/cluster.values.yaml.gotmpl
+14. deployments/{group}/{cluster}/apps/{name}/values.sops.yaml
+15. deployments/{group}/{cluster}/apps/{name}/values.yaml
+16. deployments/{group}/{cluster}/apps/{name}/values.yaml.gotmpl       ← highest priority
 ```
 
-For a **standalone cluster** (no group), steps 7–9 are skipped entirely.
+For a **standalone cluster** (no group), steps 8–10 are skipped entirely.
 
 ### Rules
 
@@ -254,91 +293,62 @@ ATLAS processes your repository in three steps:
 
 1. **Discover** (`helmfile.all.yaml.gotmpl`) — Scans the `deployments/` directory for all directories containing an `apps/` subdirectory. Filters to leaf clusters only (a group directory with child clusters is not itself a target). Collects deployments at three levels: global (`deployments/apps/`), group (`{group}/apps/`), and cluster-specific (`{cluster}/apps/`).
 
-2. **Load Values** (`helmfile.single.yaml.gotmpl`) — For each cluster-deployment pair, loads and merges values from all hierarchy levels (global → group → cluster → deployment), including SOPS decryption. The result is a single merged values dict.
+2. **Load Values** (`helmfile.single.yaml.gotmpl`) — For each cluster-deployment pair, twin-loads the hierarchy from all levels (global → group → cluster → deployment). The **real** tree loads SOPS values as-is; the **redacted** tree substitutes SOPS leaves with structure-preserving placeholders before merging. Both trees are built in a single template pass. Gotmpl files render once per tree, so any expression referencing a SOPS-derived key automatically produces a redacted derivative in the redacted tree — no explicit taint tracking needed.
 
-3. **Render** (`helmfile.single.yaml.gotmpl`) — Reads the deployment's `deployment.yaml` to find which app templates to instantiate. For each app, renders the template with the merged values, resolves file paths, and appends the hierarchy values as the highest-priority entry. Outputs complete helmfile release blocks.
-
----
-
-## Debugging
-
-ATLAS emits a visual trace of the value loading process — showing every file loaded, every key added or overwritten, types, and taint annotations for SOPS secrets. This trace is embedded as YAML comments in the rendered helmfile and is visible via:
-
-```bash
-helmfile build --debug
-```
-
-Example output:
-
-```
-# STORE: Loading global.values.sops.yaml (sops)
-#  + sopsGlobal = "secretGlobalValue" [taint: direct]
-#  + sopsNested: [taint: direct]
-#      + level = "global"
-#      + secretKey = "nestedSecretValue"
-# STORE: Loading global.values.yaml
-#  + globalOnly = "fromGlobal"
-#  + overrideAll = "global"
-# STORE: Loading global.values.yaml.gotmpl (gotmpl)
-#  + gotmplFromSops = "secretGlobalValue" [taint: pointer → sopsGlobal]
-#  ~ gotmplTest = "gotmpl" ← was "yaml"
-# STORE: Loading cluster.values.sops.yaml (sops)
-#  ~ sopsOverride = "cluster" ← was "global" [taint: direct]
-```
-
-Legend:
-- `+` new key
-- `~` overwrite (shows previous value)
-- `[taint: direct]` — value from SOPS-encrypted file
-- `[taint: pointer → key]` — value derived from a tainted key via `.gotmpl` template expression
-- Types annotated: `(bool)`, `(num)` for non-strings
-- Maps expanded recursively with indentation
-- Long strings truncated at 40 characters
-
-To see the trace for a specific deployment, add a selector:
-
-```bash
-helmfile build --debug --selector cluster=staging/cluster-a,deploymentName=my-app
-```
+3. **Render** (`helmfile.single.yaml.gotmpl`) — Reads the deployment's `deployment.yaml` to find which app templates to instantiate. For each app, renders the template with the real values, resolves file paths, and appends the hierarchy values as the highest-priority entry. When redaction is enabled, a deep-compare between the real and redacted trees produces a replacement map that the post-renderer uses to substitute secrets in the rendered output.
 
 ---
 
 ## Secret Redaction
 
-ATLAS tracks which values originate from SOPS-encrypted files using **taint tracking**. When `redactSecrets` is enabled, tainted values are redacted in the rendered output based on their type:
+When `redactSecrets` is enabled, ATLAS produces structure-preserving redacted output. Instead of replacing secrets with a flat `REDACTED` marker, the redacted form preserves the shape of the original value so that downstream tooling (ArgoCD diffs, PR review comments) can show meaningful structure.
 
-| Type | Rule | Replacement |
-|------|------|-------------|
-| String | Always redacted | `REDACTED` |
-| Number >= 5 digits | Redacted (enough entropy) | `0` |
-| Number < 5 digits | Kept (ports, counts) | *(unchanged)* |
-| Boolean | Kept (50/50 odds) | *(unchanged)* |
+### Redaction Rules
 
-Taint propagation works across `.gotmpl` files — if a gotmpl value references a tainted key (e.g., `dbUrl: "postgres://{{ .dbPassword }}@..."`), the resulting key inherits the taint and is also redacted.
+| Type | Rule | Example |
+|------|------|---------|
+| String | Split on non-alphanumeric chars; each segment → first min(len, 8) chars of `REDACTED`; delimiters preserved | `mycompany.com` → `REDACTED.RED`, `db` → `RE` |
+| Number < 5 digits | Kept (ports, counts) | `5432` → `5432` |
+| Number >= 5 digits | Each digit replaced from cycle 1,2,...,9,0; sign and decimal point preserved | `999999` → `123456` |
+| Boolean | Kept (50/50 odds) | `true` → `true` |
+| Multi-line string | Same segment rules applied per-line; newlines and delimiters preserved | PEM blocks keep their `-----` structure |
+
+### How It Works
+
+ATLAS loads the value hierarchy **twice** in a single template pass:
+- The **real** tree loads SOPS values as-is (fed to helm so chart validations pass)
+- The **redacted** tree substitutes SOPS leaves with redacted placeholders before merging
+
+A deep-compare between the two trees identifies every leaf that differs, producing a `{real: redacted}` replacement map. This map is base64-encoded and passed to the `atlas-redact` helm post-renderer plugin, which walks every scalar in the rendered YAML and swaps matches structurally using `yq`.
+
+Transitive redaction (a gotmpl value that references a SOPS key) works automatically — re-rendering the gotmpl file with the redacted tree as context produces the redacted derivative without any explicit tracking.
 
 Enable redaction via the `ATLAS_REDACT_SECRETS` environment variable:
 
 ```bash
-ATLAS_REDACT_SECRETS=true helmfile -f helmfile.yaml.gotmpl template
+ATLAS_REDACT_SECRETS=true helmfile template
 ```
 
 ---
 
 ## CI / Review Workflow
 
-ATLAS provides a reusable GitHub Actions workflow that compares rendered Kubernetes manifests between the target branch and a pull request. It renders both branches in a single job and posts a diff as a PR comment.
+ATLAS provides a reusable GitHub Actions workflow that compares rendered Kubernetes manifests between the target branch and the merge result. It renders both sides in a single job and posts a diff as a PR comment.
 
 ### How it works
 
-1. Checks out the **target branch**, renders all manifests as a baseline
-2. Checks out the **PR branch**, renders manifests
-3. Generates per-deployment diffs, posts a sticky PR comment
+1. Checks out the **target branch HEAD**, renders all manifests as a baseline
+2. Checks out the **merge result** (what will be deployed after merging), renders manifests
+3. Generates per-release diffs, posts a sticky PR comment
+
+This "merge-result" strategy ensures the diff answers *"what changes if I hit merge right now?"* — it accounts for changes that landed on main since the PR was created.
 
 ### Error handling
 
 - **Target branch render errors** — reported as warnings but do not block merging (the PR may be the fix)
-- **PR branch render errors** — reported and fail the pipeline
-- A **job summary** on the pipeline run page shows which deployments were discovered on each branch
+- **Merge-result render errors** — reported and fail the pipeline, with a local-reproduction command in the PR comment
+- **Merge ref unavailable** — falls back to PR branch with a prominent warning (likely merge conflicts)
+- A **job summary** on the pipeline run page shows which deployments were discovered on each side
 
 ### Setup
 
@@ -351,7 +361,7 @@ on:
 
 jobs:
   review:
-    uses: max06/atlas/.github/workflows/snapshot-review.yml@main
+    uses: max06/atlas/.github/workflows/snapshot-review.yml@v0.1.0
     with:
       helmfile-path: helmfile.yaml.gotmpl
     secrets:

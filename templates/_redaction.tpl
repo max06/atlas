@@ -13,15 +13,13 @@
      leaking the underlying content.
 
      Redaction rules:
-       Strings (length < 4): kept as-is (too short to carry entropy).
-       Strings (length >= 4): split on non-alphanumeric characters; each
-                              alphanumeric segment becomes the first
-                              min(len, 8) characters of "REDACTED";
-                              delimiters (dots, dashes, newlines, etc.)
-                              preserved in place. A multi-line secret
-                              naturally turns into a multi-line REDACTED
-                              shape, which is what the diff-then-replace
-                              pipeline expects.
+       Strings: split on non-alphanumeric characters; each alphanumeric
+                segment becomes the first min(len, 8) characters of
+                "REDACTED"; delimiters (dots, dashes, newlines, etc.)
+                preserved in place. ALL strings are redacted regardless
+                of length ("db" → "RE", "a.b" → "R.R"). A multi-line
+                secret naturally turns into a multi-line REDACTED shape,
+                which is what the diff-then-replace pipeline expects.
        Numbers (< 5 digits):  kept as-is (low entropy).
        Numbers (>= 5 digits): each digit replaced with the next digit from
                               the cycle 1,2,3,4,5,6,7,8,9,0,1,2,... The
@@ -80,36 +78,38 @@ Context: the string to redact.
 Returns: the redacted string (raw, no wrapper — call sites handle wrapping).
 */ -}}
 {{- define "atlas.redact.string" -}}
+  {{- /* Every string is redacted — no length exemptions. The string is split
+       on non-alphanumeric characters; each alphanumeric segment is replaced
+       independently with REDACTED[:min(len, 8)]. Delimiters (dots, dashes,
+       spaces, newlines, etc.) pass through verbatim, preserving the shape.
+       Examples:
+         "company.com"     → "REDACTED.RED"
+         "hello-world"     → "REDAC-REDAC"
+         "db"              → "RE"
+         "a.b"             → "R.R"
+  */ -}}
   {{- $input := . -}}
-  {{- if lt (len $input) 4 -}}
-    {{- $input -}}
-  {{- else -}}
-    {{- /* Walk each character; accumulate runs of alphanumerics as
-         "segments" and flush them as REDACTED[:min(len, 8)] whenever a
-         non-alphanumeric character appears. Delimiters are passed through
-         verbatim, which preserves dots, dashes, spaces, and newlines. */ -}}
-    {{- $result := "" -}}
-    {{- $segLen := 0 -}}
-    {{- $template := "REDACTED" -}}
-    {{- range $i := until (len $input) -}}
-      {{- $c := substr $i (add $i 1 | int) $input -}}
-      {{- if regexMatch "^[a-zA-Z0-9]$" $c -}}
-        {{- $segLen = add $segLen 1 | int -}}
-      {{- else -}}
-        {{- if gt $segLen 0 -}}
-          {{- $take := min $segLen 8 | int -}}
-          {{- $result = printf "%s%s" $result (substr 0 $take $template) -}}
-          {{- $segLen = 0 -}}
-        {{- end -}}
-        {{- $result = printf "%s%s" $result $c -}}
+  {{- $result := "" -}}
+  {{- $segLen := 0 -}}
+  {{- $template := "REDACTED" -}}
+  {{- range $i := until (len $input) -}}
+    {{- $c := substr $i (add $i 1 | int) $input -}}
+    {{- if regexMatch "^[a-zA-Z0-9]$" $c -}}
+      {{- $segLen = add $segLen 1 | int -}}
+    {{- else -}}
+      {{- if gt $segLen 0 -}}
+        {{- $take := min $segLen 8 | int -}}
+        {{- $result = printf "%s%s" $result (substr 0 $take $template) -}}
+        {{- $segLen = 0 -}}
       {{- end -}}
+      {{- $result = printf "%s%s" $result $c -}}
     {{- end -}}
-    {{- if gt $segLen 0 -}}
-      {{- $take := min $segLen 8 | int -}}
-      {{- $result = printf "%s%s" $result (substr 0 $take $template) -}}
-    {{- end -}}
-    {{- $result -}}
   {{- end -}}
+  {{- if gt $segLen 0 -}}
+    {{- $take := min $segLen 8 | int -}}
+    {{- $result = printf "%s%s" $result (substr 0 $take $template) -}}
+  {{- end -}}
+  {{- $result -}}
 {{- end -}}
 
 {{- /*

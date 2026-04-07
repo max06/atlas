@@ -39,7 +39,7 @@
 #       branches: [main]
 #   jobs:
 #     review:
-#       uses: max06/atlas/.github/workflows/snapshot-review.yml@main
+#       uses: max06/atlas/.github/workflows/snapshot-review.yml@v0.1.0
 #       with:
 #         helmfile-path: helmfile.yaml.gotmpl
 #       secrets:
