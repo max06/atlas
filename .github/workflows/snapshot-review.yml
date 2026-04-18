@@ -145,7 +145,7 @@ jobs:
             exit 0
           fi
 
-          # Discover deployments — captured for the job summary table.
+          # Discover deployments — also feeds the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
             --output json 2>"$STDERR_LOG"); then
             echo "::warning::Failed to list deployments on target branch"
@@ -155,16 +155,44 @@ jobs:
           fi
           echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/baseline-list.json"
 
-          # Render into $RUNNER_TEMP so the output survives subsequent checkout
-          # steps (actions/checkout wipes untracked files in the workspace even
-          # with clean: false).
+          # Render per (cluster, deploymentName) pair using ATLAS's stage-1
+          # filter (--state-values-set atlas.filter.*). Each invocation builds
+          # values for exactly one deployment — no cross-deployment work done
+          # on behalf of anything the current render doesn't need. This
+          # replaces a single bulk `helmfile template` call that loaded every
+          # deployment's values even when only one changed.
+          # xargs -P4 provides per-deployment parallelism on the GHA runner so
+          # we don't forfeit the wall-clock that helmfile's internal
+          # sub-helmfile parallelism gave us on the bulk call.
           BASELINE_DIR="${RUNNER_TEMP}/baseline"
-          if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-            --skip-schema-validation \
-            --output-dir "$BASELINE_DIR" \
-            --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-            2>>"$STDERR_LOG"; then
-            echo "::warning::Baseline render failed"
+          PAIRS=$(jq -r '[.[] | (.labels | split(",") |
+            map(select(startswith("cluster:") or startswith("deploymentName:")) |
+              split(":") | {(.[0]): .[1]}) | add)]
+            | unique_by(.cluster + "|" + .deploymentName)
+            | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/baseline-list.json")
+          export ATLAS_REDACT_SECRETS=true
+          export HELMFILE_PATH="${{ inputs.helmfile-path }}"
+          export RENDER_DIR="$BASELINE_DIR"
+          export STDERR_LOG
+          render_one() {
+            local pair="$1" cluster deployment
+            cluster="${pair%|*}"
+            deployment="${pair#*|}"
+            helmfile -f "$HELMFILE_PATH" \
+              --state-values-set "atlas.filter.cluster=$cluster" \
+              --state-values-set "atlas.filter.deploymentName=$deployment" \
+              template \
+              --skip-schema-validation \
+              --output-dir "$RENDER_DIR" \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              2>>"$STDERR_LOG" \
+            || { echo "::warning::Baseline render failed for $cluster/$deployment" >&2; return 1; }
+          }
+          export -f render_one
+          RENDER_STATUS=0
+          printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          if [ $RENDER_STATUS -ne 0 ]; then
+            echo "::warning::One or more baseline deployments failed to render"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
             echo "status=success" >> "$GITHUB_OUTPUT"
@@ -205,7 +233,7 @@ jobs:
           MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
           STDERR_LOG="${RUNNER_TEMP}/pr-stderr.log"
 
-          # Discover deployments — captured for the job summary table.
+          # Discover deployments — also feeds the job summary table.
           if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
             --output json 2>"$STDERR_LOG"); then
             echo "::error::Failed to list deployments on merge result"
@@ -215,15 +243,36 @@ jobs:
           fi
           echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/pr-list.json"
 
-          # Render into $RUNNER_TEMP so the output is co-located with the
-          # baseline snapshot (both outside the workspace).
+          # Per-deployment filtered render (see baseline step for rationale).
           PR_DIR="${RUNNER_TEMP}/pr-snapshot"
-          if ! ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-            --skip-schema-validation \
-            --output-dir "$PR_DIR" \
-            --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-            2>>"$STDERR_LOG"; then
-            echo "::error::Merge-result render failed"
+          PAIRS=$(jq -r '[.[] | (.labels | split(",") |
+            map(select(startswith("cluster:") or startswith("deploymentName:")) |
+              split(":") | {(.[0]): .[1]}) | add)]
+            | unique_by(.cluster + "|" + .deploymentName)
+            | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/pr-list.json")
+          export ATLAS_REDACT_SECRETS=true
+          export HELMFILE_PATH="${{ inputs.helmfile-path }}"
+          export RENDER_DIR="$PR_DIR"
+          export STDERR_LOG
+          render_one() {
+            local pair="$1" cluster deployment
+            cluster="${pair%|*}"
+            deployment="${pair#*|}"
+            helmfile -f "$HELMFILE_PATH" \
+              --state-values-set "atlas.filter.cluster=$cluster" \
+              --state-values-set "atlas.filter.deploymentName=$deployment" \
+              template \
+              --skip-schema-validation \
+              --output-dir "$RENDER_DIR" \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              2>>"$STDERR_LOG" \
+            || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
+          }
+          export -f render_one
+          RENDER_STATUS=0
+          printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          if [ $RENDER_STATUS -ne 0 ]; then
+            echo "::error::One or more merge-result deployments failed to render"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
             echo "status=success" >> "$GITHUB_OUTPUT"

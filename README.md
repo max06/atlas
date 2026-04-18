@@ -295,7 +295,21 @@ ATLAS processes your repository in three steps:
 
 2. **Load Values** (`helmfile.single.yaml.gotmpl`) — For each cluster-deployment pair, twin-loads the hierarchy from all levels (global → group → cluster → deployment). The **real** tree loads SOPS values as-is; the **redacted** tree substitutes SOPS leaves with structure-preserving placeholders before merging. Both trees are built in a single template pass. Gotmpl files render once per tree, so any expression referencing a SOPS-derived key automatically produces a redacted derivative in the redacted tree — no explicit taint tracking needed.
 
-3. **Render** (`helmfile.single.yaml.gotmpl`) — Reads the deployment's `deployment.yaml` to find which app templates to instantiate. For each app, renders the template with the real values, resolves file paths, and appends the hierarchy values as the highest-priority entry. When redaction is enabled, a deep-compare between the real and redacted trees produces a replacement map that the post-renderer uses to substitute secrets in the rendered output.
+3. **Render** (`helmfile.single.yaml.gotmpl`) — Reads the deployment's `deployment.yaml` to find which app templates to instantiate. For each app, renders the template with the real values, progressively merges the release's `values:` list (files decrypted / rendered / inline-mapped in declaration order so later entries can reference earlier keys), overlays the hierarchy for precedence, and collapses the list to a single merged dict. When redaction is enabled, a deep-compare between the real and redacted trees produces a replacement map that the post-renderer uses to substitute secrets in the rendered output.
+
+### Single-deployment rendering (fast path)
+
+When a consumer (e.g. an ArgoCD ApplicationSet) only needs one deployment rendered, ATLAS can short-circuit step 1 so only the matching sub-helmfile is ever loaded. Pass the target via `--state-values-set`:
+
+```bash
+helmfile template \
+  --state-values-set atlas.filter.cluster=staging/cluster-a \
+  --state-values-set atlas.filter.deploymentName=my-app
+```
+
+Both filters are optional — set either, both, or neither. With neither, the whole repo is rendered as before.
+
+Why not `--selector`? Helmfile's `--selector` only filters releases **after** every sub-helmfile has been parsed and its values (including SOPS) materialized. That scales poorly for per-deployment invocations. `--state-values-set` reaches ATLAS's top-level template and skips non-matching entries before helmfile processes them, so SOPS decryption and value rendering only happen for the target deployment.
 
 ---
 
