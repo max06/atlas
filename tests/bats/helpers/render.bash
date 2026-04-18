@@ -152,6 +152,28 @@ instance_rendered() {
   [[ -d "$dir" ]] && compgen -G "$dir/chart1/templates/*.yaml" > /dev/null
 }
 
+# instance_rendered_any is the chart-name-agnostic variant of instance_rendered:
+# it succeeds if the release produced any yaml anywhere under its output dir.
+# Use this for releases whose chart isn't named chart1 (e.g. releases that
+# point chart: at a sibling directory with a kustomization or plain manifests —
+# helmfile wraps those via chartify into a chart named after the release).
+instance_rendered_any() {
+  local dir
+  dir="$(_release_dir "$1" "$2" "$3")"
+  [[ -d "$dir" ]] && compgen -G "$dir/*/templates/*.yaml" > /dev/null
+}
+
+# render_contains succeeds if any yaml under the release's output dir contains
+# the given literal pattern. Use for releases whose output isn't a chart1
+# ConfigMap (the values_for / get_path helpers are chart1-specific).
+# Args: $1=cluster $2=deployment $3=instance $4=literal grep pattern
+render_contains() {
+  local dir
+  dir="$(_release_dir "$1" "$2" "$3")"
+  [[ -d "$dir" ]] || return 1
+  grep -rqF -- "$4" "$dir"
+}
+
 # release_labels emits the merged labels map for a single release. Unlike
 # values_for (which reads rendered manifests), this queries `helmfile build`
 # because instance-level labels live in the helmfile release state, not in the

@@ -1,0 +1,3 @@
+apps:
+  - template: app-tplvalsops
+    namespace: test

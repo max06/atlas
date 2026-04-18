@@ -1,0 +1,20 @@
+tplSopsSecret: ENC[AES256_GCM,data:oRQc550mdDFatSffo6r9rw==,iv:B2eWx8JFBpqVZeYF/mL8ujdLMOh49bZJDdxeIJBUQ+c=,tag:L0EiwJkuxRCqZoAv+pH+uw==,type:str]
+tplSopsOverride: ENC[AES256_GCM,data:llbyKn6iLE8=,iv:/U1tbvUMdiAbF16P/GN/WtnaoLQ08uUBMfGk3FokN1k=,tag:fHYJQ7EHRU54h8uxR1VsYQ==,type:str]
+tplSopsMap:
+    username: ENC[AES256_GCM,data:IP9tDdfS3g==,iv:z55KXYIbGNkB3YQNnzakxuVMKffnMjHqar+YMfGt6p4=,tag:B5urVIlUXliue8NV8B+Dqg==,type:str]
+    token: ENC[AES256_GCM,data:YeznwxLL,iv:bCOQI81mYdmBHHfhL046DuioUvs7ccBKpkAFnjLApP0=,tag:lF4hGQlItrh05hdYIQO1mw==,type:str]
+sops:
+    age:
+        - recipient: age17hkregg8jthc4savgjp327eq9nptuqywmlzznuq4hdlczw46avuqakjkup
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBTSW5rTmpqTmFNRW9yblNW
+            bm4vTWswL2VOREJtSkhZMnNSMXE3V3hNbDFJCk5DcE1RVllJRGFEaXNHZDV2eFdR
+            M3dxN1FWMURXR2F4M21WeVpMa2tMQ2sKLS0tIDB0TUJHN2JhS21nNkhIeFJjTGRO
+            UUZGUkUxQUk1VjVKODhibjlGTHlqWFUKKEeM/x5DxAWt/AV+W/h3iHKGRpxyYe6Q
+            19OWq2q0cnrsGjrevwcOnUa/EE+6Amvx8idqDAZEDdtwlGuXRLJjtg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-04-18T13:49:13Z"
+    mac: ENC[AES256_GCM,data:mTjGQvnShqTBsbA8ZKnh4G2uyHxSjZmUTQEsYsouAgsEfNmauLS0hpC0opUIlWjvETHn9MVRm+7fNqjkrDS/38AAm0LWII3tEkIqM6lPhahODJH8FhSaNafqA5Vd3KkTHF7oxoJAvXupyF/rA2pOQC3nWW816xJu1tWv6q/MPwg=,iv:h1c53YTsznpDaQ+goa/dFll2CPY/3quabQiOOUKwxI0=,tag:do/uiSiub4Cca01e0Lgcjg==,type:str]
+    unencrypted_suffix: _unencrypted
+    version: 3.12.2

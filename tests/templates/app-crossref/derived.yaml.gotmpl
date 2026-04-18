@@ -1,0 +1,3 @@
+domainFromSops: "app.{{ .clusterdomain }}"
+hostFromPlain: "{{ .appName }}.{{ .region }}.local"
+mixedFromHierarchyAndSops: "{{ .globalOnly }}-{{ .clusterdomain }}"
