@@ -52,9 +52,28 @@
 {{- $repoRoot := .Values.atlas.cwd }}
 {{- $deploymentsDir := printf "%s/%s" $repoRoot .Values.atlas.deploymentDefinitions }}
 
+# OPTIONAL STAGE-1 FILTER
+# ATLAS can narrow the emitted helmfiles: list before helmfile processes it.
+# When atlas.filter.cluster and/or atlas.filter.deploymentName are set,
+# non-matching clusters are skipped here in STEP 1 (no FS scan, no deployment
+# collection, no sub-helmfile emission) and non-matching deployments are
+# skipped in OUTPUT.
+#
+# Why this exists: helmfile's --selector only filters releases AFTER every
+# sub-helmfile is parsed and its values (including SOPS) are materialized,
+# which is prohibitive for a per-deployment render (ArgoCD ApplicationSet
+# pattern). --state-values-set IS accessible to templates, so we use
+# atlas.filter.* for an up-front short-circuit. Absent both filters, behavior
+# matches pre-filter ATLAS exactly (full repo rendered).
+{{- $filter := .Values.atlas | get "filter" dict }}
+{{- $filterCluster    := $filter | get "cluster"        "" }}
+{{- $filterDeployment := $filter | get "deploymentName" "" }}
+
 # STEP 1: DISCOVER ALL CLUSTERS
 # Identify all directories with an "apps" subdirectory. Only leaf clusters
-# (no child "apps" directories) are collected as deployment targets.
+# (no child "apps" directories) are collected as deployment targets. When
+# atlas.filter.cluster is set, non-matching clusters are dropped here so the
+# per-cluster deployment scans in STEP 2 don't run for them.
 {{- $clustersPattern := printf "%s/**/apps" $deploymentsDir }}
 {{- $clustersRaw := include "glob" $clustersPattern | fromJson }}
 
@@ -67,7 +86,8 @@
     {{- $childPattern := printf "%s/%s/*/apps" $deploymentsDir $clusterPath }}
     {{- $hasChildren := include "glob" $childPattern | fromJson }}
     {{- $isLeaf := eq (len $hasChildren) 0 }}
-    {{- if $isLeaf }}
+    {{- $clusterMatches := or (eq $filterCluster "") (eq $clusterPath $filterCluster) }}
+    {{- if and $isLeaf $clusterMatches }}
       {{- $_ := set $clusters $clusterPath (list) }}
     {{- end }}
   {{- end }}
@@ -113,17 +133,28 @@
 
 # OUTPUT
 # Generate YAML helmfiles list, each pointing to the single deployment renderer,
-# with injected atlas context and specific deployment details.
+# with injected atlas context and specific deployment details. atlas.filter.deploymentName
+# narrows the list further without affecting unmatched clusters already dropped
+# in STEP 1.
+#
+# The filter key itself is stripped before being passed to sub-helmfiles — it's
+# an instruction to stage 1 only and has no meaning inside a rendered release.
+# Leaving it in would leak the filter values through .Values.atlas into every
+# chart, silently corrupting renders whose output should be identical with or
+# without the filter applied.
+{{- $atlasForSub := omit .Values.atlas "filter" }}
 helmfiles:
 {{- range $cluster, $deployments := $clusters }}
   {{- range $deployment := $deployments }}
+    {{- if or (eq $filterDeployment "") (eq $deployment.deploymentName $filterDeployment) }}
   - path: helmfile.single.yaml.gotmpl
     values:
       - atlas:
-          {{- $.Values.atlas | toYaml | nindent 10 }}
+          {{- $atlasForSub | toYaml | nindent 10 }}
           deployment:
             cluster: {{ $cluster }}
             deploymentName: {{ $deployment.deploymentName }}
             deploymentPath: {{ $deployment.path }}
+    {{- end }}
   {{- end }}
 {{- end }}
