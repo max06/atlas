@@ -8,8 +8,15 @@ See also: _store.tpl (values store with taint tracking), _glob.tpl (glob matchin
 
 {{- /*
 atlas.applyListOverride — Resolves relative file paths in a release list field
-(values, patches, transformers, secrets) and appends any instance-level overrides
-from the deployment.yaml.
+(strategicMergePatches, jsonPatches, transformers) and appends any
+instance-level overrides from the deployment.yaml.
+
+The release values: field does NOT flow through this helper. It is handled
+inline in helmfile.single.yaml.gotmpl via a progressive twin-load merge so
+that later list entries can reference keys defined by earlier ones (SOPS
+decryption, .yaml.gotmpl rendering, and merging all happen in declaration
+order within the same loop).
+
 Context: dict with "release", "instance", "templateDir", and "field".
 */ -}}
 {{- define "atlas.applyListOverride" -}}
@@ -18,7 +25,6 @@ Context: dict with "release", "instance", "templateDir", and "field".
 
   {{- /* 1. Convert relative paths in the template's own definition */ -}}
   {{- if hasKey .release $field }}
-
     {{- $val := .release | get $field }}
     {{- if $val }}
       {{- $converted := include "convertPaths" (dict
@@ -26,7 +32,6 @@ Context: dict with "release", "instance", "templateDir", and "field".
         "values"     (toJson $val)
       ) | fromJson }}
       {{- $_ := set .release $field $converted }}
-
     {{- end }}
   {{- end }}
 

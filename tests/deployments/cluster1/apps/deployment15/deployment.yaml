@@ -1,0 +1,3 @@
+apps:
+  - template: app-localkustomize
+    namespace: test

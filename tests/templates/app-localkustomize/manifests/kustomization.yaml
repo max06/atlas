@@ -1,0 +1,4 @@
+resources:
+  - configmap.yaml
+commonLabels:
+  origin: kustomize

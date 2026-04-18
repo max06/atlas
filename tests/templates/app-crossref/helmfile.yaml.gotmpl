@@ -1,0 +1,9 @@
+releases:
+  - name: app-crossref
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - values.sops.yaml
+      - region: us-east-1
+        appName: crossref
+      - derived.yaml.gotmpl

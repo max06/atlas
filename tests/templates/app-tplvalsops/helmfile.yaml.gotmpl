@@ -1,0 +1,8 @@
+releases:
+  - name: app-tplvalsops
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - values.sops.yaml
+      - tplValsInline: fromInline
+        tplValsOverride: inline
