@@ -14,6 +14,14 @@
 set -euo pipefail
 
 REPL_B64="${1:-}"
+# Optional side-dump of the decoded replacement map. When the template wires
+# a second argv (it only does so if ATLAS_SIDEDUMP_MAP_DIR was set at render
+# time), we write the post-b64-decode map JSON to that path BEFORE scrubbing.
+# The snapshot-review workflow uses the captured map to post-scrub a baseline
+# render produced by an older ATLAS version whose own redaction missed
+# template-level SOPS values. Path creation is best-effort (mkdir -p); a
+# failed dump must NEVER block the render, so we warn on stderr and carry on.
+MAP_DUMP_PATH="${2:-}"
 INPUT="$(cat)"
 
 # Empty input (e.g. a CRDs-only chart whose templates live under crds/ and
@@ -45,6 +53,19 @@ fi
 if [ ! -s "$REPL_FILE" ]; then
   echo "atlas-redact: replacement map decoded to empty file" >&2
   exit 1
+fi
+
+# Side-dump the decoded map as JSON for the snapshot-review post-pass.
+# Written AFTER the normal decode path succeeds, so a malformed map is
+# caught by the check above rather than producing a corrupt dump file.
+if [ -n "$MAP_DUMP_PATH" ]; then
+  MAP_DUMP_DIR="$(dirname "$MAP_DUMP_PATH")"
+  if mkdir -p "$MAP_DUMP_DIR" 2>/dev/null \
+     && printf '%s' "$REPL_B64" | base64 -d > "$MAP_DUMP_PATH" 2>/dev/null; then
+    :
+  else
+    echo "atlas-redact: side-dump to $MAP_DUMP_PATH failed (non-fatal)" >&2
+  fi
 fi
 
 # Walk every scalar in the input and replace if a matching key exists in the

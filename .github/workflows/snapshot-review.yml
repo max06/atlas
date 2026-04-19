@@ -39,7 +39,10 @@
 #       branches: [main]
 #   jobs:
 #     review:
-#       uses: max06/atlas/.github/workflows/snapshot-review.yml@v0.1.0
+#       # Pin @main so you get security fixes (e.g. the redaction-replay
+#       # pipeline that scrubs leaky baselines). The workflow version is
+#       # independent of your deployment's ATLAS version.
+#       uses: max06/atlas/.github/workflows/snapshot-review.yml@main
 #       with:
 #         helmfile-path: helmfile.yaml.gotmpl
 #       secrets:
@@ -96,7 +99,11 @@ jobs:
       - name: Install ATLAS post-renderer plugin
         run: |
           # Fetch the atlas-redact plugin from the ATLAS repo and register it
-          # with Helm by adding its parent directory to HELM_PLUGINS.
+          # with Helm by adding its parent directory to HELM_PLUGINS. Grabs
+          # every file in the plugin directory — including scrub-baseline.sh,
+          # the standalone replay helper the redaction-replay step below
+          # uses. plugin.yaml only references atlas-redact.sh, so helm
+          # ignores the helper at plugin-load time.
           PLUGIN_DIR="${RUNNER_TEMP}/atlas-plugins/atlas-redact"
           mkdir -p "$PLUGIN_DIR"
           gh api repos/max06/atlas/contents/templates/helm-plugin/atlas-redact \
@@ -106,6 +113,9 @@ jobs:
           chmod +x "$PLUGIN_DIR"/*.sh
           DEFAULT_PLUGINS=$(helm env HELM_PLUGINS)
           echo "HELM_PLUGINS=${DEFAULT_PLUGINS}:${RUNNER_TEMP}/atlas-plugins" >> "$GITHUB_ENV"
+          # Path exported for the replay step so it doesn't have to rediscover
+          # the plugin dir.
+          echo "ATLAS_PLUGIN_DIR=${PLUGIN_DIR}" >> "$GITHUB_ENV"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -123,6 +133,150 @@ jobs:
         env:
           SOPS_KEY: ${{ secrets.sops-age-key }}
 
+      # ── Render merge result FIRST ──────────────────────────────────────────
+      # Order matters: the merge-result (PR) render uses the current ATLAS
+      # plugin which supports side-dumping the per-release redaction map to
+      # $ATLAS_SIDEDUMP_MAP_DIR. That map is captured BEFORE the baseline
+      # render runs, so we can replay it over the (potentially leaky) baseline
+      # output afterwards. This closes template-level SOPS leaks on baselines
+      # produced by ATLAS versions that predate per-release twin-load, without
+      # requiring a re-release of the older version.
+      #
+      # Checkout strategy: the merge ref is a trial merge GitHub maintains at
+      # refs/pull/<N>/merge. If it's absent (merge conflicts), we fall back
+      # to the PR branch HEAD and warn the reviewer.
+      - name: Checkout merge result
+        id: merge-checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+        continue-on-error: true
+
+      - name: Fallback to PR branch if merge ref unavailable
+        if: steps.merge-checkout.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Render merge-result manifests
+        id: pr
+        env:
+          # Enables side-dump in the atlas-redact plugin. Every per-release
+          # redaction map is written here as <cluster>/<deployment>/<release>.json
+          # for the replay step to consume. Old ATLAS versions that lack the
+          # side-dump wiring in their helmfile template simply don't write —
+          # safe fallback (scrubber reports no-map and the diff step drops
+          # those releases rather than showing unredacted baseline).
+          ATLAS_SIDEDUMP_MAP_DIR: ${{ runner.temp }}/sidedump-maps
+        run: |
+          HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
+          MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
+          STDERR_LOG="${RUNNER_TEMP}/pr-stderr.log"
+
+          # Discover deployments — also feeds the job summary table.
+          if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
+            --output json 2>"$STDERR_LOG"); then
+            echo "::error::Failed to list deployments on merge result"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            cat "$STDERR_LOG"
+            exit 0  # Don't fail yet — post the comment first
+          fi
+          echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/pr-list.json"
+
+          PR_DIR="${RUNNER_TEMP}/pr-snapshot"
+          TOTAL=$(jq length "${RUNNER_TEMP}/pr-list.json")
+
+          # Probe: does this ATLAS revision honor the ATLAS_FILTER_* env vars?
+          # A sentinel non-existent cluster narrows the helmfiles: list to
+          # zero entries. helmfile exits 0 (with --allow-no-matching-release)
+          # and prints nothing to stdout. Older ATLAS versions that predate
+          # the filter ignore the env var and return the full release set —
+          # non-empty stdout is the detection signal for that.
+          PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
+            ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
+            helmfile $HELMFILE_ARGS \
+            list --output json --allow-no-matching-release 2>/dev/null || true)
+          if [ -z "$PROBE_OUT" ]; then
+            PROBE_COUNT=0
+          else
+            PROBE_COUNT=$(echo "$PROBE_OUT" | jq 'length' 2>/dev/null || echo "$TOTAL")
+          fi
+          if [ "$PROBE_COUNT" = "0" ]; then
+            FILTER_SUPPORTED=true
+          else
+            FILTER_SUPPORTED=false
+            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored on the merge-result side — falling back to bulk render."
+            echo "::group::Probe diagnostic (merge result)"
+            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
+            echo "PROBE_OUT (first 400 chars):"
+            echo "${PROBE_OUT:0:400}"
+            echo "::endgroup::"
+          fi
+          echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+
+          RENDER_STATUS=0
+          if [ "$FILTER_SUPPORTED" = "true" ]; then
+            # Fast path: one `helmfile template` per (cluster, deploymentName)
+            # pair. Each invocation builds values for exactly one deployment —
+            # no cross-deployment work. xargs -P4 restores the wall-clock
+            # parallelism we'd otherwise lose compared to helmfile's internal
+            # sub-helmfile parallelism on a bulk call.
+            PAIRS=$(jq -r '[.[] | (.labels | split(",") |
+              map(select(startswith("cluster:") or startswith("deploymentName:")) |
+                split(":") | {(.[0]): .[1]}) | add)]
+              | unique_by(.cluster + "|" + .deploymentName)
+              | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/pr-list.json")
+            export ATLAS_REDACT_SECRETS=true
+            export ATLAS_SIDEDUMP_MAP_DIR
+            export HELMFILE_PATH="${{ inputs.helmfile-path }}"
+            export RENDER_DIR="$PR_DIR"
+            export STDERR_LOG
+            render_one() {
+              local pair="$1" cluster deployment
+              cluster="${pair%|*}"
+              deployment="${pair#*|}"
+              ATLAS_FILTER_CLUSTER="$cluster" \
+              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
+              helmfile -f "$HELMFILE_PATH" \
+                template \
+                --skip-schema-validation \
+                --output-dir "$RENDER_DIR" \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                2>>"$STDERR_LOG" \
+              || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
+            }
+            export -f render_one
+            printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          else
+            # Compat path: one bulk `helmfile template`. Slower and loads
+            # every deployment's values even when only one changed, but the
+            # only path that works on pre-filter ATLAS revisions.
+            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+              --skip-schema-validation \
+              --output-dir "$PR_DIR" \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              2>>"$STDERR_LOG" || RENDER_STATUS=$?
+          fi
+
+          if [ $RENDER_STATUS -ne 0 ]; then
+            echo "::error::Merge-result render failed"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Flag when we fell back to the raw PR branch (merge ref unavailable)
+          if [ "$MERGE_FALLBACK" = "true" ]; then
+            echo "merge_fallback=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Always print stderr to the pipeline log for debugging
+          if [ -s "$STDERR_LOG" ]; then
+            echo "::group::Merge-result render output"
+            cat "$STDERR_LOG"
+            echo "::endgroup::"
+          fi
+
       # ── Render baseline from current target branch HEAD ─────────────────────
       # Uses the live HEAD of the target branch (not the frozen base.sha) so the
       # baseline reflects what is currently deployed / on main.
@@ -131,6 +285,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
+          clean: false
 
       - name: Render baseline manifests
         id: baseline
@@ -158,12 +313,7 @@ jobs:
           BASELINE_DIR="${RUNNER_TEMP}/baseline"
           TOTAL=$(jq length "${RUNNER_TEMP}/baseline-list.json")
 
-          # Probe: does this ATLAS revision honor the ATLAS_FILTER_* env vars?
-          # A sentinel non-existent cluster narrows the helmfiles: list to
-          # zero entries. helmfile exits 0 (with --allow-no-matching-release)
-          # and prints nothing to stdout. Older ATLAS versions that predate
-          # the filter ignore the env var and return the full release set —
-          # non-empty stdout is the detection signal for that.
+          # Filter-support probe (same rationale as merge-result side).
           PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
             ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
             helmfile $HELMFILE_ARGS \
@@ -177,8 +327,8 @@ jobs:
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored — falling back to bulk render. The pinned ATLAS ref likely predates the feature."
-            echo "::group::Probe diagnostic"
+            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored on the baseline side — falling back to bulk render. The pinned ATLAS ref likely predates the feature."
+            echo "::group::Probe diagnostic (baseline)"
             echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
             echo "PROBE_OUT (first 400 chars):"
             echo "${PROBE_OUT:0:400}"
@@ -186,13 +336,13 @@ jobs:
           fi
           echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
 
+          # No ATLAS_SIDEDUMP_MAP_DIR here — we only capture maps from the PR
+          # render. The baseline is what we're REPLAYING maps onto, so it must
+          # not pollute the dump dir. In practice ATLAS versions used as
+          # baselines generally lack side-dump wiring anyway, but omitting the
+          # env var makes that explicit.
           RENDER_STATUS=0
           if [ "$FILTER_SUPPORTED" = "true" ]; then
-            # Fast path: one `helmfile template` per (cluster, deploymentName)
-            # pair. Each invocation builds values for exactly one deployment —
-            # no cross-deployment work. xargs -P4 restores the wall-clock
-            # parallelism we'd otherwise lose compared to helmfile's internal
-            # sub-helmfile parallelism on a bulk call.
             PAIRS=$(jq -r '[.[] | (.labels | split(",") |
               map(select(startswith("cluster:") or startswith("deploymentName:")) |
                 split(":") | {(.[0]): .[1]}) | add)]
@@ -219,9 +369,6 @@ jobs:
             export -f render_one
             printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
           else
-            # Compat path: one bulk `helmfile template`. Slower and loads
-            # every deployment's values even when only one changed, but the
-            # only path that works on pre-filter ATLAS revisions.
             ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --skip-schema-validation \
               --output-dir "$BASELINE_DIR" \
@@ -236,130 +383,54 @@ jobs:
             echo "status=success" >> "$GITHUB_OUTPUT"
           fi
 
-          # Always print stderr to the pipeline log for debugging
           if [ -s "$STDERR_LOG" ]; then
             echo "::group::Baseline render output"
             cat "$STDERR_LOG"
             echo "::endgroup::"
           fi
 
-      # ── Render merge result ──────────────────────────────────────────────────
-      # Check out the trial merge ref that GitHub maintains for every PR. This
-      # is the result of merging the PR branch into the current target HEAD —
-      # exactly what will be deployed if the PR is merged. If the merge ref is
-      # unavailable (e.g., merge conflicts), we fall back to the PR branch and
-      # warn the reviewer.
-      - name: Checkout merge result
-        id: merge-checkout
-        uses: actions/checkout@v4
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          clean: false
-        continue-on-error: true
-
-      - name: Fallback to PR branch if merge ref unavailable
-        if: steps.merge-checkout.outcome == 'failure'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          clean: false
-
-      - name: Render merge-result manifests
-        id: pr
+      # ── Replay captured PR redaction maps over the baseline render ─────────
+      # The PR render above side-dumped per-release redaction maps to
+      # $ATLAS_SIDEDUMP_MAP_DIR. This step walks the baseline output tree and
+      # scrubs each release with its matching map, closing template-level
+      # SOPS leaks on baselines produced by ATLAS versions that predate
+      # per-release twin-load. Releases with no matching map are recorded
+      # in the scrubber's output so the diff step can drop them (rather than
+      # publish an unredacted baseline).
+      #
+      # Always-run: even if baseline rendered nothing, we emit an empty
+      # status file so the diff step's downstream logic stays simple.
+      - name: Replay PR redaction maps over baseline
+        id: replay
+        if: always()
         run: |
-          HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
-          MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
-          STDERR_LOG="${RUNNER_TEMP}/pr-stderr.log"
+          BASELINE_DIR="${RUNNER_TEMP}/baseline"
+          MAP_DIR="${RUNNER_TEMP}/sidedump-maps"
+          STATUS_FILE="${RUNNER_TEMP}/replay-status.txt"
+          : > "$STATUS_FILE"
 
-          # Discover deployments — also feeds the job summary table.
-          if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-            --output json 2>"$STDERR_LOG"); then
-            echo "::error::Failed to list deployments on merge result"
-            echo "status=error" >> "$GITHUB_OUTPUT"
-            cat "$STDERR_LOG"
-            exit 0  # Don't fail yet — post the comment first
+          if [ ! -d "$BASELINE_DIR" ]; then
+            echo "No baseline output to replay against — skipping."
+            exit 0
           fi
-          echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/pr-list.json"
-
-          PR_DIR="${RUNNER_TEMP}/pr-snapshot"
-          TOTAL=$(jq length "${RUNNER_TEMP}/pr-list.json")
-
-          # Probe filter support (see baseline step for rationale).
-          PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
-            ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
-            helmfile $HELMFILE_ARGS \
-            list --output json --allow-no-matching-release 2>/dev/null || true)
-          if [ -z "$PROBE_OUT" ]; then
-            PROBE_COUNT=0
-          else
-            PROBE_COUNT=$(echo "$PROBE_OUT" | jq 'length' 2>/dev/null || echo "$TOTAL")
-          fi
-          if [ "$PROBE_COUNT" = "0" ]; then
-            FILTER_SUPPORTED=true
-          else
-            FILTER_SUPPORTED=false
-            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored on the merge-result side — falling back to bulk render."
-            echo "::group::Probe diagnostic (merge result)"
-            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
-            echo "PROBE_OUT (first 400 chars):"
-            echo "${PROBE_OUT:0:400}"
-            echo "::endgroup::"
-          fi
-          echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
-
-          RENDER_STATUS=0
-          if [ "$FILTER_SUPPORTED" = "true" ]; then
-            PAIRS=$(jq -r '[.[] | (.labels | split(",") |
-              map(select(startswith("cluster:") or startswith("deploymentName:")) |
-                split(":") | {(.[0]): .[1]}) | add)]
-              | unique_by(.cluster + "|" + .deploymentName)
-              | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/pr-list.json")
-            export ATLAS_REDACT_SECRETS=true
-            export HELMFILE_PATH="${{ inputs.helmfile-path }}"
-            export RENDER_DIR="$PR_DIR"
-            export STDERR_LOG
-            render_one() {
-              local pair="$1" cluster deployment
-              cluster="${pair%|*}"
-              deployment="${pair#*|}"
-              ATLAS_FILTER_CLUSTER="$cluster" \
-              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
-              helmfile -f "$HELMFILE_PATH" \
-                template \
-                --skip-schema-validation \
-                --output-dir "$RENDER_DIR" \
-                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-                2>>"$STDERR_LOG" \
-              || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
-            }
-            export -f render_one
-            printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
-          else
-            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-              --skip-schema-validation \
-              --output-dir "$PR_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-              2>>"$STDERR_LOG" || RENDER_STATUS=$?
+          if [ ! -d "$MAP_DIR" ]; then
+            # No maps captured — either the PR render failed or the PR's
+            # ATLAS lacks side-dump wiring. Every baseline release becomes
+            # no-map by definition; still run the scrubber so it emits the
+            # status lines and the diff step can suppress the unredacted
+            # diffs.
+            echo "::warning::No PR-side redaction maps captured — baseline diffs will be suppressed to prevent leaks from older ATLAS versions."
+            mkdir -p "$MAP_DIR"
           fi
 
-          if [ $RENDER_STATUS -ne 0 ]; then
-            echo "::error::Merge-result render failed"
-            echo "status=error" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=success" >> "$GITHUB_OUTPUT"
-          fi
+          "${ATLAS_PLUGIN_DIR}/scrub-baseline.sh" "$BASELINE_DIR" "$MAP_DIR" \
+            | tee "$STATUS_FILE"
 
-          # Flag when we fell back to the raw PR branch (merge ref unavailable)
-          if [ "$MERGE_FALLBACK" = "true" ]; then
-            echo "merge_fallback=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Always print stderr to the pipeline log for debugging
-          if [ -s "$STDERR_LOG" ]; then
-            echo "::group::Merge-result render output"
-            cat "$STDERR_LOG"
-            echo "::endgroup::"
-          fi
+          # Count buckets for the job summary / comment.
+          SCRUBBED=$(grep -c '^scrubbed ' "$STATUS_FILE" || true)
+          NO_MAP=$(grep -c '^no-map ' "$STATUS_FILE" || true)
+          echo "scrubbed_count=$SCRUBBED" >> "$GITHUB_OUTPUT"
+          echo "no_map_count=$NO_MAP" >> "$GITHUB_OUTPUT"
 
       # ── Diff and comment ────────────────────────────────────────────────────
       - name: Generate diff
@@ -389,6 +460,23 @@ jobs:
           TOTAL_RELEASES=0
           AFFECTED_DEPLOYMENTS=""
           HAS_TRUNCATION=false
+          # Counters for release-level buckets. Shown in the comment header so
+          # reviewers know how many releases were dropped from the content
+          # diff because we couldn't safely redact the baseline.
+          SUPPRESSED_NOMAP=0
+          SUPPRESSED_REMOVED=0
+
+          # Load the set of baseline releases the scrubber couldn't redact
+          # (no matching PR-side map). Any release path appearing here will
+          # be shown as a summary line only — we don't publish an unredacted
+          # baseline, so a line-level diff is off the table.
+          STATUS_FILE="${RUNNER_TEMP}/replay-status.txt"
+          declare -A NOMAP_SET=()
+          if [ -f "$STATUS_FILE" ]; then
+            while IFS=' ' read -r status path; do
+              [ "$status" = "no-map" ] && NOMAP_SET["$path"]=1
+            done < "$STATUS_FILE"
+          fi
 
           # release_paths emits every leaf release directory under $1, stripped
           # of the top-level prefix. A release dir is the one containing
@@ -440,6 +528,64 @@ jobs:
             DEPLOYMENT=$(basename "$REMAINDER")
             CLUSTER=$(dirname "$REMAINDER")
             RELEASE_HEADER="$CLUSTER / $DEPLOYMENT / $RELEASE"
+
+            # Release-level bucketing for secret-leak-safe diff.
+            # The rule (asymmetric by design):
+            #   - Release in PR only (added): full content diff. The PR
+            #     render used current ATLAS with inline redaction, so the
+            #     content we show is already safe.
+            #   - Release in baseline only (removed): summary line, no diff.
+            #     The baseline came from the pinned (possibly old) ATLAS;
+            #     its output may contain unredacted template-level secrets
+            #     that the replay step couldn't clean up (no PR-side map
+            #     exists for a removed release). Safer to summarize.
+            #   - Release in both BUT no map was captured (no-map): summary
+            #     line, no diff. Same reasoning — we don't trust the
+            #     baseline side to be clean.
+            #   - Release in both WITH a map applied (scrubbed): normal
+            #     content diff against the scrubbed baseline.
+            IN_BASELINE=false
+            IN_PR=false
+            [ -d "$BASELINE_DIR/$RELEASE_PATH" ] && IN_BASELINE=true
+            [ -d "$PR_DIR/$RELEASE_PATH" ] && IN_PR=true
+
+            # Suppress the content diff for baseline-only (removed) OR
+            # both-but-no-map (modified-but-unsafe) releases. Emit a
+            # summary line only; increment counters for the comment.
+            SUPPRESS_REASON=""
+            if [ "$IN_BASELINE" = true ] && [ "$IN_PR" = false ]; then
+              SUPPRESS_REASON="removed"
+              SUPPRESSED_REMOVED=$((SUPPRESSED_REMOVED + 1))
+            elif [ "$IN_BASELINE" = true ] && [ "$IN_PR" = true ] \
+                 && [ -n "${NOMAP_SET[$RELEASE_PATH]:-}" ]; then
+              SUPPRESS_REASON="no-map"
+              SUPPRESSED_NOMAP=$((SUPPRESSED_NOMAP + 1))
+            fi
+
+            if [ -n "$SUPPRESS_REASON" ]; then
+              HAS_CHANGES=true
+              TOTAL_RELEASES=$((TOTAL_RELEASES + 1))
+              case "$SUPPRESS_REASON" in
+                removed)
+                  SUMMARY_NOTE="release removed — diff suppressed to avoid leaking unredacted baseline output"
+                  ;;
+                no-map)
+                  SUMMARY_NOTE="no PR-side redaction map — diff suppressed to avoid leaking template-level secrets from the pinned ATLAS version"
+                  ;;
+              esac
+              SUPPRESS_LINE="
+          <details>
+          <summary>${RELEASE_HEADER} (${SUPPRESS_REASON})</summary>
+
+          > ${SUMMARY_NOTE}
+
+          </details>
+          "
+              COMMENT_BODY="${COMMENT_BODY}${SUPPRESS_LINE}"
+              SUMMARY_BODY="${SUMMARY_BODY}${SUPPRESS_LINE}"
+              AFFECTED_DEPLOYMENTS="$(printf '%s\n%s' "$AFFECTED_DEPLOYMENTS" "- **${RELEASE_HEADER}** (${SUPPRESS_REASON})")"
+              continue
+            fi
 
             # Split both sides into per-resource files
             BASELINE_SPLIT="${SPLIT_DIR}/baseline/${RELEASE_PATH}"
@@ -562,6 +708,8 @@ jobs:
             echo "status=changes" >> "$GITHUB_OUTPUT"
             echo "total=$TOTAL_CHANGES" >> "$GITHUB_OUTPUT"
             echo "releases=$TOTAL_RELEASES" >> "$GITHUB_OUTPUT"
+            echo "suppressed_nomap=$SUPPRESSED_NOMAP" >> "$GITHUB_OUTPUT"
+            echo "suppressed_removed=$SUPPRESSED_REMOVED" >> "$GITHUB_OUTPUT"
 
             # Write comment body and affected list to files (too large for GITHUB_OUTPUT)
             echo "$COMMENT_BODY" > "${RUNNER_TEMP}/comment-diff.md"
@@ -635,23 +783,46 @@ jobs:
             fi
 
             # ── ATLAS version mismatch / old-ATLAS detection ──
-            # An ATLAS revision that predates the stage-1 filter very likely
-            # also predates the post-renderer redaction rework, so secrets
-            # from hierarchy or template SOPS files can surface as cleartext
-            # in the rendered output and leak into the diff below. Flag it
-            # loudly so the reviewer knows to scrub / rotate if needed and
-            # update the pinned ref.
+            # The redaction-replay step scrubs baseline output using the PR
+            # render's captured map, so template-level SOPS leaks from an
+            # old-ATLAS baseline are closed for every release that exists on
+            # both sides. What's left to warn about:
+            #   * baseline-only releases (removed): no matching PR map exists,
+            #     so their content diff is suppressed — reviewer sees only a
+            #     summary line.
+            #   * PR-downgrade (PR on older ATLAS): the PR side may ship
+            #     cleartext secrets through its inline redaction; replay
+            #     can't fix that direction.
+            # Messaging is tuned to reflect the replay pipeline rather than
+            # a raw leak.
             if [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "true" ]; then
-              echo '> [!CAUTION]'
-              echo '> **Target branch pins an older ATLAS revision.** Secrets rendered on the target side may appear in cleartext in the diff — review carefully and rotate anything that leaks. Merging this PR updates the ref; re-running the review afterwards will render both sides with the current version.'
+              echo '> [!NOTE]'
+              echo '> **Target branch pins an older ATLAS revision.** Template-level SOPS values on the baseline side are replayed against the PR render map, so overlapping releases are redacted. Releases that exist only on the baseline (removed by this PR) are summarized without a content diff to avoid leaking unredacted output. Bumping the pinned ref is still recommended.'
               echo ''
             elif [ "$BASELINE_FILTER" = "true" ] && [ "$PR_FILTER" = "false" ]; then
               echo '> [!CAUTION]'
-              echo '> **This PR downgrades to an older ATLAS revision.** Secrets rendered on the PR side may appear in cleartext in the diff — review carefully and rotate anything that leaks.'
+              echo '> **This PR downgrades to an older ATLAS revision.** The replay pipeline can only scrub the baseline; it cannot fix leaks on the PR side. Review the PR-side diff carefully and rotate anything that leaks.'
               echo ''
             elif [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "false" ]; then
+              echo '> [!CAUTION]'
+              echo '> **Both sides use an older ATLAS revision.** No map is captured on either side, so template-level SOPS values may appear in cleartext in the diff. Bumping the pinned ATLAS ref activates the replay pipeline and closes the gap.'
+              echo ''
+            fi
+
+            # ── Suppressed-diff summary ──
+            # Every suppressed release shows as a summary line in the diff
+            # block below; this banner calls out the total counts so the
+            # reviewer knows at-a-glance how much of the change surface is
+            # hidden from content-level review.
+            SUP_NOMAP='${{ steps.diff.outputs.suppressed_nomap }}'
+            SUP_REMOVED='${{ steps.diff.outputs.suppressed_removed }}'
+            if [ "${SUP_NOMAP:-0}" != "0" ] || [ "${SUP_REMOVED:-0}" != "0" ]; then
               echo '> [!NOTE]'
-              echo '> Both sides use an older ATLAS revision without the stage-1 filter. Renders are slower and may show SOPS values in cleartext. Consider bumping the pinned ATLAS ref.'
+              echo '> Some release diffs were suppressed to avoid leaking secrets:'
+              [ "${SUP_REMOVED:-0}" != "0" ] && echo "> - **${SUP_REMOVED}** release(s) removed by this PR (no PR-side map to replay)."
+              [ "${SUP_NOMAP:-0}" != "0" ] && echo "> - **${SUP_NOMAP}** release(s) present on both sides but lacked a captured redaction map (likely an old ATLAS version on the PR side)."
+              echo '>'
+              echo '> Review the affected releases locally with `helmfile template` if you need a content-level check.'
               echo ''
             fi
 

@@ -1,0 +1,8 @@
+# Fixture: template-level multi-line secrets — both a SOPS block scalar carrying
+# a full credentials blob, and a values.yaml.gotmpl that composes a multi-line
+# string from individual SOPS leaves. Covers the external-dns-style leak where
+# v0.1.0 failed to redact template-level multi-line secrets (app template shipped
+# SOPS in release[].values, which v0.1.0's twin-load never scanned).
+apps:
+  - template: app-multiline-tplsops
+    namespace: test

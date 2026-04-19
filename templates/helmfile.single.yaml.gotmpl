@@ -392,9 +392,27 @@ environments:
         {{- fail (printf "atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Split this deployment into smaller ones or file an issue at https://github.com/max06/atlas/issues to request a file-based argument scheme. Cluster=%s Deployment=%s Release=%s" $sizeKb $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name) }}
       {{- end }}
     {{- end }}
+    {{- /* Optional side-dump of the per-release replacement map for the
+         snapshot-review workflow. When ATLAS_SIDEDUMP_MAP_DIR is set at
+         render time, we append a second argv element telling the plugin
+         where to write the decoded map JSON. The workflow later replays
+         that map against a baseline render produced by an older ATLAS
+         version that lacked template-level redaction — closing leaks
+         without requiring a patched release of the older version.
+         Layout mirrors --output-dir-template so the scrubber can look up
+         the right map per release directory without a manifest file. */ -}}
+    {{- $sidedumpDir := env "ATLAS_SIDEDUMP_MAP_DIR" }}
+    {{- $sidedumpPath := "" }}
+    {{- if and $postRendererArgs $sidedumpDir }}
+      {{- $sidedumpPath = printf "%s/%s/%s/%s.json" $sidedumpDir $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name }}
+    {{- end }}
     {{- if $postRendererArgs }}
       {{- $_ := set $release "postRenderer" "atlas-redact" }}
-      {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
+      {{- if $sidedumpPath }}
+        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs $sidedumpPath) }}
+      {{- else }}
+        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
+      {{- end }}
     {{- end }}
 
   {{- end }}

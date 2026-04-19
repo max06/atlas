@@ -1,0 +1,16 @@
+releases:
+  - name: app-multiline-tplsops
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      # Direct multi-line block scalar inside the SOPS file — the whole value
+      # lands on the redaction map as one scalar; yq whole-scalar replace in
+      # the post-renderer swaps it out. Plus two individual leaves that the
+      # gotmpl below composes into a second multi-line block (transitive).
+      - values.sops.yaml
+      # Composes an AWS-style credentials file by interpolating the SOPS
+      # leaves into a `|` block scalar. In the redacted tree the leaves are
+      # already REDACTED, so the same tpl call yields the redacted block
+      # wholesale — diff emits {real_block: redacted_block}, whole-scalar
+      # match in the post-renderer.
+      - credentials.yaml.gotmpl
