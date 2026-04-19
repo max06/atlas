@@ -155,44 +155,77 @@ jobs:
           fi
           echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/baseline-list.json"
 
-          # Render per (cluster, deploymentName) pair using ATLAS's stage-1
-          # filter (--state-values-set atlas.filter.*). Each invocation builds
-          # values for exactly one deployment — no cross-deployment work done
-          # on behalf of anything the current render doesn't need. This
-          # replaces a single bulk `helmfile template` call that loaded every
-          # deployment's values even when only one changed.
-          # xargs -P4 provides per-deployment parallelism on the GHA runner so
-          # we don't forfeit the wall-clock that helmfile's internal
-          # sub-helmfile parallelism gave us on the bulk call.
           BASELINE_DIR="${RUNNER_TEMP}/baseline"
-          PAIRS=$(jq -r '[.[] | (.labels | split(",") |
-            map(select(startswith("cluster:") or startswith("deploymentName:")) |
-              split(":") | {(.[0]): .[1]}) | add)]
-            | unique_by(.cluster + "|" + .deploymentName)
-            | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/baseline-list.json")
-          export ATLAS_REDACT_SECRETS=true
-          export HELMFILE_PATH="${{ inputs.helmfile-path }}"
-          export RENDER_DIR="$BASELINE_DIR"
-          export STDERR_LOG
-          render_one() {
-            local pair="$1" cluster deployment
-            cluster="${pair%|*}"
-            deployment="${pair#*|}"
-            helmfile -f "$HELMFILE_PATH" \
-              --state-values-set "atlas.filter.cluster=$cluster" \
-              --state-values-set "atlas.filter.deploymentName=$deployment" \
-              template \
-              --skip-schema-validation \
-              --output-dir "$RENDER_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-              2>>"$STDERR_LOG" \
-            || { echo "::warning::Baseline render failed for $cluster/$deployment" >&2; return 1; }
-          }
-          export -f render_one
+          TOTAL=$(jq length "${RUNNER_TEMP}/baseline-list.json")
+
+          # Probe: does this ATLAS revision honor atlas.filter.* state values?
+          # When it does, passing a sentinel non-existent cluster narrows the
+          # helmfiles: list to zero entries and helmfile prints nothing to
+          # stdout (exits 0 with --allow-no-matching-release, even though it
+          # also writes "no releases found" to stderr). Older ATLAS versions
+          # that predate the filter ignore the state key and return the full
+          # release set — non-empty stdout is the detection signal for that.
+          PROBE_OUT=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS \
+            --state-values-set "atlas.filter.cluster=__atlas_probe_nonexistent__" \
+            list --output json --allow-no-matching-release 2>/dev/null || true)
+          if [ -z "$PROBE_OUT" ]; then
+            PROBE_COUNT=0
+          else
+            PROBE_COUNT=$(echo "$PROBE_OUT" | jq 'length' 2>/dev/null || echo "$TOTAL")
+          fi
+          if [ "$PROBE_COUNT" = "0" ]; then
+            FILTER_SUPPORTED=true
+          else
+            FILTER_SUPPORTED=false
+            echo "::warning::ATLAS revision on this side does not support the stage-1 filter (atlas.filter.*) — falling back to bulk render. Update the pinned ATLAS ref to use the fast per-deployment path."
+          fi
+          echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+
           RENDER_STATUS=0
-          printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          if [ "$FILTER_SUPPORTED" = "true" ]; then
+            # Fast path: one `helmfile template` per (cluster, deploymentName)
+            # pair. Each invocation builds values for exactly one deployment —
+            # no cross-deployment work. xargs -P4 restores the wall-clock
+            # parallelism we'd otherwise lose compared to helmfile's internal
+            # sub-helmfile parallelism on a bulk call.
+            PAIRS=$(jq -r '[.[] | (.labels | split(",") |
+              map(select(startswith("cluster:") or startswith("deploymentName:")) |
+                split(":") | {(.[0]): .[1]}) | add)]
+              | unique_by(.cluster + "|" + .deploymentName)
+              | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/baseline-list.json")
+            export ATLAS_REDACT_SECRETS=true
+            export HELMFILE_PATH="${{ inputs.helmfile-path }}"
+            export RENDER_DIR="$BASELINE_DIR"
+            export STDERR_LOG
+            render_one() {
+              local pair="$1" cluster deployment
+              cluster="${pair%|*}"
+              deployment="${pair#*|}"
+              helmfile -f "$HELMFILE_PATH" \
+                --state-values-set "atlas.filter.cluster=$cluster" \
+                --state-values-set "atlas.filter.deploymentName=$deployment" \
+                template \
+                --skip-schema-validation \
+                --output-dir "$RENDER_DIR" \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                2>>"$STDERR_LOG" \
+              || { echo "::warning::Baseline render failed for $cluster/$deployment" >&2; return 1; }
+            }
+            export -f render_one
+            printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          else
+            # Compat path: one bulk `helmfile template`. Slower and loads
+            # every deployment's values even when only one changed, but the
+            # only path that works on pre-filter ATLAS revisions.
+            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+              --skip-schema-validation \
+              --output-dir "$BASELINE_DIR" \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              2>>"$STDERR_LOG" || RENDER_STATUS=$?
+          fi
+
           if [ $RENDER_STATUS -ne 0 ]; then
-            echo "::warning::One or more baseline deployments failed to render"
+            echo "::warning::Baseline render failed"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
             echo "status=success" >> "$GITHUB_OUTPUT"
@@ -243,36 +276,59 @@ jobs:
           fi
           echo "$DEPLOY_JSON" > "${RUNNER_TEMP}/pr-list.json"
 
-          # Per-deployment filtered render (see baseline step for rationale).
           PR_DIR="${RUNNER_TEMP}/pr-snapshot"
-          PAIRS=$(jq -r '[.[] | (.labels | split(",") |
-            map(select(startswith("cluster:") or startswith("deploymentName:")) |
-              split(":") | {(.[0]): .[1]}) | add)]
-            | unique_by(.cluster + "|" + .deploymentName)
-            | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/pr-list.json")
-          export ATLAS_REDACT_SECRETS=true
-          export HELMFILE_PATH="${{ inputs.helmfile-path }}"
-          export RENDER_DIR="$PR_DIR"
-          export STDERR_LOG
-          render_one() {
-            local pair="$1" cluster deployment
-            cluster="${pair%|*}"
-            deployment="${pair#*|}"
-            helmfile -f "$HELMFILE_PATH" \
-              --state-values-set "atlas.filter.cluster=$cluster" \
-              --state-values-set "atlas.filter.deploymentName=$deployment" \
-              template \
-              --skip-schema-validation \
-              --output-dir "$RENDER_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-              2>>"$STDERR_LOG" \
-            || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
-          }
-          export -f render_one
+          TOTAL=$(jq length "${RUNNER_TEMP}/pr-list.json")
+
+          # Probe filter support (see baseline step for rationale).
+          PROBE_COUNT=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS \
+            --state-values-set "atlas.filter.cluster=__atlas_probe_nonexistent__" \
+            list --output json 2>/dev/null | jq 'length' 2>/dev/null || echo "$TOTAL")
+          if [ "$PROBE_COUNT" = "0" ]; then
+            FILTER_SUPPORTED=true
+          else
+            FILTER_SUPPORTED=false
+            echo "::warning::Merge-result ATLAS revision does not support the stage-1 filter (atlas.filter.*) — falling back to bulk render."
+          fi
+          echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+
           RENDER_STATUS=0
-          printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          if [ "$FILTER_SUPPORTED" = "true" ]; then
+            PAIRS=$(jq -r '[.[] | (.labels | split(",") |
+              map(select(startswith("cluster:") or startswith("deploymentName:")) |
+                split(":") | {(.[0]): .[1]}) | add)]
+              | unique_by(.cluster + "|" + .deploymentName)
+              | .[] | "\(.cluster)|\(.deploymentName)"' "${RUNNER_TEMP}/pr-list.json")
+            export ATLAS_REDACT_SECRETS=true
+            export HELMFILE_PATH="${{ inputs.helmfile-path }}"
+            export RENDER_DIR="$PR_DIR"
+            export STDERR_LOG
+            render_one() {
+              local pair="$1" cluster deployment
+              cluster="${pair%|*}"
+              deployment="${pair#*|}"
+              helmfile -f "$HELMFILE_PATH" \
+                --state-values-set "atlas.filter.cluster=$cluster" \
+                --state-values-set "atlas.filter.deploymentName=$deployment" \
+                --selector "cluster=$cluster,deploymentName=$deployment" \
+                template \
+                --skip-schema-validation \
+                --output-dir "$RENDER_DIR" \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                2>>"$STDERR_LOG" \
+              || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
+            }
+            export -f render_one
+            printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+          else
+            ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+              --skip-schema-validation \
+              --output-dir "$PR_DIR" \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              2>>"$STDERR_LOG" || RENDER_STATUS=$?
+          fi
+
           if [ $RENDER_STATUS -ne 0 ]; then
-            echo "::error::One or more merge-result deployments failed to render"
+            echo "::error::Merge-result render failed"
             echo "status=error" >> "$GITHUB_OUTPUT"
           else
             echo "status=success" >> "$GITHUB_OUTPUT"
@@ -512,6 +568,8 @@ jobs:
           PR_STATUS="${{ steps.pr.outputs.status }}"
           DIFF_STATUS="${{ steps.diff.outputs.status }}"
           MERGE_FALLBACK="${{ steps.pr.outputs.merge_fallback }}"
+          BASELINE_FILTER="${{ steps.baseline.outputs.filter_supported }}"
+          PR_FILTER="${{ steps.pr.outputs.filter_supported }}"
 
           # Read error logs if they exist (truncate to keep comment reasonable)
           BASELINE_ERRORS=""
@@ -558,6 +616,27 @@ jobs:
             if [ "$MERGE_FALLBACK" = "true" ]; then
               echo '> [!WARNING]'
               echo '> **Merge ref unavailable** — this likely means the PR has merge conflicts with the target branch. The diff below was generated from the PR branch alone and may not reflect the actual merge result. Please rebase or merge the target branch into your PR.'
+              echo ''
+            fi
+
+            # ── ATLAS version mismatch / old-ATLAS detection ──
+            # An ATLAS revision that predates the stage-1 filter very likely
+            # also predates the post-renderer redaction rework, so secrets
+            # from hierarchy or template SOPS files can surface as cleartext
+            # in the rendered output and leak into the diff below. Flag it
+            # loudly so the reviewer knows to scrub / rotate if needed and
+            # update the pinned ref.
+            if [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "true" ]; then
+              echo '> [!CAUTION]'
+              echo '> **Target branch pins an older ATLAS revision.** Secrets rendered on the target side may appear in cleartext in the diff — review carefully and rotate anything that leaks. Merging this PR updates the ref; re-running the review afterwards will render both sides with the current version.'
+              echo ''
+            elif [ "$BASELINE_FILTER" = "true" ] && [ "$PR_FILTER" = "false" ]; then
+              echo '> [!CAUTION]'
+              echo '> **This PR downgrades to an older ATLAS revision.** Secrets rendered on the PR side may appear in cleartext in the diff — review carefully and rotate anything that leaks.'
+              echo ''
+            elif [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "false" ]; then
+              echo '> [!NOTE]'
+              echo '> Both sides use an older ATLAS revision without the stage-1 filter. Renders are slower and may show SOPS values in cleartext. Consider bumping the pinned ATLAS ref.'
               echo ''
             fi
 
