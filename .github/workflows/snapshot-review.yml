@@ -158,15 +158,15 @@ jobs:
           BASELINE_DIR="${RUNNER_TEMP}/baseline"
           TOTAL=$(jq length "${RUNNER_TEMP}/baseline-list.json")
 
-          # Probe: does this ATLAS revision honor atlas.filter.* state values?
-          # When it does, passing a sentinel non-existent cluster narrows the
-          # helmfiles: list to zero entries and helmfile prints nothing to
-          # stdout (exits 0 with --allow-no-matching-release, even though it
-          # also writes "no releases found" to stderr). Older ATLAS versions
-          # that predate the filter ignore the state key and return the full
-          # release set — non-empty stdout is the detection signal for that.
-          PROBE_OUT=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS \
-            --state-values-set "atlas.filter.cluster=__atlas_probe_nonexistent__" \
+          # Probe: does this ATLAS revision honor the ATLAS_FILTER_* env vars?
+          # A sentinel non-existent cluster narrows the helmfiles: list to
+          # zero entries. helmfile exits 0 (with --allow-no-matching-release)
+          # and prints nothing to stdout. Older ATLAS versions that predate
+          # the filter ignore the env var and return the full release set —
+          # non-empty stdout is the detection signal for that.
+          PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
+            ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
+            helmfile $HELMFILE_ARGS \
             list --output json --allow-no-matching-release 2>/dev/null || true)
           if [ -z "$PROBE_OUT" ]; then
             PROBE_COUNT=0
@@ -177,7 +177,12 @@ jobs:
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::ATLAS revision on this side does not support the stage-1 filter (atlas.filter.*) — falling back to bulk render. Update the pinned ATLAS ref to use the fast per-deployment path."
+            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored — falling back to bulk render. The pinned ATLAS ref likely predates the feature."
+            echo "::group::Probe diagnostic"
+            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
+            echo "PROBE_OUT (first 400 chars):"
+            echo "${PROBE_OUT:0:400}"
+            echo "::endgroup::"
           fi
           echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
 
@@ -201,9 +206,9 @@ jobs:
               local pair="$1" cluster deployment
               cluster="${pair%|*}"
               deployment="${pair#*|}"
+              ATLAS_FILTER_CLUSTER="$cluster" \
+              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
               helmfile -f "$HELMFILE_PATH" \
-                --state-values-set "atlas.filter.cluster=$cluster" \
-                --state-values-set "atlas.filter.deploymentName=$deployment" \
                 template \
                 --skip-schema-validation \
                 --output-dir "$RENDER_DIR" \
@@ -280,14 +285,25 @@ jobs:
           TOTAL=$(jq length "${RUNNER_TEMP}/pr-list.json")
 
           # Probe filter support (see baseline step for rationale).
-          PROBE_COUNT=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS \
-            --state-values-set "atlas.filter.cluster=__atlas_probe_nonexistent__" \
-            list --output json 2>/dev/null | jq 'length' 2>/dev/null || echo "$TOTAL")
+          PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
+            ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
+            helmfile $HELMFILE_ARGS \
+            list --output json --allow-no-matching-release 2>/dev/null || true)
+          if [ -z "$PROBE_OUT" ]; then
+            PROBE_COUNT=0
+          else
+            PROBE_COUNT=$(echo "$PROBE_OUT" | jq 'length' 2>/dev/null || echo "$TOTAL")
+          fi
           if [ "$PROBE_COUNT" = "0" ]; then
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::Merge-result ATLAS revision does not support the stage-1 filter (atlas.filter.*) — falling back to bulk render."
+            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored on the merge-result side — falling back to bulk render."
+            echo "::group::Probe diagnostic (merge result)"
+            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
+            echo "PROBE_OUT (first 400 chars):"
+            echo "${PROBE_OUT:0:400}"
+            echo "::endgroup::"
           fi
           echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
 
@@ -306,10 +322,9 @@ jobs:
               local pair="$1" cluster deployment
               cluster="${pair%|*}"
               deployment="${pair#*|}"
+              ATLAS_FILTER_CLUSTER="$cluster" \
+              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
               helmfile -f "$HELMFILE_PATH" \
-                --state-values-set "atlas.filter.cluster=$cluster" \
-                --state-values-set "atlas.filter.deploymentName=$deployment" \
-                --selector "cluster=$cluster,deploymentName=$deployment" \
                 template \
                 --skip-schema-validation \
                 --output-dir "$RENDER_DIR" \

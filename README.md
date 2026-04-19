@@ -312,17 +312,19 @@ ATLAS processes your repository in three steps:
 
 ### Single-deployment rendering (fast path)
 
-When a consumer (e.g. an ArgoCD ApplicationSet) only needs one deployment rendered, ATLAS can short-circuit step 1 so only the matching sub-helmfile is ever loaded. Pass the target via `--state-values-set`:
+When a consumer (e.g. an ArgoCD ApplicationSet) only needs one deployment rendered, ATLAS can short-circuit step 1 so only the matching sub-helmfile is ever loaded. Pass the target via environment variables:
 
 ```bash
-helmfile template \
-  --state-values-set atlas.filter.cluster=staging/cluster-a \
-  --state-values-set atlas.filter.deploymentName=my-app
+ATLAS_FILTER_CLUSTER=staging/cluster-a \
+ATLAS_FILTER_DEPLOYMENT_NAME=my-app \
+  helmfile template
 ```
 
-Both filters are optional — set either, both, or neither. With neither, the whole repo is rendered as before.
+Both variables are optional — set either, both, or neither. With neither, the whole repo is rendered as before.
 
-Why not `--selector`? Helmfile's `--selector` only filters releases **after** every sub-helmfile has been parsed and its values (including SOPS) materialized. That scales poorly for per-deployment invocations. `--state-values-set` reaches ATLAS's top-level template and skips non-matching entries before helmfile processes them, so SOPS decryption and value rendering only happen for the target deployment.
+Why env vars? They reach ATLAS regardless of how the consumer's entry-point helmfile is written. A consumer that explicitly lists `appTemplates`, `deploymentDefinitions`, and `cwd` (like the starter template) doesn't forward arbitrary `.Values.atlas` keys, so state-values-based filters would silently drop. Env vars are read inside ATLAS's own top-level file, so the propagation problem goes away.
+
+Why not `--selector`? Helmfile's `--selector` only filters releases **after** every sub-helmfile has been parsed and its values (including SOPS) materialized. That scales poorly for per-deployment invocations. The env-var-driven filter reaches ATLAS's top-level template and skips non-matching entries before helmfile processes them, so SOPS decryption and value rendering only happen for the target deployment.
 
 ---
 

@@ -1,9 +1,42 @@
 # code: language=helm
 
+{{- /* ATLAS top-level — consumed by users via `git::...` reference or run
+     directly from this repo. Assembles the atlas context, then hands off to
+     templates/helmfile.all.yaml.gotmpl for discovery and dispatch.
+
+     Env vars (the only supported way to toggle ATLAS runtime behavior from
+     outside — consumer entry-point helmfiles generally don't forward
+     arbitrary .Values keys, so env vars are the only knobs that reach
+     ATLAS reliably):
+       ATLAS_REDACT_SECRETS           enable post-renderer redaction
+       ATLAS_FILTER_CLUSTER           stage-1 filter: render only this cluster
+       ATLAS_FILTER_DEPLOYMENT_NAME   stage-1 filter: render only this deployment */ -}}
+
+{{- $atlas := deepCopy .Values.atlas }}
+
+{{- /* Defaults */ -}}
+{{- if not (hasKey $atlas "variant") }}
+  {{- $_ := set $atlas "variant" "default" }}
+{{- end }}
+
+{{- /* Redaction toggle — env var is always the source of truth. */ -}}
+{{- $_ := set $atlas "redactSecrets" (eq (env "ATLAS_REDACT_SECRETS") "true") }}
+
+{{- /* Stage-1 filter. Always overwritten from env vars — an atlas.filter key
+     a caller tried to pass through .Values is discarded so there's exactly
+     one input path and no silent surprises. */ -}}
+{{- $_ := unset $atlas "filter" }}
+{{- $envCluster    := env "ATLAS_FILTER_CLUSTER"         | default "" }}
+{{- $envDeployment := env "ATLAS_FILTER_DEPLOYMENT_NAME" | default "" }}
+{{- if or $envCluster $envDeployment }}
+  {{- $filter := dict }}
+  {{- if $envCluster    }}{{- $_ := set $filter "cluster"        $envCluster    }}{{- end }}
+  {{- if $envDeployment }}{{- $_ := set $filter "deploymentName" $envDeployment }}{{- end }}
+  {{- $_ := set $atlas "filter" $filter }}
+{{- end }}
+
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
     values:
       - atlas:
-          {{- .Values.atlas | toYaml | nindent 10 }}
-          redactSecrets: {{ eq (env "ATLAS_REDACT_SECRETS") "true" }}
-          variant: default
+          {{- $atlas | toYaml | nindent 10 }}
