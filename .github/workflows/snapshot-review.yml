@@ -196,6 +196,18 @@ jobs:
 
       - name: Render merge-result manifests
         id: pr
+        env:
+          # Enables side-dump in the atlas-redact plugin. Every per-release
+          # redaction map is written here as <cluster>/<deployment>/<release>.json
+          # for the replay step to consume against the baseline render. Old
+          # ATLAS versions that lack the side-dump wiring in their template
+          # simply don't write — scrubber reports no-map, diff step drops
+          # those releases rather than showing unredacted baseline.
+          #
+          # Must be set at step level (not just `export`-ed inside run:)
+          # so both the filter-fast-path xargs children and the bulk-render
+          # fallback inherit it.
+          ATLAS_SIDEDUMP_MAP_DIR: ${{ runner.temp }}/sidedump-maps
         run: |
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
           MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
