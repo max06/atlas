@@ -112,11 +112,19 @@ Output format:
            trick: any expression that pulls from a sops-derived key yields
            a redacted result in the redacted tree, exposing transitive taint
            without any explicit tracking. */ -}}
-      {{- $body              := readFile $source }}
-      {{- $realRendered      := tpl $body $realValues | fromYaml }}
-      {{- $realValues        = mergeOverwrite $realValues $realRendered }}
-      {{- $redactedRendered  := tpl $body $redactedValues | fromYaml }}
-      {{- $redactedValues    = mergeOverwrite $redactedValues $redactedRendered }}
+      {{- $body := readFile $source }}
+      {{- /* Tpl context: a shallow copy of the current accumulator with a
+           self-referential "Values" key so authors can write either
+           {{ .foo }} (bare, ATLAS's traditional style) or {{ .Values.foo }}
+           (wrapped, helm/helmfile convention). Both resolve to the same leaf.
+           deepCopy keeps the Values self-reference from leaking back into the
+           accumulator across loop iterations. */ -}}
+      {{- $realCtx := deepCopy $realValues }}
+      {{- $_ := set $realCtx "Values" $realCtx }}
+      {{- $realValues = mergeOverwrite $realValues (tpl $body $realCtx | fromYaml) }}
+      {{- $redactedCtx := deepCopy $redactedValues }}
+      {{- $_ := set $redactedCtx "Values" $redactedCtx }}
+      {{- $redactedValues = mergeOverwrite $redactedValues (tpl $body $redactedCtx | fromYaml) }}
     {{- end }}
   {{- end }}
 {{- end }}
@@ -193,10 +201,13 @@ environments:
   {{- $_ := set $instanceValuesRedacted.atlas "instance" $instanceContext }}
 
   {{- /* Render the app template as a Go template, then parse as YAML.
-       The tpl context wraps $instanceValues under a "Values" key so that
-       app templates can use .Values.atlas.* expressions as usual. */ -}}
-  {{- $tplContext := dict "Values" $instanceValues }}
-  {{- $template  := tpl (readFile $templateFile) $tplContext | fromYaml }}
+       The tpl context is a deep copy of $instanceValues with a self-referential
+       "Values" key, so authors can write either {{ .atlas.cwd }} (bare) or
+       {{ .Values.atlas.cwd }} (wrapped) — same unified contract used by the
+       hierarchy gotmpl loader and the release values: merge. */ -}}
+  {{- $tplContext := deepCopy $instanceValues }}
+  {{- $_ := set $tplContext "Values" $tplContext }}
+  {{- $template := tpl (readFile $templateFile) $tplContext | fromYaml }}
 
   {{- /* Set commonLabels on the rendered template so every release gets
        cluster and deployment identification labels applied by helmfile. */ -}}
@@ -291,11 +302,16 @@ environments:
               {{- $mergedRedacted = mergeOverwrite $mergedRedacted $redactedLeaves }}
             {{- end }}
           {{- else if hasSuffix ".yaml.gotmpl" $entry }}
-            {{- $body    := readFile $absPath }}
+            {{- $body := readFile $absPath }}
+            {{- /* Self-referential "Values" key — see the hierarchy loader
+                 above. Lets template authors use {{ .foo }} or
+                 {{ .Values.foo }} interchangeably in values-list gotmpls. */ -}}
             {{- $ctxReal := mergeOverwrite (deepCopy $instanceValues) $mergedReal }}
+            {{- $_ := set $ctxReal "Values" $ctxReal }}
             {{- $mergedReal = mergeOverwrite $mergedReal (tpl $body $ctxReal | fromYaml) }}
             {{- if $.Values.atlas.redactSecrets }}
               {{- $ctxRedacted := mergeOverwrite (deepCopy $instanceValuesRedacted) $mergedRedacted }}
+              {{- $_ := set $ctxRedacted "Values" $ctxRedacted }}
               {{- $mergedRedacted = mergeOverwrite $mergedRedacted (tpl $body $ctxRedacted | fromYaml) }}
             {{- end }}
           {{- else }}
