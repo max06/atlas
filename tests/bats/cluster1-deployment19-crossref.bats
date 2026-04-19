@@ -55,6 +55,18 @@ setup_file() {
   [ "$output" = "fromGlobal-foo.bar" ]
 }
 
+@test "d19: gotmpl can use .Values.xxx (wrapped) syntax for SOPS key" {
+  # Unified context: ATLAS adds a self-referential "Values" key so bare
+  # ({{ .foo }}) and wrapped ({{ .Values.foo }}) forms both resolve.
+  run get_path cluster1 deployment19 app-crossref .domainFromSopsWrapped
+  [ "$output" = "app.foo.bar" ]
+}
+
+@test "d19: gotmpl can mix .Values.xxx with hierarchy + template SOPS" {
+  run get_path cluster1 deployment19 app-crossref .mixedWrappedHierarchy
+  [ "$output" = "fromGlobal-foo.bar" ]
+}
+
 # --- Redacted render: transitive taint through derived gotmpl ---------------
 #
 # The same twin-load pattern that protects hierarchy-derived gotmpl values

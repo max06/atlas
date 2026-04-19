@@ -205,6 +205,19 @@ Every app template receives the full merged values as `.Values`, including:
 
 All hierarchy values (global, group, cluster, deployment) are also available as top-level keys in `.Values`.
 
+### Template context (for gotmpl value files and app templates)
+
+Every Go template ATLAS renders — app templates (`templates/*/helmfile.yaml.gotmpl`), hierarchy gotmpl files (`global.values.yaml.gotmpl`, `cluster.values.yaml.gotmpl`, …), and values-list gotmpls (`values.yaml.gotmpl` inside a template's `values:` list) — receives a unified context addressable two equivalent ways:
+
+| Syntax | Example |
+|--------|---------|
+| Wrapped **(recommended)** | `{{ .Values.clusterdomain }}`, `{{ .Values.atlas.cwd }}` |
+| Bare | `{{ .clusterdomain }}`, `{{ .atlas.cwd }}` |
+
+Both resolve to the same leaf — ATLAS adds a self-referential `Values` key to every tpl context.
+
+**Use `.Values.xxx` unless you have a reason not to.** Helm charts, helmfile environment values, and every helm-aware linter or IDE completion already speak that dialect; bare `.xxx` is an ATLAS-only shortcut that silently breaks the moment you copy an expression into a helm template (`.Release.Name`, `.Chart.Version`, etc. always require the wrapped form) or paste one from a helm chart example. Consistent `.Values.xxx` lets expressions move between ATLAS values, helm chart values, and standard helmfile environments without rewrites. The bare form stays supported for backward compatibility, but isn't the path of least surprise.
+
 ---
 
 ## Secrets

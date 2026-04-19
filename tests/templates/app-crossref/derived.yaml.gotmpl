@@ -1,3 +1,7 @@
 domainFromSops: "app.{{ .clusterdomain }}"
 hostFromPlain: "{{ .appName }}.{{ .region }}.local"
 mixedFromHierarchyAndSops: "{{ .globalOnly }}-{{ .clusterdomain }}"
+# Helm/helmfile convention — resolves via the self-referential "Values" key
+# ATLAS adds to every tpl context. Must behave identically to the bare form.
+domainFromSopsWrapped: "app.{{ .Values.clusterdomain }}"
+mixedWrappedHierarchy: "{{ .Values.globalOnly }}-{{ .Values.clusterdomain }}"
