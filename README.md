@@ -390,12 +390,21 @@ on:
 
 jobs:
   review:
-    uses: max06/atlas/.github/workflows/snapshot-review.yml@v0.1.0
+    uses: max06/atlas/.github/workflows/snapshot-review.yml@main
     with:
       helmfile-path: helmfile.yaml.gotmpl
     secrets:
       sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
 ```
+
+> [!NOTE]
+> **Pin the workflow to `@main`, not a version tag.** The workflow ships
+> redaction-replay logic that scrubs baseline output against the PR render's
+> captured secret map — if you pin to an older tag, you miss security fixes
+> for leaks discovered after that tag was cut. The workflow itself does not
+> decide which ATLAS version your repo consumes (that's controlled by your
+> checked-in helmfile / pinned sub-helmfile refs), so tracking `@main` gives
+> you leak-fix delivery without affecting your deployment version.
 
 ### Inputs
 
