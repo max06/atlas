@@ -16,6 +16,7 @@ _repo_root() {
 
 _helmfile_build() {
   # $1=cluster filter (or empty)  $2=deployment filter (or empty)
+  # ATLAS_FILTER_* env vars are the only supported filter input.
   local cluster="$1" deployment="$2" root
   root="$(_repo_root)"
   local args=(
@@ -24,9 +25,8 @@ _helmfile_build() {
     --state-values-set "atlas.deploymentDefinitions=tests/deployments"
     --state-values-set "atlas.cwd=$root"
   )
-  [[ -n "$cluster" ]]    && args+=(--state-values-set "atlas.filter.cluster=$cluster")
-  [[ -n "$deployment" ]] && args+=(--state-values-set "atlas.filter.deploymentName=$deployment")
-  helmfile "${args[@]}" build 2>/dev/null
+  ATLAS_FILTER_CLUSTER="$cluster" ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
+    helmfile "${args[@]}" build 2>/dev/null
 }
 
 _release_count() {
@@ -100,6 +100,23 @@ _release_names() {
   run grep -c 'filter:' "$cm_file"
   rm -rf "$out"
   [ "$output" = "0" ]
+}
+
+@test "stage1: a filter passed via state-values is ignored (env vars only)" {
+  # ATLAS strips atlas.filter from the incoming .Values before dispatching,
+  # so state-values cannot sneak a filter in. Pass one; verify it didn't
+  # narrow anything.
+  local root out full
+  root="$(_repo_root)"
+  full=$(_helmfile_build "" "" | yq 'select(.releases != null) | .releases | length' | awk '{s+=$1} END {print s+0}')
+  out=$(helmfile -f "$root/helmfile.yaml.gotmpl" \
+    --state-values-set "atlas.appTemplates=tests/templates" \
+    --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
+    --state-values-set "atlas.cwd=$root" \
+    --state-values-set "atlas.filter.cluster=cluster1" \
+    --state-values-set "atlas.filter.deploymentName=deployment1" \
+    build 2>/dev/null | yq 'select(.releases != null) | .releases | length' | awk '{s+=$1} END {print s+0}')
+  [ "$out" = "$full" ]
 }
 
 @test "stage1: filter skips sub-helmfiles entirely (broken fixture is not loaded)" {
