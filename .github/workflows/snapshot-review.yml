@@ -68,7 +68,9 @@ on:
     secrets:
       sops-age-key:
         required: false
-        description: "SOPS Age private key — mandatory if your repo has *.values.sops.yaml files. Use a dedicated CI key (see README). Decrypted values are redacted in output."
+        description: "SOPS Age private key — mandatory if your repo has
+          *.values.sops.yaml files. Use a dedicated CI key (see README).
+          Decrypted values are redacted in output."
 
 permissions:
   contents: read
@@ -95,6 +97,23 @@ jobs:
 
       - name: Initialize Helmfile plugins
         run: helmfile init --force
+
+      # Captures the latest max06/atlas release tag. The comment builder
+      # compares it against the caller's pinned workflow ref (parsed out
+      # separately on each checkout) to decide whether an "update available"
+      # note is meaningful. Failure is non-fatal: if gh is rate-limited or
+      # the API returns nothing, we fall back to "no update available"
+      # (conservative — the hint is strictly a convenience).
+      - name: Check for latest ATLAS release
+        id: latest-release
+        continue-on-error: true
+        run: |
+          LATEST_TAG=$(gh release list -R max06/atlas --limit 1 \
+            --json tagName --jq '.[0].tagName // ""' 2>/dev/null || echo "")
+          echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Latest ATLAS release: ${LATEST_TAG:-<none>}"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Install ATLAS post-renderer plugin
         run: |
@@ -158,16 +177,25 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # Extract the ATLAS workflow pin from the caller's workflow file as it
+      # will exist AFTER this PR merges. Pairs with the target-side extraction
+      # after the next checkout to drive the 3-way update-notification compare
+      # in the comment builder. An empty output ⇒ caller workflow not detected
+      # (renamed path, fork); downstream logic treats empty as "skip update
+      # note" to avoid false alarms.
+      - name: Detect merge-result workflow pin
+        id: merge-pin
+        if: always()
+        run: |
+          REF=$(grep -hE 'uses:[[:space:]]*max06/atlas/\.github/workflows/snapshot-review\.yml@' \
+            .github/workflows/*.y*ml 2>/dev/null | \
+            sed -E 's/.*snapshot-review\.yml@([^[:space:]]+).*/\1/' | \
+            head -1)
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "Merge-result ATLAS pin: ${REF:-<not detected>}"
+
       - name: Render merge-result manifests
         id: pr
-        env:
-          # Enables side-dump in the atlas-redact plugin. Every per-release
-          # redaction map is written here as <cluster>/<deployment>/<release>.json
-          # for the replay step to consume. Old ATLAS versions that lack the
-          # side-dump wiring in their helmfile template simply don't write —
-          # safe fallback (scrubber reports no-map and the diff step drops
-          # those releases rather than showing unredacted baseline).
-          ATLAS_SIDEDUMP_MAP_DIR: ${{ runner.temp }}/sidedump-maps
         run: |
           HELMFILE_ARGS="-f ${{ inputs.helmfile-path }}"
           MERGE_FALLBACK="${{ steps.merge-checkout.outcome == 'failure' }}"
@@ -286,6 +314,19 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           clean: false
+
+      # Extract the ATLAS workflow pin from the caller's workflow file as it
+      # exists on the target branch. See merge-pin above for context.
+      - name: Detect target-branch workflow pin
+        id: target-pin
+        if: always()
+        run: |
+          REF=$(grep -hE 'uses:[[:space:]]*max06/atlas/\.github/workflows/snapshot-review\.yml@' \
+            .github/workflows/*.y*ml 2>/dev/null | \
+            sed -E 's/.*snapshot-review\.yml@([^[:space:]]+).*/\1/' | \
+            head -1)
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "Target-branch ATLAS pin: ${REF:-<not detected>}"
 
       - name: Render baseline manifests
         id: baseline
@@ -782,47 +823,52 @@ jobs:
               echo ''
             fi
 
-            # ── ATLAS version mismatch / old-ATLAS detection ──
-            # The redaction-replay step scrubs baseline output using the PR
-            # render's captured map, so template-level SOPS leaks from an
-            # old-ATLAS baseline are closed for every release that exists on
-            # both sides. What's left to warn about:
-            #   * baseline-only releases (removed): no matching PR map exists,
-            #     so their content diff is suppressed — reviewer sees only a
-            #     summary line.
-            #   * PR-downgrade (PR on older ATLAS): the PR side may ship
-            #     cleartext secrets through its inline redaction; replay
-            #     can't fix that direction.
-            # Messaging is tuned to reflect the replay pipeline rather than
-            # a raw leak.
-            if [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "true" ]; then
+            # ── Update notification (neutral, 3-way pin compare) ──
+            # Parses the caller's own workflow file on both checkouts to read
+            # the pinned ref, then compares against upstream latest release:
+            #   * PR changes the pin       → call it out (neutral phrasing)
+            #   * pin unchanged, update    → gentle note with the new tag
+            #   * pin unchanged, on latest → silent
+            #   * pin == main              → silent (tracking, always "latest")
+            #   * pin not detected         → silent (caller workflow renamed
+            #                                or forked; don't false-alarm)
+            # Independent of the security messaging below.
+            TARGET_PIN='${{ steps.target-pin.outputs.ref }}'
+            MERGE_PIN='${{ steps.merge-pin.outputs.ref }}'
+            LATEST_TAG='${{ steps.latest-release.outputs.tag }}'
+
+            if [ -n "$TARGET_PIN" ] && [ -n "$MERGE_PIN" ] \
+                 && [ "$TARGET_PIN" != "$MERGE_PIN" ]; then
+              # PR changes the pin. Neutral — no chronology guess.
               echo '> [!NOTE]'
-              echo '> **Target branch pins an older ATLAS revision.** Template-level SOPS values on the baseline side are replayed against the PR render map, so overlapping releases are redacted. Releases that exist only on the baseline (removed by this PR) are summarized without a content diff to avoid leaking unredacted output. Bumping the pinned ref is still recommended.'
+              echo "> This PR changes the ATLAS workflow pin: \`@${TARGET_PIN}\` → \`@${MERGE_PIN}\`."
               echo ''
-            elif [ "$BASELINE_FILTER" = "true" ] && [ "$PR_FILTER" = "false" ]; then
-              echo '> [!CAUTION]'
-              echo '> **This PR downgrades to an older ATLAS revision.** The replay pipeline can only scrub the baseline; it cannot fix leaks on the PR side. Review the PR-side diff carefully and rotate anything that leaks.'
-              echo ''
-            elif [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "false" ]; then
-              echo '> [!CAUTION]'
-              echo '> **Both sides use an older ATLAS revision.** No map is captured on either side, so template-level SOPS values may appear in cleartext in the diff. Bumping the pinned ATLAS ref activates the replay pipeline and closes the gap.'
+            elif [ -n "$MERGE_PIN" ] && [ -n "$LATEST_TAG" ] \
+                   && [ "$MERGE_PIN" != "$LATEST_TAG" ] \
+                   && [ "$MERGE_PIN" != "main" ]; then
+              # Pin unchanged, not on latest, not tracking main.
+              echo '> [!NOTE]'
+              echo "> A newer ATLAS release is available: **\`${LATEST_TAG}\`** (this workflow is pinned to \`@${MERGE_PIN}\`). Consider bumping the pin."
               echo ''
             fi
 
-            # ── Suppressed-diff summary ──
-            # Every suppressed release shows as a summary line in the diff
-            # block below; this banner calls out the total counts so the
-            # reviewer knows at-a-glance how much of the change surface is
-            # hidden from content-level review.
-            SUP_NOMAP='${{ steps.diff.outputs.suppressed_nomap }}'
-            SUP_REMOVED='${{ steps.diff.outputs.suppressed_removed }}'
-            if [ "${SUP_NOMAP:-0}" != "0" ] || [ "${SUP_REMOVED:-0}" != "0" ]; then
-              echo '> [!NOTE]'
-              echo '> Some release diffs were suppressed to avoid leaking secrets:'
-              [ "${SUP_REMOVED:-0}" != "0" ] && echo "> - **${SUP_REMOVED}** release(s) removed by this PR (no PR-side map to replay)."
-              [ "${SUP_NOMAP:-0}" != "0" ] && echo "> - **${SUP_NOMAP}** release(s) present on both sides but lacked a captured redaction map (likely an old ATLAS version on the PR side)."
-              echo '>'
-              echo '> Review the affected releases locally with `helmfile template` if you need a content-level check.'
+            # ── Security messaging (FILTER-probe driven) ──
+            # The stage-1 filter probe tells us whether the pinned ATLAS
+            # supports per-release twin-load. Pre-split-rendering ATLAS leaks
+            # template-level SOPS values. Flag the risk independently of the
+            # update-availability note — someone may be on the latest
+            # release but still old enough to leak.
+            if [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "false" ]; then
+              echo '> [!CAUTION]'
+              echo '> **Both sides use an older ATLAS version that leaks template-level secrets.** Values from SOPS files referenced inside app templates (`release[].values`, `release[].secrets`) may appear in cleartext in the diff below. Review carefully and rotate anything that leaks.'
+              echo ''
+            elif [ "$BASELINE_FILTER" = "false" ]; then
+              echo '> [!CAUTION]'
+              echo '> **The target branch uses an older ATLAS version that leaks template-level secrets.** Values from SOPS files referenced inside app templates may appear in cleartext on the baseline side of the diff. Review carefully and rotate anything that leaks.'
+              echo ''
+            elif [ "$PR_FILTER" = "false" ]; then
+              echo '> [!CAUTION]'
+              echo '> **This PR pins an older ATLAS version that leaks template-level secrets.** Values from SOPS files referenced inside app templates may appear in cleartext on the PR side of the diff. Review carefully and rotate anything that leaks.'
               echo ''
             fi
 
@@ -916,8 +962,34 @@ jobs:
             echo ''
           }
 
+          TARGET_PIN='${{ steps.target-pin.outputs.ref }}'
+          MERGE_PIN='${{ steps.merge-pin.outputs.ref }}'
+          LATEST_TAG='${{ steps.latest-release.outputs.tag }}'
+
+          # Format a pin cell: empty → "—", anything else quoted as code.
+          # The job summary renders markdown, so we need the backticks.
+          pin_cell() {
+            if [ -z "$1" ]; then echo '—'; else echo "\`$1\`"; fi
+          }
+
           {
             echo '## ATLAS Review Summary'
+            echo ''
+
+            # ── Workflow pin detection ──
+            # Lets the reviewer sanity-check what the pipeline parsed out of
+            # each checkout before trusting the update-notification banner
+            # in the PR comment. If a row shows "—" (not detected), the
+            # caller workflow path diverged from the expected grep pattern
+            # — the update note will be silent to avoid false alarms, and
+            # this table explains why.
+            echo '### Workflow pin detection'
+            echo ''
+            echo '| Source | Pin |'
+            echo '| --- | --- |'
+            echo "| Target branch (\`${{ github.event.pull_request.base.ref }}\`) | $(pin_cell "$TARGET_PIN") |"
+            echo "| Merge result | $(pin_cell "$MERGE_PIN") |"
+            echo "| Upstream latest release | $(pin_cell "$LATEST_TAG") |"
             echo ''
 
             # ── Target branch ──
