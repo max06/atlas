@@ -1,0 +1,8 @@
+# Exercises the self-reference pass. Keys defined in this file can be
+# referenced by later keys in the same file via a backtick escape: the
+# outer template emits the inner expression as a literal string, which
+# the post-merge self-ref pass then resolves against the merged tree.
+domain: foo.bar
+clusterDomain: "{{`{{ .Values.atlas.deployment.cluster }}.{{ .Values.domain }}`}}"
+# Chained reference resolves only after multiple self-ref passes.
+serviceHost: "{{`api.{{ .Values.clusterDomain }}`}}"

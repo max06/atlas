@@ -129,6 +129,43 @@ Output format:
   {{- end }}
 {{- end }}
 
+{{- /* ====================== SELF-REFERENCE PASS ====================== */ -}}
+{{- /* Second tpl pass over the fully merged hierarchy so values can reference
+     other values defined earlier in the SAME file — the first pass only
+     sees keys from previously-merged files, not keys being defined in the
+     file currently being parsed. Example:
+
+       # any values.yaml.gotmpl
+       domain: foo.bar
+       clusterDomain: "{{`{{ .Values.atlas.deployment.cluster }}.{{ .Values.domain }}`}}"
+
+     The backtick escape keeps the inner expression as a literal string
+     through the first pass; this second pass resolves it against the
+     fully merged tree. Cross-file refs (file B sees file A's keys) do
+     NOT need the escape — they resolve during the first pass via the
+     cascading accumulator.
+
+     Iterates up to $maxSelfRefPasses times so chains (a -> b -> c)
+     converge; breaks as soon as both trees are a no-op. The redacted
+     tree gets the same treatment so the twin-load diff keeps pairing
+     SOPS-derived self-ref values with their redacted counterparts. */ -}}
+{{- $maxSelfRefPasses := 5 }}
+{{- range $pass := until $maxSelfRefPasses }}
+  {{- $realCtx := deepCopy $realValues }}
+  {{- $_ := set $realCtx "Values" $realCtx }}
+  {{- $renderedReal := tpl ($realValues | toYaml) $realCtx | fromYaml }}
+  {{- $redactedCtx := deepCopy $redactedValues }}
+  {{- $_ := set $redactedCtx "Values" $redactedCtx }}
+  {{- $renderedRedacted := tpl ($redactedValues | toYaml) $redactedCtx | fromYaml }}
+  {{- $realStable     := eq ($renderedReal     | toYaml) ($realValues     | toYaml) }}
+  {{- $redactedStable := eq ($renderedRedacted | toYaml) ($redactedValues | toYaml) }}
+  {{- if and $realStable $redactedStable }}
+    {{- break }}
+  {{- end }}
+  {{- $realValues     = $renderedReal }}
+  {{- $redactedValues = $renderedRedacted }}
+{{- end }}
+
 {{- /* The real values are what helm sees — schema validations and template
      logic stay intact. */ -}}
 {{- $loadedValues := $realValues }}
