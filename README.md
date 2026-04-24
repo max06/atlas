@@ -195,7 +195,9 @@ Every app template receives the full merged values as `.Values`, including:
 | Key | Description |
 |-----|-------------|
 | `.Values.atlas.cwd` | Absolute path to the repository root |
-| `.Values.atlas.deployment.cluster` | Cluster path (e.g., `staging/cluster-a` or `standalone`) |
+| `.Values.atlas.deployment.cluster` | Full cluster path (e.g., `staging/cluster-a` or `standalone`), used for filesystem layout |
+| `.Values.atlas.deployment.clusterName` | Leaf cluster name only (e.g., `cluster-a`). Use for naming downstream resources (ArgoCD apps, etc.) where the group-prefixed path would contain an illegal `/`. Leaf names must be unique across the repo. |
+| `.Values.atlas.deployment.clusterGroup` | Group prefix of the cluster path (e.g., `staging` for `staging/cluster-a`). Absent for standalone clusters — guard with `{{ if .Values.atlas.deployment.clusterGroup }}` to activate group-scoped features. |
 | `.Values.atlas.deployment.deploymentName` | Deployment directory name |
 | `.Values.atlas.deployment.deploymentPath` | Absolute path to `deployment.yaml` |
 | `.Values.atlas.instance.template` | Template name (directory name) |
@@ -312,19 +314,15 @@ ATLAS processes your repository in three steps:
 
 ### Single-deployment rendering (fast path)
 
-When a consumer (e.g. an ArgoCD ApplicationSet) only needs one deployment rendered, ATLAS can short-circuit step 1 so only the matching sub-helmfile is ever loaded. Pass the target via environment variables:
+When a consumer (e.g. an ArgoCD ApplicationSet) only needs one deployment rendered, pass a standard helmfile `--selector`:
 
 ```bash
-ATLAS_FILTER_CLUSTER=staging/cluster-a \
-ATLAS_FILTER_DEPLOYMENT_NAME=my-app \
-  helmfile template
+helmfile template --selector cluster=staging/cluster-a,deploymentName=my-app
 ```
 
-Both variables are optional — set either, both, or neither. With neither, the whole repo is rendered as before.
+Every sub-helmfile ATLAS emits carries a matching `selectors:` spec (`cluster=…,deploymentName=…,variant=…`) plus `selectorsInherited: true` at the top-level dispatcher. Non-matching sub-helmfiles are skipped before they're parsed and their SOPS values decrypted, so per-deployment renders only pay the cost of the single target.
 
-Why env vars? They reach ATLAS regardless of how the consumer's entry-point helmfile is written. A consumer that explicitly lists `appTemplates`, `deploymentDefinitions`, and `cwd` (like the starter template) doesn't forward arbitrary `.Values.atlas` keys, so state-values-based filters would silently drop. Env vars are read inside ATLAS's own top-level file, so the propagation problem goes away.
-
-Why not `--selector`? Helmfile's `--selector` only filters releases **after** every sub-helmfile has been parsed and its values (including SOPS) materialized. That scales poorly for per-deployment invocations. The env-var-driven filter reaches ATLAS's top-level template and skips non-matching entries before helmfile processes them, so SOPS decryption and value rendering only happen for the target deployment.
+Requires a helmfile version that includes [helmfile/helmfile#2545](https://github.com/helmfile/helmfile/pull/2545). Without it, the `selectors:` entries on each sub-helmfile override the CLI `--selector` and the filter has no effect.
 
 ---
 
