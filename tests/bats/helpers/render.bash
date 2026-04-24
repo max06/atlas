@@ -180,6 +180,14 @@ render_contains() {
 # rendered Kubernetes resources — helm doesn't inject commonLabels/release
 # labels into manifest metadata during `helmfile template`.
 #
+# The yq filter narrows by cluster + deploymentName labels in addition to the
+# release name: helmfile versions without helmfile/helmfile#2545 do not
+# shortcut sub-helmfile parsing when `--selector` is given, so `helmfile build`
+# emits every sub-helmfile's releases. Many fixtures share a release name
+# (e.g. "app1") across multiple (cluster, deployment) tuples, so we'd get a
+# multi-doc stream that hides the target. Matching on cluster + deploymentName
+# picks exactly the intended release regardless of helmfile version.
+#
 # Args: $1=cluster   $2=deployment   $3=instance
 # Emits: the labels map as YAML on stdout.
 release_labels() {
@@ -190,5 +198,5 @@ release_labels() {
     --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
     --state-values-set "atlas.cwd=$root" \
     build --selector "cluster=${cluster},deploymentName=${deployment}" 2>/dev/null |
-    yq "select(.releases != null) | .releases[] | select(.name == \"${instance}\") | .labels"
+    yq "select(.releases != null) | .releases[] | select(.name == \"${instance}\" and .labels.cluster == \"${cluster}\" and .labels.deploymentName == \"${deployment}\") | .labels"
 }

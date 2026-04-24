@@ -40,40 +40,29 @@
 # A YAML list under 'helmfiles:' where each item represents a deployment assignment to a cluster,
 # with:
 # - cluster: Full cluster path like "group-name/cluster-a" or "single-cluster".
+#   Used for filesystem lookups (cluster values files live under this path).
+# - clusterName: Leaf cluster name only ("cluster-a", "single-cluster"). Used for
+#   naming downstream resources (e.g. ArgoCD Application names) where the
+#   group-prefixed path would contain an illegal "/". Leaf names must be unique
+#   across the repo for this to be unambiguous.
+# - clusterGroup: Group prefix of the cluster path ("group-name" for
+#   "group-name/cluster-a"). OMITTED for standalone clusters, so templates
+#   can gate group-scoped features by testing whether the key is present.
 # - deploymentName: The name of the deployment (derived from its directory).
 # - path: Absolute path to the deployment.yaml file.
 #
 # This output configures helmfile entries that point to a single deployment renderer template
 # (helmfile.single.yaml.gotmpl), injecting the necessary context for each deployment.
 
-{{- if not (and (isAbs .Values.atlas.cwd) (isDir .Values.atlas.cwd)) }}
+{{- if not (and (isAbs $.Values.atlas.cwd) (isDir $.Values.atlas.cwd)) }}
   {{- fail "No valid cwd given" }}
 {{- end }}
-{{- $repoRoot := .Values.atlas.cwd }}
-{{- $deploymentsDir := printf "%s/%s" $repoRoot .Values.atlas.deploymentDefinitions }}
-
-# OPTIONAL STAGE-1 FILTER
-# ATLAS can narrow the emitted helmfiles: list before helmfile processes it.
-# When atlas.filter.cluster and/or atlas.filter.deploymentName are set,
-# non-matching clusters are skipped here in STEP 1 (no FS scan, no deployment
-# collection, no sub-helmfile emission) and non-matching deployments are
-# skipped in OUTPUT.
-#
-# Why this exists: helmfile's --selector only filters releases AFTER every
-# sub-helmfile is parsed and its values (including SOPS) are materialized,
-# which is prohibitive for a per-deployment render (ArgoCD ApplicationSet
-# pattern). --state-values-set IS accessible to templates, so we use
-# atlas.filter.* for an up-front short-circuit. Absent both filters, behavior
-# matches pre-filter ATLAS exactly (full repo rendered).
-{{- $filter := .Values.atlas | get "filter" dict }}
-{{- $filterCluster    := $filter | get "cluster"        "" }}
-{{- $filterDeployment := $filter | get "deploymentName" "" }}
+{{- $repoRoot := $.Values.atlas.cwd }}
+{{- $deploymentsDir := printf "%s/%s" $repoRoot $.Values.atlas.deploymentDefinitions }}
 
 # STEP 1: DISCOVER ALL CLUSTERS
 # Identify all directories with an "apps" subdirectory. Only leaf clusters
-# (no child "apps" directories) are collected as deployment targets. When
-# atlas.filter.cluster is set, non-matching clusters are dropped here so the
-# per-cluster deployment scans in STEP 2 don't run for them.
+# (no child "apps" directories) are collected as deployment targets.
 {{- $clustersPattern := printf "%s/**/apps" $deploymentsDir }}
 {{- $clustersRaw := include "glob" $clustersPattern | fromJson }}
 
@@ -86,8 +75,7 @@
     {{- $childPattern := printf "%s/%s/*/apps" $deploymentsDir $clusterPath }}
     {{- $hasChildren := include "glob" $childPattern | fromJson }}
     {{- $isLeaf := eq (len $hasChildren) 0 }}
-    {{- $clusterMatches := or (eq $filterCluster "") (eq $clusterPath $filterCluster) }}
-    {{- if and $isLeaf $clusterMatches }}
+    {{- if $isLeaf }}
       {{- $_ := set $clusters $clusterPath (list) }}
     {{- end }}
   {{- end }}
@@ -142,19 +130,40 @@
 # Leaving it in would leak the filter values through .Values.atlas into every
 # chart, silently corrupting renders whose output should be identical with or
 # without the filter applied.
+#
+# Each sub-helmfile entry carries a `selectors:` spec (helmfile/helmfile#2545)
+# so --selector can drop non-matching sub-helmfiles BEFORE they're parsed and
+# their SOPS values decrypted. The spec is a single comma-separated string of
+# k=v pairs (AND within a spec; list of specs = OR across specs). Labels
+# mirror the commonLabels block in helmfile.single.yaml.gotmpl so a CLI
+# selector matches identically at both the sub-helmfile and release levels.
+# The stage-1 atlas.filter.* path stays in place for helmfile versions without
+# selector-aware sub-helmfile filtering.
 {{- $atlasForSub := omit .Values.atlas "filter" }}
 helmfiles:
 {{- range $cluster, $deployments := $clusters }}
+  {{- $clusterName := $cluster | base }}
+  {{- /* clusterGroup: non-empty only when the cluster path contains a slash.
+       `dir` on a slash-less string returns ".", so we key off contains to
+       decide whether the field is meaningful. */ -}}
+  {{- $clusterGroup := "" }}
+  {{- if contains "/" $cluster }}
+    {{- $clusterGroup = $cluster | dir }}
+  {{- end }}
   {{- range $deployment := $deployments }}
-    {{- if or (eq $filterDeployment "") (eq $deployment.deploymentName $filterDeployment) }}
   - path: helmfile.single.yaml.gotmpl
+    selectors:
+      - cluster={{ $cluster }},clusterName={{ $clusterName }}{{ if $clusterGroup }},clusterGroup={{ $clusterGroup }}{{ end }},deploymentName={{ $deployment.deploymentName }},variant={{ $atlasForSub.variant }}
     values:
       - atlas:
-          {{- $atlasForSub | toYaml | nindent 10 }}
+          {{- $.Values.atlas | toYaml | nindent 10 }}
           deployment:
             cluster: {{ $cluster }}
+            clusterName: {{ $clusterName }}
+            {{- if $clusterGroup }}
+            clusterGroup: {{ $clusterGroup }}
+            {{- end }}
             deploymentName: {{ $deployment.deploymentName }}
             deploymentPath: {{ $deployment.path }}
-    {{- end }}
   {{- end }}
 {{- end }}

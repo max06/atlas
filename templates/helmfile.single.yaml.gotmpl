@@ -210,12 +210,25 @@ environments:
   {{- $template := tpl (readFile $templateFile) $tplContext | fromYaml }}
 
   {{- /* Set commonLabels on the rendered template so every release gets
-       cluster and deployment identification labels applied by helmfile. */ -}}
-  {{- $_ := set $template "commonLabels" (dict
+       cluster and deployment identification labels applied by helmfile.
+       `cluster` is the full path (e.g. "group/leaf") and mirrors the
+       filesystem hierarchy; `clusterName` is the leaf-only name, useful
+       for downstream selection by short name (and for resource naming
+       in consumer app templates — the full path contains a slash).
+       `clusterGroup` is the group prefix (or absent for standalone
+       clusters), injected upstream in helmfile.all.yaml.gotmpl; mirror
+       its conditional presence here so releases in standalone clusters
+       don't carry an empty-string group label. */ -}}
+  {{- $labels := dict
     "cluster"        $.Values.atlas.deployment.cluster
+    "clusterName"    $.Values.atlas.deployment.clusterName
     "deploymentName" $.Values.atlas.deployment.deploymentName
     "variant"        $.Values.atlas.variant
-  ) }}
+  }}
+  {{- if hasKey $.Values.atlas.deployment "clusterGroup" }}
+    {{- $_ := set $labels "clusterGroup" $.Values.atlas.deployment.clusterGroup }}
+  {{- end }}
+  {{- $_ := set $template "commonLabels" $labels }}
 
   {{- range $release := $template.releases }}
 

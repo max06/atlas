@@ -9,8 +9,11 @@
      arbitrary .Values keys, so env vars are the only knobs that reach
      ATLAS reliably):
        ATLAS_REDACT_SECRETS           enable post-renderer redaction
-       ATLAS_FILTER_CLUSTER           stage-1 filter: render only this cluster
-       ATLAS_FILTER_DEPLOYMENT_NAME   stage-1 filter: render only this deployment */ -}}
+
+     Per-deployment filtering uses standard helmfile `--selector` — every
+     sub-helmfile carries `selectors:` for its cluster/deploymentName/variant
+     (see templates/helmfile.all.yaml.gotmpl) and `selectorsInherited: true`
+     cascades a CLI --selector down through the dispatcher levels. */ -}}
 
 {{- $atlas := deepCopy .Values.atlas }}
 
@@ -22,21 +25,9 @@
 {{- /* Redaction toggle — env var is always the source of truth. */ -}}
 {{- $_ := set $atlas "redactSecrets" (eq (env "ATLAS_REDACT_SECRETS") "true") }}
 
-{{- /* Stage-1 filter. Always overwritten from env vars — an atlas.filter key
-     a caller tried to pass through .Values is discarded so there's exactly
-     one input path and no silent surprises. */ -}}
-{{- $_ := unset $atlas "filter" }}
-{{- $envCluster    := env "ATLAS_FILTER_CLUSTER"         | default "" }}
-{{- $envDeployment := env "ATLAS_FILTER_DEPLOYMENT_NAME" | default "" }}
-{{- if or $envCluster $envDeployment }}
-  {{- $filter := dict }}
-  {{- if $envCluster    }}{{- $_ := set $filter "cluster"        $envCluster    }}{{- end }}
-  {{- if $envDeployment }}{{- $_ := set $filter "deploymentName" $envDeployment }}{{- end }}
-  {{- $_ := set $atlas "filter" $filter }}
-{{- end }}
-
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
+    selectorsInherited: true
     values:
       - atlas:
           {{- $atlas | toYaml | nindent 10 }}

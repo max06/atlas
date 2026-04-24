@@ -226,16 +226,17 @@ jobs:
           PR_DIR="${RUNNER_TEMP}/pr-snapshot"
           TOTAL=$(jq length "${RUNNER_TEMP}/pr-list.json")
 
-          # Probe: does this ATLAS revision honor the ATLAS_FILTER_* env vars?
-          # A sentinel non-existent cluster narrows the helmfiles: list to
-          # zero entries. helmfile exits 0 (with --allow-no-matching-release)
-          # and prints nothing to stdout. Older ATLAS versions that predate
-          # the filter ignore the env var and return the full release set —
-          # non-empty stdout is the detection signal for that.
+          # Probe: does this helmfile version honor --selector against the
+          # sub-helmfile selectors ATLAS emits? A sentinel non-existent
+          # cluster narrows the helmfiles: list to zero entries. Patched
+          # helmfiles (helmfile/helmfile#2545) skip non-matching sub-helmfiles
+          # and print nothing. Unpatched helmfiles ignore the sub-helmfile
+          # selectors and return the full release set — non-empty stdout is
+          # the detection signal for that, which flips us to bulk rendering.
           PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
-            ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
             helmfile $HELMFILE_ARGS \
-            list --output json --allow-no-matching-release 2>/dev/null || true)
+            list --selector cluster=__atlas_probe_nonexistent__ \
+            --output json --allow-no-matching-release 2>/dev/null || true)
           if [ -z "$PROBE_OUT" ]; then
             PROBE_COUNT=0
           else
@@ -245,9 +246,9 @@ jobs:
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored on the merge-result side — falling back to bulk render."
+            echo "::warning::helmfile --selector did not narrow sub-helmfiles on the merge-result side — falling back to bulk render. Upgrade to a helmfile build including helmfile/helmfile#2545 for per-deployment renders."
             echo "::group::Probe diagnostic (merge result)"
-            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
+            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if selector works)"
             echo "PROBE_OUT (first 400 chars):"
             echo "${PROBE_OUT:0:400}"
             echo "::endgroup::"
@@ -275,13 +276,12 @@ jobs:
               local pair="$1" cluster deployment
               cluster="${pair%|*}"
               deployment="${pair#*|}"
-              ATLAS_FILTER_CLUSTER="$cluster" \
-              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
               helmfile -f "$HELMFILE_PATH" \
                 template \
+                --selector "cluster=$cluster,deploymentName=$deployment" \
                 --skip-schema-validation \
                 --output-dir "$RENDER_DIR" \
-                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
                 2>>"$STDERR_LOG" \
               || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
             }
@@ -290,11 +290,12 @@ jobs:
           else
             # Compat path: one bulk `helmfile template`. Slower and loads
             # every deployment's values even when only one changed, but the
-            # only path that works on pre-filter ATLAS revisions.
+            # only path that works on helmfile versions that don't short-
+            # circuit sub-helmfiles via --selector.
             ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --skip-schema-validation \
               --output-dir "$PR_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
               2>>"$STDERR_LOG" || RENDER_STATUS=$?
           fi
 
@@ -366,11 +367,11 @@ jobs:
           BASELINE_DIR="${RUNNER_TEMP}/baseline"
           TOTAL=$(jq length "${RUNNER_TEMP}/baseline-list.json")
 
-          # Filter-support probe (same rationale as merge-result side).
+          # Selector-support probe (same rationale as merge-result side).
           PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
-            ATLAS_FILTER_CLUSTER=__atlas_probe_nonexistent__ \
             helmfile $HELMFILE_ARGS \
-            list --output json --allow-no-matching-release 2>/dev/null || true)
+            list --selector cluster=__atlas_probe_nonexistent__ \
+            --output json --allow-no-matching-release 2>/dev/null || true)
           if [ -z "$PROBE_OUT" ]; then
             PROBE_COUNT=0
           else
@@ -380,9 +381,9 @@ jobs:
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::ATLAS stage-1 filter (ATLAS_FILTER_*) was not honored on the baseline side — falling back to bulk render. The pinned ATLAS ref likely predates the feature."
+            echo "::warning::helmfile --selector did not narrow sub-helmfiles on the baseline side — falling back to bulk render. The pinned ATLAS ref or the helmfile binary on the baseline likely predates helmfile/helmfile#2545."
             echo "::group::Probe diagnostic (baseline)"
-            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if filter works)"
+            echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if selector works)"
             echo "PROBE_OUT (first 400 chars):"
             echo "${PROBE_OUT:0:400}"
             echo "::endgroup::"
@@ -409,13 +410,12 @@ jobs:
               local pair="$1" cluster deployment
               cluster="${pair%|*}"
               deployment="${pair#*|}"
-              ATLAS_FILTER_CLUSTER="$cluster" \
-              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
               helmfile -f "$HELMFILE_PATH" \
                 template \
+                --selector "cluster=$cluster,deploymentName=$deployment" \
                 --skip-schema-validation \
                 --output-dir "$RENDER_DIR" \
-                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
                 2>>"$STDERR_LOG" \
               || { echo "::warning::Baseline render failed for $cluster/$deployment" >&2; return 1; }
             }
@@ -425,7 +425,7 @@ jobs:
             ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --skip-schema-validation \
               --output-dir "$BASELINE_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
               2>>"$STDERR_LOG" || RENDER_STATUS=$?
           fi
 
@@ -864,12 +864,13 @@ jobs:
               echo ''
             fi
 
-            # ── Security messaging (FILTER-probe driven) ──
-            # The stage-1 filter probe tells us whether the pinned ATLAS
-            # supports per-release twin-load. Pre-split-rendering ATLAS leaks
-            # template-level SOPS values. Flag the risk independently of the
-            # update-availability note — someone may be on the latest
-            # release but still old enough to leak.
+            # ── Security messaging (selector-probe driven) ──
+            # FIXME: stale coupling. The probe now tests helmfile#2545
+            # --selector skip behavior, which is not a proxy for the twin-
+            # load redaction feature. A baseline may have twin-load but lack
+            # selector-aware helmfile (false-positive warning) or vice-versa.
+            # Needs a dedicated "does baseline have twin-load?" probe before
+            # this messaging is trustworthy again.
             if [ "$BASELINE_FILTER" = "false" ] && [ "$PR_FILTER" = "false" ]; then
               echo '> [!CAUTION]'
               echo '> **Both sides use an older ATLAS version that leaks template-level secrets.** Values from SOPS files referenced inside app templates (`release[].values`, `release[].secrets`) may appear in cleartext in the diff below. Review carefully and rotate anything that leaks.'
