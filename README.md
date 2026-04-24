@@ -218,6 +218,20 @@ Both resolve to the same leaf — ATLAS adds a self-referential `Values` key to 
 
 **Use `.Values.xxx` unless you have a reason not to.** Helm charts, helmfile environment values, and every helm-aware linter or IDE completion already speak that dialect; bare `.xxx` is an ATLAS-only shortcut that silently breaks the moment you copy an expression into a helm template (`.Release.Name`, `.Chart.Version`, etc. always require the wrapped form) or paste one from a helm chart example. Consistent `.Values.xxx` lets expressions move between ATLAS values, helm chart values, and standard helmfile environments without rewrites. The bare form stays supported for backward compatibility, but isn't the path of least surprise.
 
+### Self-referencing values
+
+A `.yaml.gotmpl` hierarchy file can reference keys defined **earlier in the same file** via a backtick escape. ATLAS runs a second tpl pass over the merged tree once the hierarchy is fully loaded, so the deferred expression resolves against every key — including ones declared above it in the same file.
+
+```yaml
+# any global / group / cluster / deployment values.yaml.gotmpl
+domain: foo.bar
+clusterDomain: "{{`{{ .Values.atlas.deployment.cluster }}.{{ .Values.domain }}`}}"
+# Chains work — each self-ref pass resolves one hop, up to 5 passes.
+serviceHost: "{{`api.{{ .Values.clusterDomain }}`}}"
+```
+
+The escape is **only** required for same-file self-references. Cross-file references (`cluster.values.yaml.gotmpl` reading a key from `global.values.yaml.gotmpl`) resolve during the first pass via the cascading accumulator and do not need escaping. Self-references that target a SOPS-derived key still flow through twin-load redaction — the resolved derivative is redacted wholesale in the redacted render.
+
 ---
 
 ## Secrets
@@ -293,7 +307,7 @@ For a **standalone cluster** (no group), steps 8–10 are skipped entirely.
 1. **Deep merge**: Values are merged recursively using `mergeOverwrite`. Map keys from higher-priority sources override lower-priority ones, but sibling keys are preserved.
 2. **Missing files are silently skipped**: Any file that does not exist is simply not loaded. No level is mandatory.
 3. **Standalone clusters skip group level**: A cluster path without `/` (e.g., `standalone`) has no group; group-level files are not loaded.
-4. **Templated values have access to prior values**: `.yaml.gotmpl` files are rendered with all previously loaded values as template context, enabling computed values that reference earlier layers.
+4. **Templated values have access to prior values**: `.yaml.gotmpl` files are rendered with all previously loaded values as template context, enabling computed values that reference earlier layers. Same-file self-references are supported via a backtick escape — see [Self-referencing values](#self-referencing-values).
 5. **Atlas context is always present**: The `atlas` key in the merged values always contains deployment metadata and is not overridden by value files.
 6. **Template values list is ordered**: Within an app template's release `values:` list, items are processed in order — last entry wins.
 7. **ATLAS hierarchy overrides template values**: The hierarchy values (global → group → cluster → deployment) are applied after the template's own values, ensuring deployment-specific configuration always wins over app template defaults.
