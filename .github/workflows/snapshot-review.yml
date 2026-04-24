@@ -281,7 +281,7 @@ jobs:
                 --selector "cluster=$cluster,deploymentName=$deployment" \
                 --skip-schema-validation \
                 --output-dir "$RENDER_DIR" \
-                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
                 2>>"$STDERR_LOG" \
               || { echo "::error::Merge-result render failed for $cluster/$deployment" >&2; return 1; }
             }
@@ -295,7 +295,7 @@ jobs:
             ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --skip-schema-validation \
               --output-dir "$PR_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
               2>>"$STDERR_LOG" || RENDER_STATUS=$?
           fi
 
@@ -415,7 +415,7 @@ jobs:
                 --selector "cluster=$cluster,deploymentName=$deployment" \
                 --skip-schema-validation \
                 --output-dir "$RENDER_DIR" \
-                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+                --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
                 2>>"$STDERR_LOG" \
               || { echo "::warning::Baseline render failed for $cluster/$deployment" >&2; return 1; }
             }
@@ -425,7 +425,7 @@ jobs:
             ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
               --skip-schema-validation \
               --output-dir "$BASELINE_DIR" \
-              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.clusterName}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+              --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
               2>>"$STDERR_LOG" || RENDER_STATUS=$?
           fi
 
