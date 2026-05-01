@@ -1,0 +1,3 @@
+# Deployment-local hierarchy value used by sibling deployment.yaml's
+# apps[].name template expression.
+namePrefix: tenant-a

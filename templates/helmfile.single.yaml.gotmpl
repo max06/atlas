@@ -45,14 +45,27 @@ Output:
   {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
 {{- end }}
 
-{{- /* deployment.yaml is rendered as a Go template with the atlas object as
-     context. Hierarchy values (global/group/cluster/deployment .yaml files)
-     are NOT in this context — they are resolved per-release inside the
-     values-loader, where .Release.* is also available. If a deployment.yaml
-     needs to template against hierarchy values to compute apps[], that's a
-     gap we will close when a real consumer demands it (see project memory). */ -}}
-{{- $ctx := deepCopy .Values }}
-{{- $_   := set $ctx "Values" .Values }}
+{{- /* Walk the hierarchy (global → group → cluster → deployment) once at
+     fan-out time so deployment.yaml authors can use
+     `{{ .Values.<hierarchyKey> }}` in apps[].name (or .template, or any
+     other field that helmfile.single iterates here). Without this,
+     template references resolve to empty strings, which silently
+     malforms the per-instance fan-out (instance.name="" leaks through
+     to helmfile.instance and breaks the auto-munge contract).
+
+     .Release is a synthetic placeholder — helmfile's real .Release is
+     only available later inside the values-loader. Hierarchy gotmpl
+     files that reference .Release.* see empty values during this
+     state-build pass; same caveat as helmfile.instance.yaml.gotmpl. */ -}}
+{{- $synthRelease := dict "Name" "" "Namespace" "" }}
+{{- $hierarchy := include "atlas.hierarchy.merged" (dict
+    "Values"  .Values
+    "Release" $synthRelease
+    "redact"  false
+) | fromYaml }}
+{{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
+{{- $_ := set $ctx "Values" $ctx }}
+{{- $_ := set $ctx "Release" $synthRelease }}
 {{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
 
 {{- /* ====================== INSTANCE FAN-OUT ====================== */ -}}

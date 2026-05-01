@@ -1,0 +1,20 @@
+# Fixture: deployment.yaml with apps[].name templated against a hierarchy
+# value. helmfile.single iterates apps[] to dispatch the per-instance
+# fan-out and needs to resolve the name template — which means the
+# deployment.yaml render at the helmfile.single level must have hierarchy
+# in scope, not just atlas.
+#
+# namePrefix comes from this deployment's sibling values.yaml ("tenant-a").
+# The deployment-level layer is the closest hierarchy file and exercises
+# the full walk (global → group → cluster → deployment) before the value
+# becomes visible to the template.
+#
+# After auto-munge, the resulting release name is "tenant-a-stage3-tplname"
+# (lowercase + dash, satisfying helm's release-name regex).
+apps:
+  - template: app-stage3-tplname
+    name: "{{ .Values.namePrefix }}"
+    namespace: test
+settings:
+  branch: main
+  autoSync: false

@@ -1,0 +1,8 @@
+{{- /* Hierarchy .yaml.gotmpl that pulls atlas context. The hierarchy walk
+     in atlas.hierarchy.merged renders this file once per release-context
+     pass; the tpl context must include .Values.atlas.* so consumers can
+     compose hierarchy values from the deployment's own location
+     (cluster, deploymentName, etc.). */ -}}
+fromHierarchyGotmpl:
+  cluster: "{{ .Values.atlas.deployment.cluster }}"
+  deploymentName: "{{ .Values.atlas.deployment.deploymentName }}"

@@ -121,7 +121,14 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
       {{- end }}
       {{- $hierarchy = mergeOverwrite $hierarchy $decrypted }}
     {{- else if hasSuffix ".yaml.gotmpl" $f }}
-      {{- $hCtx := deepCopy $hierarchy }}
+      {{- /* Tpl ctx: atlas object (from .Values) + the accumulating
+           hierarchy. Authors of hierarchy gotmpl files routinely reference
+           .Values.atlas.deployment.cluster, .Values.atlas.cwd, etc. to
+           compose values from the deployment context, so atlas must be in
+           scope. The accumulator (hierarchy seen so far) layers on top so
+           later files can reference earlier hierarchy keys via the bare
+           form (.foo) or the wrapped form (.Values.foo). */ -}}
+      {{- $hCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) }}
       {{- $_ := set $hCtx "Values" $hCtx }}
       {{- $_ := set $hCtx "Release" $.Release }}
       {{- $hierarchy = mergeOverwrite $hierarchy (tpl (readFile $f) $hCtx | fromYaml) }}
