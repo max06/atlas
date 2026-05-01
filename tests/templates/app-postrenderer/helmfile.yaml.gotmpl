@@ -1,0 +1,17 @@
+{{- /*
+  Negative-test fixture: a release with postRenderer set.
+
+  ATLAS owns the helm post-renderer slot for its redaction pipeline. Helm 4
+  does not support post-renderer chaining, and silently overwriting a
+  user-set postRenderer would mask intent. The renderer must fail with a
+  pointer to open an issue so the use case can be discussed before any
+  workaround.
+
+  This fixture lives outside tests/deployments/ so the standard bulk render
+  in render.bash isn't affected.
+*/ -}}
+releases:
+  - name: pr-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    postRenderer: /usr/local/bin/some-user-script

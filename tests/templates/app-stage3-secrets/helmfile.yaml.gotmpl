@@ -1,0 +1,29 @@
+{{- /*
+  Stage-3 fixture: release.secrets handling.
+
+  ATLAS re-accepts release[].secrets and merges every entry AFTER all
+  values: entries — matching helmfile's env-level secret precedence
+  ("non-HCL secrets are loaded first but merged last"). Atlas resolves
+  paths template-relative for release.secrets and deployment-relative
+  for instance-level apps[].secrets.
+
+  This fixture demonstrates:
+    - inline values land first
+    - template secrets override inline values for shared keys
+    - instance secrets (set in deployment.yaml apps[].secrets) override
+      template secrets for shared keys
+
+  Keys:
+    key1 — only in template values    -> fromValues
+    key2 — template values + template secrets    -> fromTemplateSecret
+    key3 — template secrets + instance secrets   -> fromInstanceSecret
+*/ -}}
+releases:
+  - name: stage3-secrets-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - key1: fromValues
+        key2: fromValues
+    secrets:
+      - template-secret.sops.yaml

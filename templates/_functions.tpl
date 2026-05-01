@@ -11,11 +11,10 @@ atlas.applyListOverride — Resolves relative file paths in a release list field
 (strategicMergePatches, jsonPatches, transformers) and appends any
 instance-level overrides from the deployment.yaml.
 
-The release values: field does NOT flow through this helper. It is handled
-inline in helmfile.single.yaml.gotmpl via a progressive twin-load merge so
-that later list entries can reference keys defined by earlier ones (SOPS
-decryption, .yaml.gotmpl rendering, and merging all happen in declaration
-order within the same loop).
+The release values: field does NOT flow through this helper. It is replaced
+wholesale by helmfile.instance with the values-loader path, and the loader
+runs the progressive merge (SOPS decryption, .yaml.gotmpl rendering, and
+merging in declaration order) at release-evaluation time.
 
 Context: dict with "release", "instance", "templateDir", and "field".
 */ -}}

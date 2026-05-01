@@ -1,0 +1,26 @@
+{{- /*
+  Stage-3 fixture: condition + installed should be stripped by atlas.
+
+  ATLAS treats deployment.yaml presence as the deploy-intent signal (so
+  ArgoCD does not produce empty deployments from helmfile-level skips).
+  Releases that carry `condition:` or `installed:` are written as if those
+  fields were absent — the renderer drops them before emitting the state.
+
+  The fixture here sets:
+    condition: never.enabled    — a key that is never defined; vanilla
+                                  helmfile would treat the release as
+                                  disabled and skip rendering.
+    installed: false            — vanilla helmfile would skip rendering.
+
+  If atlas's stripping is in place, the release renders normally. If
+  stripping is missing, no manifest is produced and the bats test fails
+  on `instance_rendered`.
+*/ -}}
+releases:
+  - name: condinst-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    condition: never.enabled
+    installed: false
+    values:
+      - rendered: yes

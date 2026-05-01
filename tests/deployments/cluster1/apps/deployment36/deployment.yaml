@@ -1,0 +1,20 @@
+# Fixture: stage-3 release-name munging.
+# Three instances of the same template:
+#   - default-prefix (apps[].name=backend)         -> backend-vm
+#   - explicit-prefix (apps[].name=frontend)       -> frontend-vm  (default style)
+#   - suffix          (apps[].name=cust-abc, suffix) -> vm-cust-abc
+apps:
+  - template: app-stage3-namestyle
+    name: backend
+    namespace: test
+  - template: app-stage3-namestyle
+    name: frontend
+    namespace: test
+    nameStyle: prefix
+  - template: app-stage3-namestyle
+    name: cust-abc
+    namespace: test
+    nameStyle: suffix
+settings:
+  branch: main
+  autoSync: false

@@ -10,7 +10,7 @@ load 'helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment9
-INSTANCE=app-named-secondary
+INSTANCE=secondary-app-named
 
 setup_file() { ensure_rendered; }
 

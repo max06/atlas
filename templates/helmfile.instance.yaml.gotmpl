@@ -1,0 +1,303 @@
+# code: language=helm
+
+{{/*
+============================================================
+Atlas Per-Instance Renderer (stage 3)
+============================================================
+
+Purpose:
+  Renders the Helmfile state file for ONE app instance (template + name)
+  within ONE deployment. Receives a fully-populated atlas-object via env
+  values from stage 2 (helmfile.single.yaml.gotmpl); emits releases whose
+  values: lists are collapsed to a single entry pointing at the shared
+  values-loader. The loader resolves the actual values at helmfile's
+  release-evaluation time, where .Release.* is available.
+
+  Why per-instance and not per-deployment:
+    Multiple instances in one helmfile state file would share one
+    environments.default.values block. atlas.instance can therefore only
+    take ONE value per file — last-write-wins on multi-doc YAML — so
+    instances must live in separate files.
+
+  Per-release rewrites applied to every entry in the app template's
+  releases: list:
+    - namespace        : instance-level apps[].namespace overrides template
+    - chart            : ./ and ../ rewritten template-relative
+    - values           : replaced wholesale with [loaderPath] — loader
+                         re-reads template + deployment, walks hierarchy,
+                         decrypts SOPS, applies progressive merge
+    - secrets          : stripped from emitted state; loader handles them
+                         via SOPS, merging AFTER values: per helmfile env
+                         contract
+    - condition        : stripped (atlas treats deployment.yaml presence
+                         as deploy intent)
+    - installed        : stripped (same reason)
+    - skipSchemaValidation : defaulted to true when absent (preserves
+                             user-set true OR false)
+    - postRenderer     : fail with link to project — atlas owns this slot
+    - keyring          : ./ and ../ rewritten template-relative
+    - set[].file       : ./ and ../ rewritten template-relative
+    - setString[].file : ./ and ../ rewritten template-relative
+    - strategicMergePatches / jsonPatches / transformers :
+                         atlas.applyListOverride wires path resolution +
+                         instance-level appends from deployment.yaml
+    - labels           : instance-level apps[].labels merged into release
+    - name             : auto-munged with instance.name when set and
+                         different from template; apps[].nameStyle
+                         (prefix|suffix, default prefix) controls form
+
+  Inputs (from stage 2 via helmfiles[].values):
+    .Values.atlas.cwd                        — absolute repo root
+    .Values.atlas.appTemplates               — relative path to templates dir
+    .Values.atlas.deploymentDefinitions      — relative path to deployments dir
+    .Values.atlas.instance.template          — app template name
+    .Values.atlas.instance.name              — instance name (defaults to template)
+    .Values.atlas.deployment.cluster         — full cluster path
+    .Values.atlas.deployment.clusterName     — leaf cluster name
+    .Values.atlas.deployment.clusterGroup    — present when cluster has a group
+    .Values.atlas.deployment.deploymentName  — deployment dir name
+    .Values.atlas.deployment.deploymentPath  — absolute deployment.yaml path
+    .Values.atlas.variant                    — variant label
+    .Values.atlas.redactSecrets              — redaction toggle (twin-load)
+*/}}
+
+{{- /* ====================== PATHS ====================== */ -}}
+{{- $cwd := .Values.atlas.cwd }}
+{{- $templateDir := printf "%s/%s/%s" $cwd .Values.atlas.appTemplates .Values.atlas.instance.template }}
+{{- $templateFile := printf "%s/helmfile.yaml.gotmpl" $templateDir }}
+{{- $loaderPath := printf "%s/templates/helmfile.values-loader.yaml.gotmpl" $cwd }}
+
+{{- if not (isFile $templateFile) }}
+  {{- fail (printf "App template not found: %s" $templateFile) }}
+{{- end }}
+{{- if not (isFile $loaderPath) }}
+  {{- fail (printf "Values loader not found: %s" $loaderPath) }}
+{{- end }}
+
+{{- /* ====================== TPL CONTEXT (atlas only — .Release not available here) ====================== */ -}}
+{{- $ctx := deepCopy .Values }}
+{{- $_ := set $ctx "Values" .Values }}
+
+{{- /* ====================== DEPLOYMENT.YAML — find this instance for namespace override ====================== */ -}}
+{{- $deploymentRendered := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
+{{- $thisInstance := dict }}
+{{- range $app := $deploymentRendered.apps }}
+  {{- $instanceName := $app.template }}
+  {{- if hasKey $app "name" }}
+    {{- $instanceName = $app.name }}
+  {{- end }}
+  {{- if and (eq $app.template $.Values.atlas.instance.template) (eq $instanceName $.Values.atlas.instance.name) }}
+    {{- $thisInstance = $app }}
+  {{- end }}
+{{- end }}
+
+{{- /* ====================== RENDER APP TEMPLATE (atlas-only ctx; .Release.* refs left for the loader) ====================== */ -}}
+{{- $template := tpl (readFile $templateFile) $ctx | fromYaml }}
+
+{{- /* ====================== REWRITE EACH RELEASE ====================== */ -}}
+{{- /* For every release in the app template:
+       1. Apply instance-level namespace override if deployment.yaml sets one.
+       2. Resolve relative chart: paths against the template directory
+          (absolute, repo refs, and URI-style paths pass through unchanged).
+       3. Replace values: with a single entry pointing at the shared
+          values-loader. The loader runs at release-time and resolves the
+          actual values with .Release.* available.
+       4. Strip atlas-incompatible fields (condition, installed). In ATLAS,
+          deployment intent is signalled by the presence of a deployment.yaml
+          entry — letting helmfile-level skips through would silently produce
+          empty deployments, indistinguishable from a misconfiguration.
+       5. Munge release.name with instance.name when a named instance is
+          used. Keeps app-template authors free of `{{ .Values.atlas.* }}`
+          references for distinct release names across multi-instance
+          deployments. Default style is prefix; apps[].nameStyle: suffix
+          flips for multi-tenant naming conventions ("vm-cust-abc"). When
+          instance.name equals the template name (the default when
+          apps[].name is unset), no munging happens.
+    */ -}}
+{{- /* Determine the name-munging strategy for this instance. */ -}}
+{{- $needsMunge := ne .Values.atlas.instance.name .Values.atlas.instance.template }}
+{{- $nameStyle := "prefix" }}
+{{- if and $needsMunge (hasKey $thisInstance "nameStyle") }}
+  {{- $nameStyle = $thisInstance.nameStyle }}
+  {{- if and (ne $nameStyle "prefix") (ne $nameStyle "suffix") }}
+    {{- fail (printf "apps[].nameStyle must be 'prefix' or 'suffix', got: %q (template=%s instance=%s)" $nameStyle .Values.atlas.instance.template .Values.atlas.instance.name) }}
+  {{- end }}
+{{- end }}
+
+{{- range $release := $template.releases }}
+  {{- /* Reject user-set postRenderer up front. ATLAS owns the post-renderer
+       slot for its redaction pipeline; helm 4 does not chain post-renderers,
+       and silently overwriting user intent would mask bugs. Fail with a
+       clear pointer to the project so the use case can be discussed. */ -}}
+  {{- if hasKey $release "postRenderer" }}
+    {{- fail (printf "release %q sets postRenderer (%v) — ATLAS owns this slot for its redaction post-renderer and helm 4 cannot chain post-renderers. Open an issue at https://github.com/max06/atlas to discuss your use case (template=%s instance=%s)." $release.name $release.postRenderer $.Values.atlas.instance.template $.Values.atlas.instance.name) }}
+  {{- end }}
+
+  {{- if hasKey $thisInstance "namespace" }}
+    {{- $_ := set $release "namespace" $thisInstance.namespace }}
+  {{- end }}
+  {{- if hasKey $release "chart" }}
+    {{- $chart := $release.chart }}
+    {{- if or (hasPrefix "./" $chart) (hasPrefix "../" $chart) }}
+      {{- $_ := set $release "chart" (printf "%s/%s" $templateDir $chart) }}
+    {{- end }}
+  {{- end }}
+  {{- $_ := set $release "values" (list $loaderPath) }}
+
+  {{- /* Drop atlas-incompatible release fields. See block-comment above. */ -}}
+  {{- $_ := unset $release "condition" }}
+  {{- $_ := unset $release "installed" }}
+
+  {{- /* Drop release.secrets — the values-loader processes these via SOPS
+       fetchSecretValue and merges them last (matching helmfile's env-level
+       secret precedence). Leaving the field would cause helmfile to also
+       try to decrypt via the helm-secrets plugin, which is duplicative
+       and would fail in environments where the plugin isn't installed. */ -}}
+  {{- $_ := unset $release "secrets" }}
+
+  {{- /* Default skipSchemaValidation to true when the template doesn't set it.
+       helm runs schema validation only on install/upgrade/lint, not on the
+       template/build paths ATLAS exercises during ArgoCD render — so the
+       default mostly affects consumer-side bootstrap, where missing CRDs
+       are a common false-positive source. User-set values (true or false)
+       are preserved. */ -}}
+  {{- if not (hasKey $release "skipSchemaValidation") }}
+    {{- $_ := set $release "skipSchemaValidation" true }}
+  {{- end }}
+
+  {{- /* Merge instance-level labels (deployment.yaml apps[].labels) into the
+       release's labels map. atlas-template consumers rely on this for
+       selector-based filtering (e.g. bootstrap: true). Instance labels
+       take priority over any labels the template release set. */ -}}
+  {{- if hasKey $thisInstance "labels" }}
+    {{- $currentLabels := $release | get "labels" dict }}
+    {{- $_ := set $release "labels" (mergeOverwrite $currentLabels $thisInstance.labels) }}
+  {{- end }}
+
+  {{- /* Resolve template-relative paths in release list fields and append any
+       instance-level overrides from deployment.yaml. The release.values:
+       field is excluded — stage-3's loader replaces it wholesale and
+       resolves entries itself at release-evaluation time. */ -}}
+  {{- range $listField := list "strategicMergePatches" "jsonPatches" "transformers" }}
+    {{- include "atlas.applyListOverride" (dict
+        "release"     $release
+        "instance"    $thisInstance
+        "templateDir" $templateDir
+        "field"       $listField
+    ) }}
+  {{- end }}
+
+  {{- /* Resolve template-relative scalar/nested paths so helm can find them
+       at install time regardless of the consumer's CWD:
+         keyring             — single scalar (helm --keyring path)
+         set[].file          — list of maps; the .file inside each map is a
+                               path to a single-value file (helm --set-file)
+         setString[].file    — same shape as set[]
+       Mirrors the chart: handling — only `./` and `../` prefixes are
+       rewritten; absolute paths and bare names pass through. */ -}}
+  {{- if hasKey $release "keyring" }}
+    {{- $kr := $release.keyring }}
+    {{- if or (hasPrefix "./" $kr) (hasPrefix "../" $kr) }}
+      {{- $_ := set $release "keyring" (printf "%s/%s" $templateDir $kr) }}
+    {{- end }}
+  {{- end }}
+  {{- range $setField := list "set" "setString" }}
+    {{- if hasKey $release $setField }}
+      {{- range $entry := ($release | get $setField list) }}
+        {{- if and (kindIs "map" $entry) (hasKey $entry "file") }}
+          {{- $f := $entry.file }}
+          {{- if or (hasPrefix "./" $f) (hasPrefix "../" $f) }}
+            {{- $_ := set $entry "file" (printf "%s/%s" $templateDir $f) }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+
+  {{- /* Apply name munging. Skipped when instance.name == template (no
+       disambiguation needed) so single-instance releases stay vanilla. */ -}}
+  {{- if $needsMunge }}
+    {{- $instanceName := $.Values.atlas.instance.name }}
+    {{- if eq $nameStyle "suffix" }}
+      {{- $_ := set $release "name" (printf "%s-%s" $release.name $instanceName) }}
+    {{- else }}
+      {{- $_ := set $release "name" (printf "%s-%s" $instanceName $release.name) }}
+    {{- end }}
+  {{- end }}
+
+  {{- /* ====================== REDACTION POST-RENDERER WIRING ====================== */ -}}
+  {{- /* When redactSecrets is on, call atlas.values.merged twice for this
+       release — once with redact=false to get the real merged tree, once
+       with redact=true to get the redacted derivative. A deep-compare
+       yields the per-release replacement map for the atlas-redact post-
+       renderer. The replacement map is b64-encoded into postRendererArgs.
+
+       The non-redaction render (regular ArgoCD path) skips this entire
+       block — only the loader runs at release-time. So redaction overhead
+       (extra walk pair) is paid only by CI/redacted-render workflows.
+
+       Synthetic Release: at state-build time we don't have helmfile's
+       real .Release object, so build a minimal stand-in carrying the two
+       fields the loader actually reads (Name + Namespace). */ -}}
+  {{- if $.Values.atlas.redactSecrets }}
+    {{- $relCtx := dict "Name" $release.name "Namespace" $release.namespace }}
+    {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" false) | fromYaml }}
+    {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" true) | fromYaml }}
+    {{- $replMap := index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
+    {{- if gt (len $replMap) 0 }}
+      {{- $postRendererArgs := $replMap | toJson | b64enc }}
+      {{- /* 1MB safety: postRendererArgs is a single argv entry, subject
+           to the kernel's ARG_MAX (~2MB on Linux). 1 MiB headroom keeps
+           the rest of argv+envp safe. */ -}}
+      {{- if gt (len $postRendererArgs) 1048576 }}
+        {{- $sizeKb := divf (len $postRendererArgs) 1024 }}
+        {{- fail (printf "atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Cluster=%s Deployment=%s Release=%s" $sizeKb $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name) }}
+      {{- end }}
+      {{- $_ := set $release "postRenderer" "atlas-redact" }}
+      {{- /* Optional side-dump: when ATLAS_SIDEDUMP_MAP_DIR is set at render
+           time, append the per-release map path as a second argv element.
+           The atlas-redact plugin writes the decoded JSON map to this path
+           in addition to scrubbing stdin. snapshot-review's scrub-baseline
+           later replays each map against an older-baseline render. Layout
+           mirrors --output-dir-template so the scrubber finds maps by
+           release directory without parsing manifests. */ -}}
+      {{- $sidedumpDir := env "ATLAS_SIDEDUMP_MAP_DIR" }}
+      {{- if $sidedumpDir }}
+        {{- $sidedumpPath := printf "%s/%s/%s/%s.json" $sidedumpDir $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name }}
+        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs $sidedumpPath) }}
+      {{- else }}
+        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{- /* ====================== COMMON LABELS ====================== */ -}}
+{{- /* Auto-injected labels for filtering and provenance. `template` and
+     `instance` make it possible to select releases by app-template family
+     and named instance — useful for ArgoCD ApplicationSet selectors and
+     `helmfile list -l template=foo`. When apps[].name is unset, instance
+     defaults to the template name (mirrors the env-values default). */ -}}
+{{- $labels := dict
+  "cluster"        .Values.atlas.deployment.cluster
+  "clusterName"    .Values.atlas.deployment.clusterName
+  "deploymentName" .Values.atlas.deployment.deploymentName
+  "variant"        .Values.atlas.variant
+  "template"       .Values.atlas.instance.template
+  "instance"       .Values.atlas.instance.name
+}}
+{{- if hasKey .Values.atlas.deployment "clusterGroup" }}
+  {{- $_ := set $labels "clusterGroup" .Values.atlas.deployment.clusterGroup }}
+{{- end }}
+{{- $_ := set $template "commonLabels" $labels }}
+
+{{- /* ====================== EMIT ====================== */ -}}
+{{- /* Single YAML document carrying environments + commonLabels + releases.
+     environments.default.values re-publishes the atlas object so the loader
+     sees it via .Values.atlas.* at release-evaluation time. Helmfile's
+     gotmpl parser scopes variables per ---doc, so emitting everything in
+     one doc keeps $template in scope. */ -}}
+{{- $output := dict "environments" (dict "default" (dict "values" (list (dict "atlas" .Values.atlas)))) }}
+{{- $_ := set $output "commonLabels" $template.commonLabels }}
+{{- $_ := set $output "releases" $template.releases }}
+{{ $output | toYaml }}

@@ -142,14 +142,27 @@ When a deployment needs multiple instances of the same template, add a `name` pr
 ```yaml
 apps:
   - template: virtual-machine
-    name: vm-primary
+    name: primary
     namespace: default
   - template: virtual-machine
-    name: vm-secondary
+    name: secondary
     namespace: default
+  - template: virtual-machine
+    name: cust-abc
+    namespace: default
+    nameStyle: suffix       # optional, default: prefix
 ```
 
-The template author is responsible for using `{{ .Values.atlas.instance.name }}` in the release name to avoid duplicate release IDs.
+ATLAS automatically rewrites release names so each instance produces a distinct release — the template author writes the bare release name (e.g. `vm`) and never touches `{{ .Values.atlas.instance.name }}`. With the example above:
+
+| `apps[].name` | `nameStyle` | Resulting release name |
+|---------------|-------------|------------------------|
+| _(unset)_                | _(n/a)_      | `vm` (no munge — instance name defaults to template name) |
+| `primary`                | _(default)_  | `primary-vm`           |
+| `secondary`              | `prefix`     | `secondary-vm`         |
+| `cust-abc`               | `suffix`     | `vm-cust-abc`          |
+
+`prefix` is the default. `suffix` is offered for naming conventions (e.g. multi-tenant `vm-cust-abc`) where the leading label reads better at the end. Templates remain readable as vanilla helmfile when no `name` is set.
 
 ---
 
@@ -159,8 +172,13 @@ ATLAS automatically adds `commonLabels` to every rendered release:
 
 | Label | Value | Purpose |
 |-------|-------|---------|
-| `cluster` | Cluster path (e.g., `staging/cluster-a`) | Identifies the target cluster |
-| `deploymentName` | Deployment directory name (e.g., `my-app`) | Identifies the deployment |
+| `cluster` | Full cluster path (e.g., `staging/cluster-a`) | Target cluster |
+| `clusterName` | Leaf cluster name (e.g., `cluster-a`) | Target cluster (path-safe form) |
+| `clusterGroup` | Group prefix (e.g., `staging`) — only for grouped clusters | Group filtering |
+| `deploymentName` | Deployment directory name | Deployment identity |
+| `template` | App template directory name | Filter by template family (ApplicationSet selectors) |
+| `instance` | `apps[].name`, or template name when unset | Disambiguate multi-instance deployments |
+| `variant` | Variant label (defaults to `default`) | Multiple ATLAS variants on one cluster |
 
 These labels are only applied to helmfile releases by helmfile and serve two purposes:
 
@@ -172,7 +190,7 @@ These labels are only applied to helmfile releases by helmfile and serve two pur
 
 ## App Templates
 
-An app template is a `helmfile.yaml.gotmpl` that defines Helm releases. ATLAS renders it with the full merged values as context.
+An app template is a `helmfile.yaml.gotmpl` that defines Helm releases. ATLAS renders it with the full merged values as context. Templates aim to stay close to vanilla helmfile so they can be tested without ATLAS and migrated away if needed — paths and release-name disambiguation are handled by the renderer.
 
 ```yaml
 # templates/my-app/helmfile.yaml.gotmpl
@@ -187,6 +205,23 @@ releases:
         image:
           tag: latest
 ```
+
+### How ATLAS treats helmfile release options
+
+The per-instance renderer rewrites each release before it reaches helmfile. Most fields pass through; a handful get specific treatment so templates remain readable and free of ATLAS-specific boilerplate:
+
+| Field | ATLAS behavior |
+|-------|----------------|
+| `name` | Auto-munged with `instance.name` when the deployment sets `apps[].name` and it differs from the template name. `apps[].nameStyle` (`prefix` default, `suffix` opt-in) controls form. Templates should not embed `{{ .Values.atlas.instance.name }}`. |
+| `chart` | Relative paths (`./` / `../`) resolved template-relative. |
+| `values` | Replaced wholesale with the values-loader; the loader walks the hierarchy + template + instance lists with progressive merge. |
+| `secrets` | Stripped from emitted state and merged AFTER all values lists by the loader (helmfile env-secret semantics). Paths resolve template-relative for `release.secrets`, deployment-relative for `apps[].secrets`. |
+| `condition`, `installed` | Stripped — deployment intent is the presence of `deployment.yaml`. |
+| `skipSchemaValidation` | Defaulted to `true` when absent (preserves user-set true OR false). |
+| `postRenderer` | Rejected with a fail message — ATLAS owns this slot for redaction; helm 4 cannot chain post-renderers. |
+| `keyring`, `set[].file`, `setString[].file` | Relative paths (`./` / `../`) resolved template-relative. |
+| `strategicMergePatches`, `jsonPatches`, `transformers` | Path-resolved template-relative; instance-level overrides from `deployment.yaml` are appended. |
+| `labels` | Instance-level `apps[].labels` from `deployment.yaml` merged with instance taking priority. ATLAS's commonLabels (cluster, template, instance, …) are added on top. |
 
 ### Available context
 
@@ -244,16 +279,20 @@ ATLAS loads and merges values from multiple levels. Later sources override earli
 
 | Priority | Level | Source | Applies to |
 |----------|-------------------|------------------------------------------------|--------------------------------------|
-| 1 | Chart defaults | Chart's `values.yaml` | Always present |
-| 2 | Template-include | File references in template `values:` list | Per app template |
-| 3 | Template-defaults | Inline maps in template `values:` list | Per app template |
-| 4 | Instance inline | `apps[].values` list in `deployment.yaml` | Per app instance |
-| 5 | Global | `global.values.*` | All clusters, all deployments |
-| 6 | Group | `{group}/group.values.*` | All clusters in that group |
-| 7 | Cluster | `{cluster}/cluster.values.*` | All deployments on that cluster |
-| 8 | Deployment | `{deployment}/values.*` | Only that specific deployment |
+| 1  | Chart defaults    | Chart's `values.yaml`                            | Always present |
+| 2  | Template-include  | File references in template release `values:` list | Per app template |
+| 3  | Template-defaults | Inline maps in template release `values:` list   | Per app template |
+| 4  | Instance inline   | `apps[].values` list in `deployment.yaml`        | Per app instance |
+| 5  | Template secrets  | `release.secrets` list (SOPS files)              | Per app template |
+| 6  | Instance secrets  | `apps[].secrets` list (SOPS files)               | Per app instance |
+| 7  | Global            | `global.values.*`                                | All clusters, all deployments |
+| 8  | Group             | `{group}/group.values.*`                         | All clusters in that group |
+| 9  | Cluster           | `{cluster}/cluster.values.*`                     | All deployments on that cluster |
+| 10 | Deployment        | `{deployment}/values.*`                          | Only that specific deployment |
 
 Template-include and template-defaults are entries in the Helmfile release's `values:` list inside an app template. The list is ordered — the **last element has highest priority**. The table above shows the conventional ordering.
+
+Secrets (`release.secrets` and `apps[].secrets`) are merged AFTER all `values:` entries are resolved, regardless of declaration order. This mirrors helmfile's env-level "non-HCL secrets are loaded first but merged last" contract — secret leaves win over plain-value leaves with the same key.
 
 ### File Types (for hierarchy levels 5–8, loaded in this order per level)
 
@@ -274,21 +313,23 @@ For a deployment at `deployments/{group}/{cluster}/apps/{name}/deployment.yaml` 
  2. templates/{template}/values.yaml.gotmpl (or other included files)  ← template-include
  3. inline maps in templates/{template}/helmfile.yaml.gotmpl           ← template-defaults
  4. apps[].values in deployment.yaml                                   ← instance inline
- 5. deployments/global.values.sops.yaml                                ← ATLAS hierarchy begins
- 6. deployments/global.values.yaml
- 7. deployments/global.values.yaml.gotmpl
- 8. deployments/{group}/group.values.sops.yaml
- 9. deployments/{group}/group.values.yaml
-10. deployments/{group}/group.values.yaml.gotmpl
-11. deployments/{group}/{cluster}/cluster.values.sops.yaml
-12. deployments/{group}/{cluster}/cluster.values.yaml
-13. deployments/{group}/{cluster}/cluster.values.yaml.gotmpl
-14. deployments/{group}/{cluster}/apps/{name}/values.sops.yaml
-15. deployments/{group}/{cluster}/apps/{name}/values.yaml
-16. deployments/{group}/{cluster}/apps/{name}/values.yaml.gotmpl       ← highest priority
+ 5. release.secrets in templates/{template}/helmfile.yaml.gotmpl       ← template secrets
+ 6. apps[].secrets in deployment.yaml                                  ← instance secrets
+ 7. deployments/global.values.sops.yaml                                ← ATLAS hierarchy begins
+ 8. deployments/global.values.yaml
+ 9. deployments/global.values.yaml.gotmpl
+10. deployments/{group}/group.values.sops.yaml
+11. deployments/{group}/group.values.yaml
+12. deployments/{group}/group.values.yaml.gotmpl
+13. deployments/{group}/{cluster}/cluster.values.sops.yaml
+14. deployments/{group}/{cluster}/cluster.values.yaml
+15. deployments/{group}/{cluster}/cluster.values.yaml.gotmpl
+16. deployments/{group}/{cluster}/apps/{name}/values.sops.yaml
+17. deployments/{group}/{cluster}/apps/{name}/values.yaml
+18. deployments/{group}/{cluster}/apps/{name}/values.yaml.gotmpl       ← highest priority
 ```
 
-For a **standalone cluster** (no group), steps 8–10 are skipped entirely.
+For a **standalone cluster** (no group), steps 10–12 are skipped entirely.
 
 ### Rules
 
@@ -304,13 +345,17 @@ For a **standalone cluster** (no group), steps 8–10 are skipped entirely.
 
 ## How It Works
 
-ATLAS processes your repository in three steps:
+ATLAS processes your repository in four stages, each implemented in its own helmfile/gotmpl:
 
-1. **Discover** (`helmfile.all.yaml.gotmpl`) — Scans the `deployments/` directory for all directories containing an `apps/` subdirectory. Filters to leaf clusters only (a group directory with child clusters is not itself a target). Collects deployments at three levels: global (`deployments/apps/`), group (`{group}/apps/`), and cluster-specific (`{cluster}/apps/`).
+1. **Discover** (`templates/helmfile.all.yaml.gotmpl`) — Scans the `deployments/` directory for all directories containing an `apps/` subdirectory. Filters to leaf clusters only (a group directory with child clusters is not itself a target). Collects deployments at three levels: global (`deployments/apps/`), group (`{group}/apps/`), and cluster-specific (`{cluster}/apps/`). Emits one sub-helmfile entry per (cluster, deployment) pair.
 
-2. **Load Values** (`helmfile.single.yaml.gotmpl`) — For each cluster-deployment pair, twin-loads the hierarchy from all levels (global → group → cluster → deployment). The **real** tree loads SOPS values as-is; the **redacted** tree substitutes SOPS leaves with structure-preserving placeholders before merging. Both trees are built in a single template pass. Gotmpl files render once per tree, so any expression referencing a SOPS-derived key automatically produces a redacted derivative in the redacted tree — no explicit taint tracking needed.
+2. **Fan out per instance** (`templates/helmfile.single.yaml.gotmpl`) — For each (cluster, deployment) pair, reads the deployment's `deployment.yaml` and emits one sub-helmfile per app instance. Multi-instance deployments produce one file per instance because helmfile's environment values collapse multi-`environments:` blocks to a single merged value — the per-instance split keeps `atlas.instance` unambiguous.
 
-3. **Render** (`helmfile.single.yaml.gotmpl`) — Reads the deployment's `deployment.yaml` to find which app templates to instantiate. For each app, renders the template with the real values, progressively merges the release's `values:` list (files decrypted / rendered / inline-mapped in declaration order so later entries can reference earlier keys), overlays the hierarchy for precedence, and collapses the list to a single merged dict. When redaction is enabled, a deep-compare between the real and redacted trees produces a replacement map that the post-renderer uses to substitute secrets in the rendered output.
+3. **Per-instance rewrite** (`templates/helmfile.instance.yaml.gotmpl`) — Reads the chosen app template's `helmfile.yaml.gotmpl`, then rewrites each release in place: chart paths and patch/transformer paths resolved template-relative; `release.values` replaced with a single pointer to the values-loader; `condition` / `installed` / `secrets` stripped (loader handles secrets); `postRenderer` rejected as ATLAS-owned; `skipSchemaValidation` defaulted on; instance-level labels merged in; release name auto-munged with the instance name when needed; commonLabels (cluster, clusterName, clusterGroup, deploymentName, template, instance, variant) injected. When `redactSecrets` is on, the loader is called twice (`redact=true` + `redact=false`); the diff becomes the per-release replacement map for the `atlas-redact` helm post-renderer, which scrubs secrets out of the rendered manifests on stdin.
+
+4. **Resolve values at release time** (`templates/_values_loader.tpl`, `templates/helmfile.values-loader.yaml.gotmpl`) — Helmfile evaluates the loader once per release with `.Release.*` and the full atlas object available. The loader walks the hierarchy (global → group → cluster → deployment, three file types per level: `.sops.yaml`, `.yaml`, `.yaml.gotmpl`), builds a baseline, processes the template's `values:` list and the instance's `values:` list with progressive merge so later entries can reference earlier keys, applies `release.secrets` and `apps[].secrets` AFTER values (matching helmfile's env-secret precedence), then overlays the hierarchy as the final precedence layer. Returns one merged YAML blob — what helm sees.
+
+The split lets each stage do exactly one thing and lets the loader run inside helmfile's release-evaluation phase, where `.Release.*` is finally available.
 
 ### Single-deployment rendering (fast path)
 

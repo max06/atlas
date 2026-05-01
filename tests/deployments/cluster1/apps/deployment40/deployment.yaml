@@ -1,0 +1,7 @@
+# Fixture: stage-3 keyring + set[].file + setString[].file path resolution.
+apps:
+  - template: app-stage3-paths
+    namespace: test
+settings:
+  branch: main
+  autoSync: false

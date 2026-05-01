@@ -1,0 +1,22 @@
+{{- /*
+  Stage-3 fixture: skipSchemaValidation default-true.
+
+  ATLAS sets skipSchemaValidation: true on every release UNLESS the
+  template already sets the field. Schema validation runs only on
+  install/upgrade/lint (not the template/build paths ATLAS exercises),
+  so it primarily matters at consumer-side bootstrap. Defaulting it on
+  removes a common source of false-positive failures when CRDs aren't
+  yet installed.
+
+  Two releases:
+    - schema-default-release : no skipSchemaValidation set; ATLAS adds true.
+    - schema-explicit-false  : sets false explicitly; ATLAS preserves it.
+*/ -}}
+releases:
+  - name: schema-default-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+  - name: schema-explicit-false
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    skipSchemaValidation: false

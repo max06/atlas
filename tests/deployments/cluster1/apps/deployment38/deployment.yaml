@@ -1,0 +1,9 @@
+# Fixture: stage-3 release.secrets handling.
+apps:
+  - template: app-stage3-secrets
+    namespace: test
+    secrets:
+      - instance-secret.sops.yaml
+settings:
+  branch: main
+  autoSync: false
