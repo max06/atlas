@@ -65,13 +65,17 @@ Purpose:
 {{- $cwd := .Values.atlas.cwd }}
 {{- $templateDir := printf "%s/%s/%s" $cwd .Values.atlas.appTemplates .Values.atlas.instance.template }}
 {{- $templateFile := printf "%s/helmfile.yaml.gotmpl" $templateDir }}
-{{- $loaderPath := printf "%s/templates/helmfile.values-loader.yaml.gotmpl" $cwd }}
+
+{{- /* The values-loader is sibling to this state file. helmfile resolves
+     release.values: entries relative to the state file's directory, so a
+     bare filename is sufficient and survives remote-helmfile consumption
+     where ATLAS lives in helmfile's cache (~/.cache/helmfile/states/...)
+     rather than the consumer's repo. Do NOT construct $cwd/templates/...:
+     $cwd is the consumer's repo, not ATLAS's location. */ -}}
+{{- $loaderPath := "helmfile.values-loader.yaml.gotmpl" }}
 
 {{- if not (isFile $templateFile) }}
   {{- fail (printf "App template not found: %s" $templateFile) }}
-{{- end }}
-{{- if not (isFile $loaderPath) }}
-  {{- fail (printf "Values loader not found: %s" $loaderPath) }}
 {{- end }}
 
 {{- /* ====================== TPL CONTEXT (atlas only — .Release not available here) ====================== */ -}}
