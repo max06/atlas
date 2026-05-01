@@ -319,12 +319,21 @@ Purpose:
 {{- $_ := set $template "commonLabels" $labels }}
 
 {{- /* ====================== EMIT ====================== */ -}}
-{{- /* Single YAML document carrying environments + commonLabels + releases.
-     environments.default.values re-publishes the atlas object so the loader
-     sees it via .Values.atlas.* at release-evaluation time. Helmfile's
-     gotmpl parser scopes variables per ---doc, so emitting everything in
-     one doc keeps $template in scope. */ -}}
-{{- $output := dict "environments" (dict "default" (dict "values" (list (dict "atlas" .Values.atlas)))) }}
-{{- $_ := set $output "commonLabels" $template.commonLabels }}
-{{- $_ := set $output "releases" $template.releases }}
-{{ $output | toYaml }}
+{{- /* Single YAML document carrying every top-level key from the user's
+     app template, with ATLAS-owned keys overridden:
+
+       environments  — overridden to publish the atlas object so the
+                       values-loader sees it via .Values.atlas.* at
+                       release-evaluation time.
+       commonLabels  — already populated on $template by the labels block
+                       above; deepCopy preserves it.
+       releases      — already mutated in place by the rewrite loop.
+
+     Everything else from the user template (repositories, helmDefaults,
+     templates, bases, hooks, ...) passes through verbatim. ATLAS does
+     not reason about those fields; helmfile consumes them directly.
+
+     Helmfile's gotmpl parser scopes variables per ---doc, so emitting
+     everything in one doc keeps $template in scope. */ -}}
+{{- $_ := set $template "environments" (dict "default" (dict "values" (list (dict "atlas" .Values.atlas)))) }}
+{{ $template | toYaml }}
