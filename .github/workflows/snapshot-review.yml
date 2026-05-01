@@ -226,13 +226,14 @@ jobs:
           PR_DIR="${RUNNER_TEMP}/pr-snapshot"
           TOTAL=$(jq length "${RUNNER_TEMP}/pr-list.json")
 
-          # Probe: does this helmfile version honor --selector against the
-          # sub-helmfile selectors ATLAS emits? A sentinel non-existent
-          # cluster narrows the helmfiles: list to zero entries. Patched
-          # helmfiles (helmfile/helmfile#2545) skip non-matching sub-helmfiles
-          # and print nothing. Unpatched helmfiles ignore the sub-helmfile
-          # selectors and return the full release set — non-empty stdout is
-          # the detection signal for that, which flips us to bulk rendering.
+          # Probe: does CLI --selector reach release-level commonLabels here?
+          # ATLAS no longer emits hardcoded sub-helmfile selectors, so on
+          # current ATLAS this probe always returns 0 — but consumers may
+          # pin to an older ATLAS ref where every sub-helmfile still carries
+          # `selectors:`. On stock helmfile against that old ATLAS, child
+          # selectors REPLACE the inherited CLI selector and the probe
+          # returns the full release set. Non-empty stdout is the detection
+          # signal that filtering is broken, which flips us to bulk rendering.
           PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
             helmfile $HELMFILE_ARGS \
             list --selector cluster=__atlas_probe_nonexistent__ \
@@ -246,7 +247,7 @@ jobs:
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::helmfile --selector did not narrow sub-helmfiles on the merge-result side — falling back to bulk render. Upgrade to a helmfile build including helmfile/helmfile#2545 for per-deployment renders."
+            echo "::warning::helmfile --selector did not narrow releases on the merge-result side — falling back to bulk render. The pinned ATLAS ref likely predates the sub-helmfile-selectors fix; upgrade to a current main, or use a helmfile build including helmfile/helmfile#2545 alongside the older ATLAS."
             echo "::group::Probe diagnostic (merge result)"
             echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if selector works)"
             echo "PROBE_OUT (first 400 chars):"
@@ -262,6 +263,15 @@ jobs:
             # no cross-deployment work. xargs -P4 restores the wall-clock
             # parallelism we'd otherwise lose compared to helmfile's internal
             # sub-helmfile parallelism on a bulk call.
+            #
+            # Both ATLAS_FILTER_* env vars AND --selector are passed:
+            #   - On current ATLAS, ATLAS_FILTER_* short-circuits in
+            #     helmfile.all (stage-1) so non-matching sub-helmfiles
+            #     never get emitted — no SOPS load for unrelated
+            #     deployments. --selector is then redundant but harmless.
+            #   - On older ATLAS (pre-stage-1-filter), env vars are no-op
+            #     and --selector does the work at release level (slower
+            #     because every sub-helmfile still gets parsed + decrypted).
             PAIRS=$(jq -r '[.[] | (.labels | split(",") |
               map(select(startswith("cluster:") or startswith("deploymentName:")) |
                 split(":") | {(.[0]): .[1]}) | add)]
@@ -276,6 +286,8 @@ jobs:
               local pair="$1" cluster deployment
               cluster="${pair%|*}"
               deployment="${pair#*|}"
+              ATLAS_FILTER_CLUSTER="$cluster" \
+              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
               helmfile -f "$HELMFILE_PATH" \
                 template \
                 --selector "cluster=$cluster,deploymentName=$deployment" \
@@ -367,7 +379,11 @@ jobs:
           BASELINE_DIR="${RUNNER_TEMP}/baseline"
           TOTAL=$(jq length "${RUNNER_TEMP}/baseline-list.json")
 
-          # Selector-support probe (same rationale as merge-result side).
+          # Selector-support probe (same rationale as merge-result side):
+          # detects pinned ATLAS refs that still carry the broken hardcoded
+          # sub-helmfile `selectors:` field. Current ATLAS strips that, so
+          # the probe always passes here; baselines pinned to older refs
+          # may still trip the warning and bulk-fallback path.
           PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
             helmfile $HELMFILE_ARGS \
             list --selector cluster=__atlas_probe_nonexistent__ \
@@ -381,7 +397,7 @@ jobs:
             FILTER_SUPPORTED=true
           else
             FILTER_SUPPORTED=false
-            echo "::warning::helmfile --selector did not narrow sub-helmfiles on the baseline side — falling back to bulk render. The pinned ATLAS ref or the helmfile binary on the baseline likely predates helmfile/helmfile#2545."
+            echo "::warning::helmfile --selector did not narrow releases on the baseline side — falling back to bulk render. The pinned ATLAS ref on the baseline likely predates the sub-helmfile-selectors fix."
             echo "::group::Probe diagnostic (baseline)"
             echo "PROBE_COUNT=$PROBE_COUNT (expected 0 if selector works)"
             echo "PROBE_OUT (first 400 chars):"
@@ -397,6 +413,10 @@ jobs:
           # env var makes that explicit.
           RENDER_STATUS=0
           if [ "$FILTER_SUPPORTED" = "true" ]; then
+            # See the merge-result render's fast-path comment for why both
+            # ATLAS_FILTER_* env vars and --selector are passed: env vars
+            # short-circuit at stage-1 on current ATLAS; --selector covers
+            # older ATLAS refs that ignore the env vars.
             PAIRS=$(jq -r '[.[] | (.labels | split(",") |
               map(select(startswith("cluster:") or startswith("deploymentName:")) |
                 split(":") | {(.[0]): .[1]}) | add)]
@@ -410,6 +430,8 @@ jobs:
               local pair="$1" cluster deployment
               cluster="${pair%|*}"
               deployment="${pair#*|}"
+              ATLAS_FILTER_CLUSTER="$cluster" \
+              ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
               helmfile -f "$HELMFILE_PATH" \
                 template \
                 --selector "cluster=$cluster,deploymentName=$deployment" \
