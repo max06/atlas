@@ -14,21 +14,18 @@ The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and
 # Run bats integration tests (value inheritance, SOPS, instances, multi-template)
 bats tests/bats/
 
-# Render a single deployment for debugging (uses the same entry point as consumer repos,
-# with state-values pointing at the tests/ fixtures).
-# Note: subcommand (`template`/`build`) comes BEFORE `-f` so the invocation matches the
-# `Bash(helmfile template *)` / `Bash(helmfile build *)` allowlist patterns.
-helmfile template -f helmfile.yaml.gotmpl \
-  --state-values-set atlas.appTemplates=tests/templates \
-  --state-values-set atlas.deploymentDefinitions=tests/deployments \
-  --state-values-set atlas.cwd=$(pwd) \
+# Render a single deployment for debugging via the test entry point
+# (tests/helmfile.yaml.gotmpl pre-wires atlas.{cwd,appTemplates,
+# deploymentDefinitions} so the invocation stays terse). The entry hands
+# off to ../helmfile.yaml.gotmpl — same code path consumers use.
+# Note: subcommand (`template`/`build`) comes BEFORE `-f` so the invocation
+# matches the `Bash(helmfile template *)` / `Bash(helmfile build *)`
+# allowlist patterns.
+helmfile template -f tests/helmfile.yaml.gotmpl \
   --skip-schema-validation --selector cluster=cluster1,deploymentName=deployment1
 
 # View value loading trace for debugging
-helmfile build -f helmfile.yaml.gotmpl \
-  --state-values-set atlas.appTemplates=tests/templates \
-  --state-values-set atlas.deploymentDefinitions=tests/deployments \
-  --state-values-set atlas.cwd=$(pwd) \
+helmfile build -f tests/helmfile.yaml.gotmpl \
   --debug --selector cluster=cluster1,deploymentName=deployment1
 ```
 
