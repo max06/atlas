@@ -118,7 +118,7 @@ Purpose:
   {{- end }}
 {{- end }}
 
-{{- /* ====================== RENDER APP TEMPLATE (atlas-only ctx; .Release.* refs left for the loader) ====================== */ -}}
+{{- /* ====================== RENDER APP TEMPLATE (atlas + hierarchy + synth Release; real .Release.* still left for the loader) ====================== */ -}}
 {{- $template := tpl (readFile $templateFile) $ctx | fromYaml }}
 
 {{- /* ====================== REWRITE EACH RELEASE ====================== */ -}}
