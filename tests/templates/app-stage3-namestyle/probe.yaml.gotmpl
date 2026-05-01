@@ -1,0 +1,3 @@
+probe:
+  releaseName: {{ .Release.Name | quote }}
+  instanceName: {{ .Values.atlas.instance.name | quote }}

@@ -15,19 +15,21 @@ The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and
 bats tests/bats/
 
 # Render a single deployment for debugging (uses the same entry point as consumer repos,
-# with state-values pointing at the tests/ fixtures)
-helmfile -f helmfile.yaml.gotmpl \
+# with state-values pointing at the tests/ fixtures).
+# Note: subcommand (`template`/`build`) comes BEFORE `-f` so the invocation matches the
+# `Bash(helmfile template *)` / `Bash(helmfile build *)` allowlist patterns.
+helmfile template -f helmfile.yaml.gotmpl \
   --state-values-set atlas.appTemplates=tests/templates \
   --state-values-set atlas.deploymentDefinitions=tests/deployments \
   --state-values-set atlas.cwd=$(pwd) \
-  template --skip-schema-validation --selector cluster=cluster1,deploymentName=deployment1
+  --skip-schema-validation --selector cluster=cluster1,deploymentName=deployment1
 
 # View value loading trace for debugging
-helmfile -f helmfile.yaml.gotmpl \
+helmfile build -f helmfile.yaml.gotmpl \
   --state-values-set atlas.appTemplates=tests/templates \
   --state-values-set atlas.deploymentDefinitions=tests/deployments \
   --state-values-set atlas.cwd=$(pwd) \
-  build --debug --selector cluster=cluster1,deploymentName=deployment1
+  --debug --selector cluster=cluster1,deploymentName=deployment1
 ```
 
 ## Architecture
@@ -38,11 +40,15 @@ helmfile -f helmfile.yaml.gotmpl \
 
 ### Core Template Pipeline
 
-1. **templates/helmfile.all.yaml.gotmpl** — Discovers clusters by scanning for directories containing `/apps` subdirectories, filters to leaf clusters, then collects deployments at three hierarchy levels (global, group, cluster). Outputs helmfile entries pointing to the single deployment renderer.
+1. **templates/helmfile.all.yaml.gotmpl** — Discovers clusters by scanning for directories containing `/apps` subdirectories, filters to leaf clusters, then collects deployments at three hierarchy levels (global, group, cluster). Outputs helmfile entries (one per cluster-deployment pair) pointing to the per-deployment fan-out.
 
-2. **templates/helmfile.single.yaml.gotmpl** — Renders a single deployment by loading values from multiple sources in priority order (global → group → cluster → deployment level), decrypting SOPS values, and rendering the deployment's `deployment.yaml` as a Go template.
+2. **templates/helmfile.single.yaml.gotmpl** — Per-deployment fan-out shim. Reads `deployment.yaml` and emits one sub-helmfile entry per app instance, each pointing at `helmfile.instance.yaml.gotmpl` with the atlas object augmented by `instance.{template, name}`. No value resolution happens here.
 
-3. **templates/_functions.tpl** — Reusable helper library providing: list override application (`atlas.applyListOverride`), path conversion (`convertPaths`), and custom glob pattern matching (`glob`, `globIterative`, `globRecursive`).
+3. **templates/helmfile.instance.yaml.gotmpl** — Per-instance state-file renderer. Reads the chosen app template, rewrites each release (chart paths, name munging, condition/installed strip, secrets strip, postRenderer guard, skipSchemaValidation default, label/path/patch wiring), replaces `release.values` with a single pointer to the values-loader, and wires the redaction post-renderer when `redactSecrets` is on.
+
+4. **templates/helmfile.values-loader.yaml.gotmpl** + **templates/_values_loader.tpl** — Helmfile evaluates the loader once per release at release-evaluation time (where `.Release.*` is finally available). The shared `atlas.values.merged` named template walks the hierarchy (global → group → cluster → deployment), processes the template + instance `values:` lists with progressive merge, applies `release.secrets` + `apps[].secrets` AFTER values, then overlays the hierarchy. The non-redaction render skips the redaction-twin call entirely; redaction does a `redact=true` pass to build the per-release replacement map.
+
+5. **templates/_functions.tpl** — Reusable helper library providing: list override application (`atlas.applyListOverride`), path conversion (`convertPaths`), and custom glob pattern matching (`glob`, `globIterative`, `globRecursive`).
 
 ### Deployment Hierarchy
 

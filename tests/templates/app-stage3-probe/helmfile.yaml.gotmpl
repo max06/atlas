@@ -1,0 +1,20 @@
+{{- /*
+  Stage-3 baseline-probe app template.
+
+  Exercises the value-loading pipeline where each release's `values:` list
+  is processed at helmfile's release-evaluation time (stage 3) by a
+  shared values-loader that has access to .Release.* in addition to the
+  full atlas object.
+
+  Inline maps in values: are not tpl-rendered with .Release context — only
+  file references (.yaml.gotmpl) are. This matches helmfile's native
+  release-time templating semantics. Values that need to reference the
+  release should live in a .yaml.gotmpl file.
+*/ -}}
+releases:
+  - name: stage3-probe-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - inlineFromTemplate: present
+      - probe-values.yaml.gotmpl

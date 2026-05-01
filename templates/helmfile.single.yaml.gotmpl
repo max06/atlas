@@ -2,436 +2,74 @@
 
 {{/*
 ============================================================
-Atlas Deployment Renderer
+Atlas Deployment Renderer (stage 2 — fan-out only)
 ============================================================
 
 Purpose:
-  Renders a complete Helmfile for ONE deployment by:
-  1. Twin-loading the hierarchy (global -> group -> cluster -> deployment):
-       $realValues      — sops values as-is (passed to helm)
-       $redactedValues  — sops values substituted via atlas.redact.value before
-                          merge, so any gotmpl that references a sops key
-                          produces a redacted derivative too (transitive taint
-                          falls out of re-rendering, no separate tracking).
-  2. Deep-comparing $realValues and $redactedValues to build $replMap — the
-     hierarchy-level (real, redacted) pairs every release starts from.
-  3. Loading the deployment.yaml to discover which app templates to instantiate.
-  4. For each app template / release pair:
-     - Rendering the template as a Go template (so .Values.atlas.* resolves).
-     - Rewriting relative chart: paths against the template directory.
-     - Progressively twin-load-merging the release's values: list (plus any
-       deployment-instance values) into a single dict: .sops.yaml decrypted,
-       .yaml.gotmpl rendered with the running accumulator as context, plain
-       files / inline maps merged in declaration order. Both real and
-       redacted accumulators are built so template-level SOPS values AND
-       their transitive gotmpl derivatives end up in the per-release
-       redaction map.
-     - Overlaying the hierarchy on top for precedence and collapsing the
-       release's values: list to one element.
-     - Wiring the atlas-redact post-renderer with the merged per-release
-       replMap.
-     - Outputting the assembled helmfile block.
+  Resolves a single deployment into one sub-helmfile per app instance.
+  All actual value resolution happens later, in helmfile.instance and
+  the shared values-loader (atlas.values.merged), at helmfile's release-
+  evaluation time where .Release.* is available.
 
-  release[].secrets is explicitly rejected — SOPS files go in
-  release[].values where their list position controls loading order.
+Inputs (via env values from helmfile.all.yaml.gotmpl):
+  .Values.atlas.cwd                         — absolute repo root
+  .Values.atlas.appTemplates                — relative path to templates dir
+  .Values.atlas.deploymentDefinitions       — relative path to deployments dir
+  .Values.atlas.redactSecrets               — redaction toggle
+  .Values.atlas.variant                     — variant label
+  .Values.atlas.deployment.cluster          — full cluster path
+  .Values.atlas.deployment.clusterName      — leaf cluster name
+  .Values.atlas.deployment.clusterGroup     — present when cluster has a group
+  .Values.atlas.deployment.deploymentName   — deployment dir name
+  .Values.atlas.deployment.deploymentPath   — absolute deployment.yaml path
 
-Output format:
-  Two YAML documents separated by ---:
-  - Document 0: environments.default.values with the merged hierarchy values.
-  - Document 1+: One helmfile block per app instance with releases and values.
+Output:
+  A single `helmfiles:` list. Each entry points at helmfile.instance.yaml.gotmpl
+  and carries the atlas object augmented with `instance.{template, name}`
+  for that one app instance. Multi-instance deployments produce one
+  sub-helmfile per instance — keeping atlas.instance unambiguous in
+  per-file env values (multi-environments blocks in a single file
+  collapse to a single merged env-values, so per-instance files are
+  required).
 */}}
 
-{{- /* ====================== BASE VARIABLES ====================== */ -}}
-{{- $basePath := printf "%s/%s" .Values.atlas.cwd .Values.atlas.deploymentDefinitions }}
-{{- $hasGroup := contains "/" .Values.atlas.deployment.cluster }}
-
+{{- /* Print a render-time breadcrumb so `helmfile build --debug` output is
+     navigable when a deployment fails. */ -}}
 # Rendering deployment:
 #   cluster: {{ .Values.atlas.deployment.cluster }}
 #   deploymentName: {{ .Values.atlas.deployment.deploymentName }}
 {{ "" }}
-{{- /* ====================== VALUE SOURCE FILES (priority order) ====================== */ -}}
-{{- /* Each hierarchy level loads up to three files in order: .sops.yaml -> .yaml -> .yaml.gotmpl.
-     Later files override earlier ones via mergeOverwrite. SOPS files are detected by filename
-     pattern (.sops.yaml) and decrypted via fetchSecretValue. All other files are rendered as
-     Go templates with $loadedValues as context before parsing. */ -}}
-{{- $valueSources := list
-  (printf "%s/global.values.sops.yaml"   $basePath)
-  (printf "%s/global.values.yaml"        $basePath)
-  (printf "%s/global.values.yaml.gotmpl" $basePath)
-}}
-
-{{- if $hasGroup }}
-  {{- $groupName := dir .Values.atlas.deployment.cluster }}
-  {{- $valueSources = concat $valueSources (list
-    (printf "%s/%s/group.values.sops.yaml"   $basePath $groupName)
-    (printf "%s/%s/group.values.yaml"        $basePath $groupName)
-    (printf "%s/%s/group.values.yaml.gotmpl" $basePath $groupName)
-  )}}
-{{- end }}
-
-{{- $valueSources = concat $valueSources (list
-  (printf "%s/%s/cluster.values.sops.yaml"   $basePath .Values.atlas.deployment.cluster)
-  (printf "%s/%s/cluster.values.yaml"        $basePath .Values.atlas.deployment.cluster)
-  (printf "%s/%s/cluster.values.yaml.gotmpl" $basePath .Values.atlas.deployment.cluster)
-)}}
-
-{{- $deploymentDir := dir .Values.atlas.deployment.deploymentPath }}
-{{- $valueSources = concat $valueSources (list
-  (printf "%s/values.sops.yaml"   $deploymentDir)
-  (printf "%s/values.yaml"        $deploymentDir)
-  (printf "%s/values.yaml.gotmpl" $deploymentDir)
-)}}
-
-{{- /* ====================== TWIN-LOAD MERGED VALUES ====================== */ -}}
-{{- /* We load the hierarchy TWICE in parallel:
-       $realValues      — sops values decrypted as-is (fed to helm for rendering)
-       $redactedValues  — sops values rewritten via atlas.redact.value before merge,
-                          so any gotmpl downstream that references a sops key produces
-                          a redacted derivative on its own (transitive taint, for free)
-     A deep-compare between the two trees identifies every (real, redacted) pair
-     that needs substitution in the rendered output. Non-sops values appear the
-     same in both trees and emit nothing from the diff. */ -}}
-{{- $realValues     := dict "atlas" .Values.atlas }}
-{{- $redactedValues := dict "atlas" .Values.atlas }}
-
-{{- range $source := $valueSources }}
-  {{- if isFile $source }}
-    {{- if contains ".sops.yaml" $source }}
-      {{- /* Decrypt once — used in both trees. Real tree gets it verbatim;
-           redacted tree walks the tree and substitutes each leaf via
-           atlas.redact.value. */ -}}
-      {{- $sopsRef       := printf "ref+sops://%s?format=yaml" $source }}
-      {{- $decrypted     := fetchSecretValue $sopsRef | fromYaml }}
-      {{- $realValues    = mergeOverwrite $realValues $decrypted }}
-      {{- $redactedLeaves := index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-      {{- $redactedValues = mergeOverwrite $redactedValues $redactedLeaves }}
-    {{- else }}
-      {{- /* Both .yaml and .yaml.gotmpl files are rendered through `tpl` so
-           deployments can reference hierarchy values via template
-           expressions. Rendering twice with different contexts is the key
-           trick: any expression that pulls from a sops-derived key yields
-           a redacted result in the redacted tree, exposing transitive taint
-           without any explicit tracking. */ -}}
-      {{- $body := readFile $source }}
-      {{- /* Tpl context: a shallow copy of the current accumulator with a
-           self-referential "Values" key so authors can write either
-           {{ .foo }} (bare, ATLAS's traditional style) or {{ .Values.foo }}
-           (wrapped, helm/helmfile convention). Both resolve to the same leaf.
-           deepCopy keeps the Values self-reference from leaking back into the
-           accumulator across loop iterations. */ -}}
-      {{- $realCtx := deepCopy $realValues }}
-      {{- $_ := set $realCtx "Values" $realCtx }}
-      {{- $realValues = mergeOverwrite $realValues (tpl $body $realCtx | fromYaml) }}
-      {{- $redactedCtx := deepCopy $redactedValues }}
-      {{- $_ := set $redactedCtx "Values" $redactedCtx }}
-      {{- $redactedValues = mergeOverwrite $redactedValues (tpl $body $redactedCtx | fromYaml) }}
-    {{- end }}
-  {{- end }}
-{{- end }}
-
-{{- /* The real values are what helm sees — schema validations and template
-     logic stay intact. */ -}}
-{{- $loadedValues := $realValues }}
-
-{{- /* Hierarchy redaction map — base for every release's postRendererArgs.
-     A per-release copy is extended inside the app-template loop with pairs
-     from template-level SOPS files (values:/secrets: fields), so template
-     secrets are redacted too. Final encoding + the 1MB ARG_MAX safety
-     check happen per-release where the final map size is known. */ -}}
-{{- $replMap := dict }}
-{{- if .Values.atlas.redactSecrets }}
-  {{- $replMap = index (include "atlas.diff.values" (dict "real" $realValues "redacted" $redactedValues) | fromJson) "v" }}
-{{- end }}
-
-{{/* Output the first YAML document: environment values for subsequent documents */}}
-environments:
-  default:
-    values:
-      - {{ $loadedValues | toYaml | nindent 8 }}
-{{ "---" | nindent 0 }}
 
 {{- /* ====================== LOAD DEPLOYMENT DEFINITION ====================== */ -}}
-{{- /* The deployment.yaml defines which app templates to instantiate for this deployment.
-     It is rendered as a Go template with $loadedValues as context, allowing
-     deployment definitions to reference hierarchy values via templating. */ -}}
 {{- if not (isFile .Values.atlas.deployment.deploymentPath) }}
   {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
 {{- end }}
-{{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $loadedValues | fromYaml }}
 
-{{- /* ====================== RENDER APP TEMPLATES ====================== */ -}}
-{{- /* For each app in the deployment definition:
-     1. Read the app template (helmfile.yaml.gotmpl) and render it as a Go template
-        with $loadedValues as context, so expressions like {{ .atlas.cwd }} resolve.
-     2. Parse the rendered YAML to get the release definitions.
-     3. For each release, process its values: list:
-        a. Resolve relative file paths to absolute (relative to the template directory).
-        b. Pass inline maps through as-is.
-        c. Append $loadedValues as the LAST entry so hierarchy values take priority
-           over template-include files and template-defaults.
-     4. Output the assembled release block directly. */ -}}
-{{- $appTemplatesDir := printf "%s/%s" .Values.atlas.cwd .Values.atlas.appTemplates }}
+{{- /* deployment.yaml is rendered as a Go template with the atlas object as
+     context. Hierarchy values (global/group/cluster/deployment .yaml files)
+     are NOT in this context — they are resolved per-release inside the
+     values-loader, where .Release.* is also available. If a deployment.yaml
+     needs to template against hierarchy values to compute apps[], that's a
+     gap we will close when a real consumer demands it (see project memory). */ -}}
+{{- $ctx := deepCopy .Values }}
+{{- $_   := set $ctx "Values" .Values }}
+{{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
 
+{{- /* ====================== INSTANCE FAN-OUT ====================== */ -}}
+helmfiles:
 {{- range $instance := $deploymentDefinition.apps }}
-  {{- $templateDir  := printf "%s/%s" $appTemplatesDir $instance.template }}
-  {{- $templateFile := printf "%s/helmfile.yaml.gotmpl" $templateDir }}
-
-  {{- if not (isFile $templateFile) }}
-    {{- fail (printf "App template not found: %s" $templateFile) }}
-  {{- end }}
-
-  {{- /* Build per-instance values by deep-copying the hierarchy trees and
-       injecting atlas.instance context. This provides the app template with:
-       - atlas.instance.template: the template name (always present)
-       - atlas.instance.name: the instance name (present when deployment.yaml specifies
-         a "name" property, used to disambiguate multiple uses of the same template)
-       Deep copies prevent mutation of $realValues / $redactedValues across loop
-       iterations. Both trees carry identical atlas.instance context — that
-       metadata is deployment-scoped, not secret. */ -}}
-  {{- $instanceValues         := deepCopy $realValues }}
-  {{- $instanceValuesRedacted := deepCopy $redactedValues }}
-  {{- /* The instance name defaults to the template name when not explicitly set.
-       This ensures atlas.instance.name is always available in app templates. */ -}}
+  {{- /* Resolve instance name (defaults to template name when not explicitly set). */ -}}
   {{- $instanceName := $instance.template }}
   {{- if hasKey $instance "name" }}
     {{- $instanceName = $instance.name }}
   {{- end }}
-  {{- $instanceContext := dict "template" $instance.template "name" $instanceName }}
-  {{- $_ := set $instanceValues.atlas         "instance" $instanceContext }}
-  {{- $_ := set $instanceValuesRedacted.atlas "instance" $instanceContext }}
-
-  {{- /* Render the app template as a Go template, then parse as YAML.
-       The tpl context is a deep copy of $instanceValues with a self-referential
-       "Values" key, so authors can write either {{ .atlas.cwd }} (bare) or
-       {{ .Values.atlas.cwd }} (wrapped) — same unified contract used by the
-       hierarchy gotmpl loader and the release values: merge. */ -}}
-  {{- $tplContext := deepCopy $instanceValues }}
-  {{- $_ := set $tplContext "Values" $tplContext }}
-  {{- $template := tpl (readFile $templateFile) $tplContext | fromYaml }}
-
-  {{- /* Set commonLabels on the rendered template so every release gets
-       cluster and deployment identification labels applied by helmfile.
-       `cluster` is the full path (e.g. "group/leaf") and mirrors the
-       filesystem hierarchy; `clusterName` is the leaf-only name, useful
-       for downstream selection by short name (and for resource naming
-       in consumer app templates — the full path contains a slash).
-       `clusterGroup` is the group prefix (or absent for standalone
-       clusters), injected upstream in helmfile.all.yaml.gotmpl; mirror
-       its conditional presence here so releases in standalone clusters
-       don't carry an empty-string group label. */ -}}
-  {{- $labels := dict
-    "cluster"        $.Values.atlas.deployment.cluster
-    "clusterName"    $.Values.atlas.deployment.clusterName
-    "deploymentName" $.Values.atlas.deployment.deploymentName
-    "variant"        $.Values.atlas.variant
-  }}
-  {{- if hasKey $.Values.atlas.deployment "clusterGroup" }}
-    {{- $_ := set $labels "clusterGroup" $.Values.atlas.deployment.clusterGroup }}
-  {{- end }}
-  {{- $_ := set $template "commonLabels" $labels }}
-
-  {{- range $release := $template.releases }}
-
-    {{- /* Apply instance-level namespace override from deployment.yaml.
-         If the deployment specifies a namespace, it takes priority over whatever
-         the app template defines. If omitted, the template's namespace is kept. */ -}}
-    {{- if hasKey $instance "namespace" }}
-      {{- $_ := set $release "namespace" $instance.namespace }}
-    {{- end }}
-
-    {{- /* Resolve a template-relative chart: path to absolute.
-         App templates often ship a sibling directory containing a helm chart,
-         a kustomization, or plain manifests (helmfile's chartify wraps the
-         latter two into a synthetic chart). Expressed with a leading ./ or
-         ../, the path is meant to be relative to the app template directory,
-         but helm would resolve it against its own cwd (the repo root) and
-         fail. We rewrite those paths to absolute here.
-         Untouched: absolute paths, repo refs (bitnami/nginx), and URI-style
-         references (oci://, http://, git+https://, etc.) — they all lack a
-         leading ./ or ../ so they pass through unchanged. */ -}}
-    {{- if hasKey $release "chart" }}
-      {{- $chart := $release.chart }}
-      {{- if or (hasPrefix "./" $chart) (hasPrefix "../" $chart) }}
-        {{- $_ := set $release "chart" (printf "%s/%s" $templateDir $chart) }}
-      {{- end }}
-    {{- end }}
-
-    {{- /* release[].secrets is no longer supported. SOPS files must be listed
-         in release[].values alongside plain values so the user controls
-         loading order by position — essential when a later .yaml.gotmpl
-         references keys decrypted by an earlier .sops.yaml (or vice-versa).
-         helmfile's native secrets: handling and ATLAS's eager decryption of
-         values:-list .sops.yaml coexisted with ambiguous ordering; we drop
-         the native path for a single deterministic mechanism. Fails loudly
-         if a template release or deployment instance still uses secrets:. */ -}}
-    {{- if or ($release | get "secrets" list) ($instance | get "secrets" list) }}
-      {{- fail (printf "release[].secrets is no longer supported by ATLAS — list your SOPS files in release[].values instead, where position in the list determines loading order. Cluster=%s Deployment=%s Release=%s Template=%s" $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name $instance.template) }}
-    {{- end }}
-
-    {{- /* ============================================================
-         Progressive twin-load merge of the release's values: list.
-         ============================================================
-         Vanilla helmfile renders each values-list entry in isolation; a
-         later .yaml.gotmpl can't see keys defined by an earlier entry in
-         the same list (helmfile's release template context is the env
-         values + release metadata only). ATLAS does the merge itself so
-         list position becomes the single loading-order knob: each entry
-         updates a running accumulator, and gotmpl files are rendered
-         with the hierarchy baseline + everything loaded so far as
-         template context.
-
-         We maintain two accumulators in parallel (twin-load) exactly
-         like the hierarchy loading — $mergedReal feeds helm, $mergedRedacted
-         drives the redaction post-renderer. A deep-compare at the end
-         yields transitive pairs: a gotmpl value like
-         "app.{{ .clusterdomain }}" renders as "app.foo.bar" (real) and
-         "app.RED.RED" (redacted) so the diff emits a whole-scalar pair
-         the post-renderer can substitute. The redacted tree is gated
-         on redactSecrets to skip the extra tpl+merge work when redaction
-         is off.
-
-         Instance-level values (deployment.yaml apps[].values) are
-         concatenated onto the release's own values list before the walk
-         — same precedence as any other late entry in the list.
-
-         Final state: release.values becomes a single-element list with
-         the merged real dict overlaid by the hierarchy (so hierarchy
-         wins). applyListOverride is no longer called for the values
-         field (this whole block supersedes it), but patches/transformers
-         still flow through it below. */ -}}
-    {{- $mergedReal     := dict }}
-    {{- $mergedRedacted := dict }}
-    {{- $rawValues      := concat ($release | get "values" list) ($instance | get "values" list) }}
-    {{- range $entry := $rawValues }}
-      {{- if kindIs "string" $entry }}
-        {{- $absPath := printf "%s/%s" $templateDir $entry }}
-        {{- if isFile $absPath }}
-          {{- if hasSuffix ".sops.yaml" $entry }}
-            {{- $sopsRef   := printf "ref+sops://%s?format=yaml" $absPath }}
-            {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-            {{- $mergedReal = mergeOverwrite $mergedReal $decrypted }}
-            {{- if $.Values.atlas.redactSecrets }}
-              {{- $redactedLeaves := index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-              {{- $mergedRedacted = mergeOverwrite $mergedRedacted $redactedLeaves }}
-            {{- end }}
-          {{- else if hasSuffix ".yaml.gotmpl" $entry }}
-            {{- $body := readFile $absPath }}
-            {{- /* Self-referential "Values" key — see the hierarchy loader
-                 above. Lets template authors use {{ .foo }} or
-                 {{ .Values.foo }} interchangeably in values-list gotmpls. */ -}}
-            {{- $ctxReal := mergeOverwrite (deepCopy $instanceValues) $mergedReal }}
-            {{- $_ := set $ctxReal "Values" $ctxReal }}
-            {{- $mergedReal = mergeOverwrite $mergedReal (tpl $body $ctxReal | fromYaml) }}
-            {{- if $.Values.atlas.redactSecrets }}
-              {{- $ctxRedacted := mergeOverwrite (deepCopy $instanceValuesRedacted) $mergedRedacted }}
-              {{- $_ := set $ctxRedacted "Values" $ctxRedacted }}
-              {{- $mergedRedacted = mergeOverwrite $mergedRedacted (tpl $body $ctxRedacted | fromYaml) }}
-            {{- end }}
-          {{- else }}
-            {{- $content := readFile $absPath | fromYaml }}
-            {{- $mergedReal = mergeOverwrite $mergedReal $content }}
-            {{- if $.Values.atlas.redactSecrets }}
-              {{- $mergedRedacted = mergeOverwrite $mergedRedacted $content }}
-            {{- end }}
-          {{- end }}
-        {{- end }}
-      {{- else if kindIs "map" $entry }}
-        {{- $mergedReal = mergeOverwrite $mergedReal $entry }}
-        {{- if $.Values.atlas.redactSecrets }}
-          {{- $mergedRedacted = mergeOverwrite $mergedRedacted $entry }}
-        {{- end }}
-      {{- end }}
-    {{- end }}
-
-    {{- /* Template-level redaction pairs: deep-compare the twin accumulators
-         for this release BEFORE the hierarchy merge below. mergeOverwrite
-         mutates its left operand, so running the diff after that would
-         compare a hierarchy-polluted real tree against a template-only
-         redacted tree and emit spurious pairs for every hierarchy key.
-         Covers direct SOPS values AND their transitive gotmpl derivatives.
-         Merged into a per-release copy of the hierarchy replMap for the
-         post-renderer. */ -}}
-    {{- $releaseReplMap := deepCopy $replMap }}
-    {{- if $.Values.atlas.redactSecrets }}
-      {{- $tplPairs := index (include "atlas.diff.values" (dict "real" $mergedReal "redacted" $mergedRedacted) | fromJson) "v" }}
-      {{- range $r, $v := $tplPairs }}
-        {{- $_ := set $releaseReplMap $r $v }}
-      {{- end }}
-    {{- end }}
-
-    {{- /* Overlay the hierarchy on top for precedence: hierarchy (global →
-         group → cluster → deployment) wins over template values. The
-         release's values: list is collapsed to a single element — helm
-         receives one merged dict with no ordering ambiguity. */ -}}
-    {{- $_ := set $release "values" (list (mergeOverwrite $mergedReal $instanceValues)) }}
-
-    {{- /* Resolve relative file paths in patches/transformers via
-         atlas.applyListOverride: convert relative paths to absolute and
-         append any instance-level overrides from deployment.yaml. The
-         values: field was already handled above by progressive twin-load
-         merge. */ -}}
-    {{- $overrideContext := dict "release" $release "instance" $instance "templateDir" $templateDir }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "strategicMergePatches")) }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "jsonPatches")) }}
-    {{- include "atlas.applyListOverride" (mergeOverwrite $overrideContext (dict "field" "transformers")) }}
-
-    {{- /* Merge instance-level labels from deployment.yaml into the release's labels.
-         This allows deployments to define labels (e.g., bootstrap: true) that are
-         inherited by all releases in the app template. Instance labels take priority
-         over any labels already defined in the template. */ -}}
-    {{- if hasKey $instance "labels" }}
-      {{- $currentLabels := $release | get "labels" dict }}
-      {{- $_ := set $release "labels" (mergeOverwrite $currentLabels $instance.labels) }}
-    {{- end }}
-
-    {{- /* Encode this release's redaction map and wire the atlas-redact
-         post-renderer. The map carries both hierarchy pairs (from $replMap)
-         and any template-level pairs added in the twin-decrypt scan above.
-         The 1MB ARG_MAX safety limit is enforced here, per release, because
-         this is where the final encoded size is known. */ -}}
-    {{- $postRendererArgs := "" }}
-    {{- if $.Values.atlas.redactSecrets }}
-      {{- if gt (len $releaseReplMap) 0 }}
-        {{- $postRendererArgs = $releaseReplMap | toJson | b64enc }}
-      {{- end }}
-      {{- /* Safety check: the argument is passed to atlas-redact as a single
-           argv entry, subject to the kernel's ARG_MAX limit (~2MB on Linux,
-           shared with the rest of argv+envp). 1 MiB gives comfortable headroom;
-           anything beyond that almost certainly means this release pulls in an
-           unusually large number of sops-derived secrets and should be split,
-           or the plugin should switch to a file-based argument scheme. */ -}}
-      {{- if gt (len $postRendererArgs) 1048576 }}
-        {{- $sizeKb := divf (len $postRendererArgs) 1024 }}
-        {{- fail (printf "atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Split this deployment into smaller ones or file an issue at https://github.com/max06/atlas/issues to request a file-based argument scheme. Cluster=%s Deployment=%s Release=%s" $sizeKb $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name) }}
-      {{- end }}
-    {{- end }}
-    {{- /* Optional side-dump of the per-release replacement map for the
-         snapshot-review workflow. When ATLAS_SIDEDUMP_MAP_DIR is set at
-         render time, we append a second argv element telling the plugin
-         where to write the decoded map JSON. The workflow later replays
-         that map against a baseline render produced by an older ATLAS
-         version that lacked template-level redaction — closing leaks
-         without requiring a patched release of the older version.
-         Layout mirrors --output-dir-template so the scrubber can look up
-         the right map per release directory without a manifest file. */ -}}
-    {{- $sidedumpDir := env "ATLAS_SIDEDUMP_MAP_DIR" }}
-    {{- $sidedumpPath := "" }}
-    {{- if and $postRendererArgs $sidedumpDir }}
-      {{- $sidedumpPath = printf "%s/%s/%s/%s.json" $sidedumpDir $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name }}
-    {{- end }}
-    {{- if $postRendererArgs }}
-      {{- $_ := set $release "postRenderer" "atlas-redact" }}
-      {{- if $sidedumpPath }}
-        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs $sidedumpPath) }}
-      {{- else }}
-        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
-      {{- end }}
-    {{- end }}
-
-  {{- end }}
-
-  {{- /* Output the fully assembled helmfile block for this app instance */ -}}
-  {{- $template | toYaml | nindent 0 }}
-  {{- "---" | nindent 0 }}
-
+  {{- /* Build the atlas object passed to helmfile.instance — full hierarchy
+       context plus the instance fields. deepCopy so each iteration gets its
+       own atlas dict (set "instance" would otherwise leak across instances). */ -}}
+  {{- $atlasForInstance := deepCopy $.Values.atlas }}
+  {{- $_ := set $atlasForInstance "instance" (dict "template" $instance.template "name" $instanceName) }}
+  - path: helmfile.instance.yaml.gotmpl
+    values:
+      - atlas:
+          {{- $atlasForInstance | toYaml | nindent 10 }}
 {{- end }}

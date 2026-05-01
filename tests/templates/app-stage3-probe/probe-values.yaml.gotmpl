@@ -1,0 +1,11 @@
+{{- /*
+  Release-aware values file. Evaluated at stage 3 (per-release) by helmfile,
+  so .Release.* and the full atlas object are both available here.
+*/ -}}
+releaseAware:
+  releaseName: {{ .Release.Name | quote }}
+  releaseNamespace: {{ .Release.Namespace | quote }}
+  instanceTemplate: {{ .Values.atlas.instance.template | quote }}
+  instanceName: {{ .Values.atlas.instance.name | quote }}
+  cluster: {{ .Values.atlas.deployment.cluster | quote }}
+  deploymentName: {{ .Values.atlas.deployment.deploymentName | quote }}

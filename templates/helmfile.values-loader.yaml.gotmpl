@@ -1,0 +1,22 @@
+# code: language=helm
+
+{{/*
+============================================================
+Atlas Values Loader (stage 3)
+============================================================
+
+Helmfile evaluates this file once per release at release-time, with
+.Release.* and .Values.atlas.* both available. The output IS the merged
+values blob for the release.
+
+The actual merge logic lives in the atlas.values.merged named template
+(templates/_values_loader.tpl) so that stage-3's redaction-map builder
+can call the same logic with redact=true. This file is a thin wrapper
+that invokes the shared logic with redact=false (real values for helm).
+*/}}
+
+{{- include "atlas.values.merged" (dict
+    "Values" .Values
+    "Release" .Release
+    "redact" false
+) }}

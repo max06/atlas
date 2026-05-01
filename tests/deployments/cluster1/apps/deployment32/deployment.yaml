@@ -1,0 +1,9 @@
+# Fixture: stage-3 progressive accumulator across the release's values: list.
+# A derived .yaml.gotmpl reads keys defined by earlier inline + plain entries,
+# plus hierarchy keys and .Release.*.
+apps:
+  - template: app-stage3-crossref
+    namespace: test
+settings:
+  branch: main
+  autoSync: false

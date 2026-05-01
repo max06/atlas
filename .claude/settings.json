@@ -2,6 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(bats tests/bats/*)",
+      "Bash(bats *)",
+      "Bash(sops --decrypt *)",
+      "Bash(helm template *)",
+      "Bash(helm env)",
+      "Bash(helmfile --version)",
+      "Bash(helmfile version)",
+      "Bash(helmfile --help)",
+      "Bash(helmfile help)",
+      "Bash(helmfile template *)",
+      "Bash(helmfile build *)",
+      "Bash(.claude/utils/run-bats.sh)",
+      "Bash(.claude/utils/run-bats.sh *)",
       "WebSearch"
     ]
   }

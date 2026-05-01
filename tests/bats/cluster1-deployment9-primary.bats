@@ -11,7 +11,7 @@ load 'helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment9
-INSTANCE=app-named-primary
+INSTANCE=primary-app-named
 
 setup_file() { ensure_rendered; }
 

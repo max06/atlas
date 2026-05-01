@@ -1,0 +1,11 @@
+{{- /*
+  Stage-3 fixture: strategicMergePatches with template-relative paths.
+  ATLAS resolves the relative path to an absolute one and lets helmfile
+  apply the patch to the rendered manifest.
+*/ -}}
+releases:
+  - name: stage3-patches-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    strategicMergePatches:
+      - ./patches/cm-patch.yaml
