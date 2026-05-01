@@ -48,22 +48,45 @@ Resolution order (later overrides earlier — chart < template < instance < hier
   - hierarchy (FINAL PASS — wins precedence over template + instance)
 */ -}}
 
-{{- define "atlas.values.merged" -}}
+{{- /*
+============================================================
+atlas.hierarchy.merged — Walk the global → group → cluster → deployment
+hierarchy and emit the merged values as YAML.
+============================================================
 
-{{- /* ====================== TPL CONTEXT (atlas + Release, no progressive merge yet) ====================== */ -}}
-{{- $ctx := deepCopy .Values }}
-{{- $_ := set $ctx "Values" .Values }}
-{{- $_ := set $ctx "Release" .Release }}
+Used in two places:
 
-{{- /* ====================== PATHS ====================== */ -}}
+  1. atlas.values.merged below — as the FIRST PASS baseline before
+     template/instance values: lists are processed.
+
+  2. helmfile.instance.yaml.gotmpl — as the tpl context for rendering
+     the app template's helmfile.yaml.gotmpl. Without this, templates
+     that reference `{{ .Values.<hierarchyKey> }}` in their body
+     (jsonPatches inline maps, inline values maps, chart paths derived
+     from cluster config, etc.) silently resolve those references to
+     empty.
+
+Inputs (passed via `include "atlas.hierarchy.merged" $args`):
+  .Values   The full helmfile-state .Values (atlas object lives here).
+            .Values.atlas.{cwd, deploymentDefinitions,
+            deployment.{cluster, deploymentPath}} are read.
+  .Release  Release context. Hierarchy .yaml.gotmpl files render with
+            this value in scope. At release-time the loader passes
+            helmfile's real .Release; at state-build time stage-3
+            passes a synthetic placeholder dict (Name+Namespace
+            unset). Hierarchy files that reference .Release.* should
+            use values that survive the synthetic case (or accept
+            different output between state-build and release-time
+            renders, which is generally an anti-pattern).
+  .redact   Bool. When true, every SOPS-decrypted value tree is
+            rewritten through atlas.redact.value BEFORE merge.
+
+Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
+*/ -}}
+{{- define "atlas.hierarchy.merged" -}}
 {{- $cwd := .Values.atlas.cwd }}
 {{- $hierarchyDir := printf "%s/%s" $cwd .Values.atlas.deploymentDefinitions }}
-{{- $templateDir := printf "%s/%s/%s" $cwd .Values.atlas.appTemplates .Values.atlas.instance.template }}
-{{- $templateFile := printf "%s/helmfile.yaml.gotmpl" $templateDir }}
-{{- $deploymentPath := .Values.atlas.deployment.deploymentPath }}
-{{- $deploymentDir := dir $deploymentPath }}
-
-{{- /* ====================== HIERARCHY VALUES (FIRST PASS — BASELINE) ====================== */ -}}
+{{- $deploymentDir := dir .Values.atlas.deployment.deploymentPath }}
 {{- $cluster := .Values.atlas.deployment.cluster }}
 {{- $hierarchyFiles := list
     (printf "%s/global.values.sops.yaml"   $hierarchyDir)
@@ -107,6 +130,33 @@ Resolution order (later overrides earlier — chart < template < instance < hier
     {{- end }}
   {{- end }}
 {{- end }}
+{{ $hierarchy | toYaml }}
+{{- end -}}
+
+
+{{- define "atlas.values.merged" -}}
+
+{{- /* ====================== PATHS ====================== */ -}}
+{{- $cwd := .Values.atlas.cwd }}
+{{- $templateDir := printf "%s/%s/%s" $cwd .Values.atlas.appTemplates .Values.atlas.instance.template }}
+{{- $templateFile := printf "%s/helmfile.yaml.gotmpl" $templateDir }}
+{{- $deploymentPath := .Values.atlas.deployment.deploymentPath }}
+{{- $deploymentDir := dir $deploymentPath }}
+
+{{- /* ====================== HIERARCHY VALUES (FIRST PASS — BASELINE) ====================== */ -}}
+{{- $hierarchy := include "atlas.hierarchy.merged" (dict
+    "Values"  .Values
+    "Release" .Release
+    "redact"  $.redact
+) | fromYaml }}
+
+{{- /* ====================== TPL CONTEXT (atlas + hierarchy + Release) ====================== */ -}}
+{{- /* Template authors expect `{{ .Values.<hierarchyKey> }}` in the
+     template body to resolve. Build a context that has the merged
+     hierarchy under .Values, alongside the atlas object and Release. */ -}}
+{{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
+{{- $_ := set $ctx "Values" $ctx }}
+{{- $_ := set $ctx "Release" .Release }}
 
 {{- /* ====================== TEMPLATE-LEVEL VALUES ====================== */ -}}
 {{- /* Match the release this loader call serves. The template emits releases

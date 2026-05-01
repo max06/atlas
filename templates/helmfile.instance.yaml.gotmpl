@@ -78,9 +78,32 @@ Purpose:
   {{- fail (printf "App template not found: %s" $templateFile) }}
 {{- end }}
 
-{{- /* ====================== TPL CONTEXT (atlas only — .Release not available here) ====================== */ -}}
-{{- $ctx := deepCopy .Values }}
-{{- $_ := set $ctx "Values" .Values }}
+{{- /* ====================== HIERARCHY VALUES (for template-render context) ====================== */ -}}
+{{- /* Walk the global → group → cluster → deployment hierarchy once at
+     state-build time so the app template's body sees those values when
+     it's rendered as a Go template. Template authors expect
+     `{{ .Values.<hierarchyKey> }}` in jsonPatches inline maps, inline
+     values maps, chart paths, etc. to resolve to the merged hierarchy.
+     Without this, those references silently become empty strings.
+
+     .Release is a synthetic placeholder here — helmfile's real .Release
+     is only available at release-evaluation time inside the values-
+     loader. Hierarchy .yaml.gotmpl files that reference .Release.* will
+     see empty values during this state-build pass; they will see the
+     real values when the loader walks the hierarchy a second time per
+     release. Different output between the two passes is an anti-pattern
+     and should be avoided in hierarchy templates. */ -}}
+{{- $synthRelease := dict "Name" "" "Namespace" "" }}
+{{- $hierarchy := include "atlas.hierarchy.merged" (dict
+    "Values"  .Values
+    "Release" $synthRelease
+    "redact"  false
+) | fromYaml }}
+
+{{- /* ====================== TPL CONTEXT (atlas + hierarchy + synthetic Release) ====================== */ -}}
+{{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
+{{- $_ := set $ctx "Values" $ctx }}
+{{- $_ := set $ctx "Release" $synthRelease }}
 
 {{- /* ====================== DEPLOYMENT.YAML — find this instance for namespace override ====================== */ -}}
 {{- $deploymentRendered := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}

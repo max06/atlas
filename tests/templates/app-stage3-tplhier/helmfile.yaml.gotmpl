@@ -1,0 +1,39 @@
+{{- /*
+  Stage-3 fixture: template-render-time access to hierarchy values.
+
+  Template authors expect `{{ .Values.<hierarchyKey> }}` to resolve when
+  the app template is rendered as a Go template. Stage-2 walked the
+  hierarchy at the helmfile.single level and rendered the template with
+  the merged result as context. Stage-3 must preserve that contract: any
+  expression in the template body (release name, chart, jsonPatches
+  inline maps, inline values maps, etc.) that references a hierarchy
+  value should resolve to the merged hierarchy at template-render time.
+
+  Two surfaces tested here:
+
+    1. Inline values map referencing a hierarchy key directly. The loader
+       does NOT re-render inline maps, so the value present at template-
+       render time is what reaches the chart.
+
+    2. jsonPatches inline patch with a templated value field — mirrors
+       a real consumer pattern where a sops-decrypted token from a
+       hierarchy values file is injected into a manifest patch.
+*/ -}}
+releases:
+  - name: stage3-tplhier-release
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - inlineEcho: "{{ .Values.globalOnly }}"
+        nestedEcho: "{{ .Values.nested.shared }}"
+    jsonPatches:
+      - target:
+          version: v1
+          kind: ConfigMap
+          name: stage3-tplhier-release-chart1
+          namespace: test
+        patch:
+          - op: add
+            path: "/metadata/annotations"
+            value:
+              atlas-test/from-hierarchy: "{{ .Values.globalOnly }}"
