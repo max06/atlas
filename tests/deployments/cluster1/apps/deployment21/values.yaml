@@ -1,0 +1,11 @@
+# Deployment-level contribution to extraObjects. Lives at hierarchy level
+# (deployment directory values.yaml) so the app-extraobjects template can see
+# it when its own values.yaml.gotmpl is rendered, and concat the entries into
+# the final extraObjects list.
+extraObjectsFromDeployment:
+  - kind: ConfigMap
+    metadata:
+      name: from-deployment-1
+  - kind: ConfigMap
+    metadata:
+      name: from-deployment-2

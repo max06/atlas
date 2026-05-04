@@ -1,0 +1,6 @@
+releases:
+  - name: app-extraobjects
+    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    namespace: test
+    values:
+      - values.yaml.gotmpl
