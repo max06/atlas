@@ -1,0 +1,18 @@
+{{- /*
+  Additive extraObjects pattern:
+    - Template declares its own entries under `extraObjects`.
+    - Deployment contributes more entries under the SEPARATE key
+      `extraObjectsFromDeployment` (at hierarchy level, e.g. the
+      deployment directory's values.yaml). Because hierarchy values
+      are already in this template's tpl context, we read that key
+      here and concatenate into the final extraObjects list.
+    - Using a different key avoids mergeOverwrite replacing the list
+      wholesale — hierarchy overlay never touches `extraObjects`.
+*/ -}}
+extraObjects:
+  - kind: Secret
+    metadata:
+      name: from-template
+  {{- if .extraObjectsFromDeployment }}
+  {{- toYaml .extraObjectsFromDeployment | nindent 2 }}
+  {{- end }}

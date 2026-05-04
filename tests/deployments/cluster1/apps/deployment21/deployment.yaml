@@ -1,0 +1,17 @@
+# Fixture: additive extraObjects across template + deployment levels.
+#
+# The app-extraobjects template defines one `extraObjects` entry of its own and
+# concatenates any entries from `extraObjectsFromDeployment` (a separate key,
+# set at hierarchy level in this deployment's values.yaml) into the same list.
+#
+# Why a separate key: mergeOverwrite replaces lists wholesale. If the
+# deployment tried to set `extraObjects` directly at hierarchy level, the
+# hierarchy overlay would clobber the template's entry instead of appending.
+# Routing the deployment contribution through a distinct key lets the template
+# render produce the concatenated list, which then survives the overlay intact.
+apps:
+  - template: app-extraobjects
+    namespace: test
+settings:
+  branch: main
+  autoSync: false
