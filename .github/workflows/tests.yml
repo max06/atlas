@@ -44,9 +44,15 @@ jobs:
         uses: nhedger/setup-sops@v2
 
       - name: Install helm
-        uses: Azure/setup-helm@v5
-        with:
-          version: ${{ matrix.helm-version }}
+        run: |
+          if [ "${{ matrix.helm-version }}" = "latest" ]; then
+            VERSION=$(curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -r .tag_name)
+          else
+            VERSION="${{ matrix.helm-version }}"
+          fi
+          curl -fsSL "https://get.helm.sh/helm-${VERSION}-linux-amd64.tar.gz" | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/helm
+          rm -rf linux-amd64
 
       - name: Install helmfile
         uses: helmfile/helmfile-action@v2.4.1
