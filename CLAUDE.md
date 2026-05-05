@@ -8,6 +8,13 @@ ATLAS (Application Topology Layer Across Systems) is a pre-configured Helmfile s
 
 The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and YAML. There is no traditional build step — Helmfile is the orchestrator.
 
+### Version Requirements
+
+- **Helm >= 4.0.0** — ATLAS uses post-renderer features and CLI flags that changed in Helm 4. Helm 3.x is not supported.
+- **Helmfile >= 1.0.0** — ATLAS relies on template-context fields (`.Environment.Values`) and sub-helmfile behavior that only exists in Helmfile 1.x. Helmfile 0.x (including 0.171.0 used by helmfile-argocd-plugin) is not compatible.
+
+These constraints are enforced at runtime via exec-based version checks in `helmfile.yaml.gotmpl`.
+
 ## Common Commands
 
 ```bash

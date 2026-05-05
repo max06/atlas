@@ -23,13 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         helm-version:
-          - v3.17.3 # helmfile-argocd-plugin
-          - v3.20.2
           - v4.0.5
           - v4.1.4
           - latest
         helmfile-version:
-          - v0.171.0 # helmfile-argocd-plugin
           - v1.3.2
           - v1.4.5
           - v1.5.0

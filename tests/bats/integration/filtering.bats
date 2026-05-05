@@ -34,10 +34,7 @@ load 'helpers/render'
 helmfile_list() {
   local root
   root="$(_repo_root)"
-  helmfile -f "$root/helmfile.yaml.gotmpl" \
-    --state-values-set "atlas.appTemplates=tests/templates" \
-    --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-    --state-values-set "atlas.cwd=$root" \
+  helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
     --allow-no-matching-release \
     list --output json "$@" 2>/dev/null
 }

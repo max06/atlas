@@ -33,10 +33,7 @@ setup_file() { ensure_rendered; }
 
 @test "d39: helmfile build state has absolute path for the patch" {
   root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  run bash -c "helmfile -f '$root/helmfile.yaml.gotmpl' \
-    --state-values-set 'atlas.appTemplates=tests/templates' \
-    --state-values-set 'atlas.deploymentDefinitions=tests/deployments' \
-    --state-values-set \"atlas.cwd=$root\" \
+  run bash -c "helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
     build --selector cluster=$CLUSTER,deploymentName=$DEPLOYMENT 2>/dev/null \
     | yq 'select(.releases != null) | .releases[] | select(.name == \"$RELEASE\") | .strategicMergePatches[0]'"
   # Path must be absolute (start with /) and point inside the template dir.

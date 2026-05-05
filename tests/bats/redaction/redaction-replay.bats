@@ -49,10 +49,7 @@ setup_file() {
   ATLAS_REDACT_SECRETS=true \
   ATLAS_SIDEDUMP_MAP_DIR="$SIDEDUMP_DIR" \
   HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/templates/helm-plugin" \
-    helmfile -f "$root/helmfile.yaml.gotmpl" \
-      --state-values-set "atlas.appTemplates=tests/templates" \
-      --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-      --state-values-set "atlas.cwd=$root" \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       template --skip-schema-validation \
       --selector "cluster=cluster1,deploymentName=deployment20" \
       --output-dir "$SIDEDUMP_RENDER_DIR" \
@@ -94,10 +91,7 @@ setup_file() {
   default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
   ATLAS_REDACT_SECRETS=true \
   HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/templates/helm-plugin" \
-    helmfile -f "$root/helmfile.yaml.gotmpl" \
-      --state-values-set "atlas.appTemplates=tests/templates" \
-      --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-      --state-values-set "atlas.cwd=$root" \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       template --skip-schema-validation \
       --selector "cluster=cluster1,deploymentName=deployment20" \
       --output-dir "${scratch}/render" \

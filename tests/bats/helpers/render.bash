@@ -40,20 +40,13 @@ ensure_rendered() {
   [[ -d "$RENDER_DIR" ]] && return 0
   local root
   root="$(_repo_root)"
-  # Dogfoods helmfile.yaml.gotmpl — the same entry point consumer repos use —
-  # with state-values pointing at the tests/ fixtures, so the tests exercise
-  # the real consumer invocation path.
-  #
-  # tests/helmfile.yaml.gotmpl exists as an ad-hoc convenience for manual
-  # invocations but is not used here — see git log for context on why.
+  # Uses tests/helmfile.yaml.gotmpl which pre-wires atlas.cwd,
+  # appTemplates, and deploymentDefinitions for the test fixtures.
   #
   # --skip-schema-validation: no CRD dependency needed for value assertions.
   # --output-dir-template: lays out manifests by cluster/deployment/release so
   # tests can look up a single instance by path rather than filtering YAML.
-  helmfile -f "$root/helmfile.yaml.gotmpl" \
-    --state-values-set "atlas.appTemplates=tests/templates" \
-    --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-    --state-values-set "atlas.cwd=$root" \
+  helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
     template --skip-schema-validation \
     --output-dir "$RENDER_DIR" \
     --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
@@ -77,10 +70,7 @@ ensure_rendered_redacted() {
   default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
   ATLAS_REDACT_SECRETS=true \
   HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/templates/helm-plugin" \
-    helmfile -f "$root/helmfile.yaml.gotmpl" \
-      --state-values-set "atlas.appTemplates=tests/templates" \
-      --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-      --state-values-set "atlas.cwd=$root" \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       template --skip-schema-validation \
       --output-dir "$RENDER_DIR_REDACTED" \
       --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
@@ -197,10 +187,7 @@ render_contains() {
 release_labels() {
   local cluster="$1" deployment="$2" instance="$3" root
   root="$(_repo_root)"
-  helmfile -f "$root/helmfile.yaml.gotmpl" \
-    --state-values-set "atlas.appTemplates=tests/templates" \
-    --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-    --state-values-set "atlas.cwd=$root" \
+  helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
     build --selector "cluster=${cluster},deploymentName=${deployment}" 2>/dev/null |
     yq "select(.releases != null) | .releases[] | select(.name == \"${instance}\" and .labels.cluster == \"${cluster}\" and .labels.deploymentName == \"${deployment}\") | .labels"
 }

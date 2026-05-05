@@ -15,10 +15,8 @@ _root() { cd "${BATS_TEST_DIRNAME}/../../.." && pwd; }
   local root
   root="$(_root)"
   run bash -c "ATLAS_FILTER_CLUSTER=cluster1 ATLAS_FILTER_DEPLOYMENT_NAME=postrenderer-fail \
-    helmfile -f '$root/helmfile.yaml.gotmpl' \
-      --state-values-set 'atlas.appTemplates=tests/templates' \
-      --state-values-set 'atlas.deploymentDefinitions=tests/fixtures-negative' \
-      --state-values-set \"atlas.cwd=$root\" \
+    helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
+      --state-values-set 'atlas.deploymentDefinitions=fixtures-negative' \
       template --skip-schema-validation 2>&1"
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "postRenderer"
@@ -28,10 +26,8 @@ _root() { cd "${BATS_TEST_DIRNAME}/../../.." && pwd; }
   local root
   root="$(_root)"
   run bash -c "ATLAS_FILTER_CLUSTER=cluster1 ATLAS_FILTER_DEPLOYMENT_NAME=postrenderer-fail \
-    helmfile -f '$root/helmfile.yaml.gotmpl' \
-      --state-values-set 'atlas.appTemplates=tests/templates' \
-      --state-values-set 'atlas.deploymentDefinitions=tests/fixtures-negative' \
-      --state-values-set \"atlas.cwd=$root\" \
+    helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
+      --state-values-set 'atlas.deploymentDefinitions=fixtures-negative' \
       template --skip-schema-validation 2>&1"
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "pr-release"
@@ -41,10 +37,8 @@ _root() { cd "${BATS_TEST_DIRNAME}/../../.." && pwd; }
   local root
   root="$(_root)"
   run bash -c "ATLAS_FILTER_CLUSTER=cluster1 ATLAS_FILTER_DEPLOYMENT_NAME=postrenderer-fail \
-    helmfile -f '$root/helmfile.yaml.gotmpl' \
-      --state-values-set 'atlas.appTemplates=tests/templates' \
-      --state-values-set 'atlas.deploymentDefinitions=tests/fixtures-negative' \
-      --state-values-set \"atlas.cwd=$root\" \
+    helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
+      --state-values-set 'atlas.deploymentDefinitions=fixtures-negative' \
       template --skip-schema-validation 2>&1"
   [ "$status" -ne 0 ]
   echo "$output" | grep -qi "issue"
