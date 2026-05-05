@@ -1,0 +1,16 @@
+# Dogfood: run ATLAS snapshot-review against our own test fixtures.
+# Catches unexpected rendering changes when templates are modified.
+
+name: ATLAS Review (self)
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  review:
+    uses: ./.github/workflows/snapshot-review.yml
+    with:
+      helmfile-path: tests/helmfile.yaml.gotmpl
+    secrets:
+      sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
