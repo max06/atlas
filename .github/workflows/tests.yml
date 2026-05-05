@@ -55,10 +55,15 @@ jobs:
           rm -rf linux-amd64
 
       - name: Install helmfile
-        uses: helmfile/helmfile-action@v2.4.1
-        with:
-          helmfile-version: ${{ matrix.helmfile-version }}
-          helmfile-args: "version"
+        run: |
+          if [ "${{ matrix.helmfile-version }}" = "latest" ]; then
+            VERSION=$(curl -fsSL https://api.github.com/repos/helmfile/helmfile/releases/latest | jq -r .tag_name)
+          else
+            VERSION="${{ matrix.helmfile-version }}"
+          fi
+          CLEAN_VERSION="${VERSION#v}"
+          curl -fsSL "https://github.com/helmfile/helmfile/releases/download/${VERSION}/helmfile_${CLEAN_VERSION}_linux_amd64.tar.gz" | tar xz
+          sudo mv helmfile /usr/local/bin/helmfile
 
       - name: Install helmfile plugins
         run: helmfile init --force 2>/dev/null || true
