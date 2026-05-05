@@ -1,6 +1,6 @@
-# Fixture: stage-3 strategicMergePatches path resolution.
+# Fixture: strategicMergePatches path resolution.
 apps:
-  - template: app-stage3-patches
+  - template: app-patches
     namespace: test
 settings:
   branch: main

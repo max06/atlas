@@ -12,7 +12,7 @@
 # After auto-munge, the resulting release name is "tenant-a-stage3-tplname"
 # (lowercase + dash, satisfying helm's release-name regex).
 apps:
-  - template: app-stage3-tplname
+  - template: app-tplname
     name: "{{ .Values.namePrefix }}"
     namespace: test
 settings:

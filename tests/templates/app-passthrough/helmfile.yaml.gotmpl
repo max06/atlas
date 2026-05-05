@@ -1,0 +1,30 @@
+{{- /* top-level helmfile fields that ATLAS doesn't own
+     should pass through to the emitted state file unchanged.
+
+     The user's app template can declare:
+       - repositories  : helm chart repo registrations needed by releases
+       - helmDefaults  : default options for every release in this state
+       - templates     : yaml-anchor-style shared release config blocks
+       - bases         : nested helmfile imports
+       - hooks         : pre/post-event commands
+
+     ATLAS owns environments, commonLabels, and releases — those get
+     rewritten by helmfile.instance. Everything else must reach helmfile
+     verbatim or the user's chart resolution / defaults / hook wiring
+     silently breaks.
+
+     We assert pass-through via helmDefaults because it's a data-only
+     block that helmfile won't try to dereference during `build`.
+     `repositories:` would also pass through (same one-line emission
+     change covers every top-level key) but asserting it would require
+     helmfile to call `helm repo add` against the listed URL, which
+     fetches index.yaml — a fake URL hangs the test on DNS, a real URL
+     introduces network flakiness. helmDefaults exercises the same code
+     path without either failure mode. */ -}}
+helmDefaults:
+  timeout: 123
+  wait: false
+releases:
+  - name: stage3-passthrough
+    chart: ../../charts/chart1
+    namespace: test

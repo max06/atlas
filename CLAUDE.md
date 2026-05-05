@@ -12,7 +12,10 @@ The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and
 
 ```bash
 # Run bats integration tests (value inheritance, SOPS, instances, multi-template)
-bats tests/bats/
+# Wrapper script clears stale render caches and prints a pass/fail summary:
+.claude/utils/run-bats.sh
+# Or run directly (--recursive required since tests live in subdirectories):
+bats --recursive tests/bats/
 
 # Render a single deployment for debugging via the test entry point
 # (tests/helmfile.yaml.gotmpl pre-wires atlas.{cwd,appTemplates,
@@ -33,7 +36,7 @@ helmfile build -f tests/helmfile.yaml.gotmpl \
 
 ### Entry Points
 
-- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments.
+- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` (three subdirectories: `values/`, `redaction/`, `integration/`) and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments.
 
 ### Core Template Pipeline
 
@@ -86,7 +89,6 @@ Templates receive an `atlas` values object containing:
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
 - `redactSecrets` — Enable type-aware secret redaction
-- `variant` — Variant label applied to every rendered resource (defaults to `default`)
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
 
 ## Development Rules

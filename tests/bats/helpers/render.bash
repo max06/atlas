@@ -27,10 +27,11 @@
 RENDER_DIR="${BATS_RUN_TMPDIR:-/tmp}/atlas-bats-render"
 RENDER_DIR_REDACTED="${BATS_RUN_TMPDIR:-/tmp}/atlas-bats-render-redacted"
 
-# _repo_root returns the ATLAS repo root based on this helper's location:
-# <root>/tests/bats/helpers/render.bash → go up three directories.
+# _repo_root returns the ATLAS repo root.
+# Resolves via the real path of this helper file (tests/bats/helpers/render.bash)
+# so it works regardless of which subdirectory the test file lives in.
 _repo_root() {
-  cd "${BATS_TEST_DIRNAME}/../.." && pwd
+  cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/../../.. && pwd
 }
 
 # ensure_rendered performs the bulk render exactly once per bats run.

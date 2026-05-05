@@ -12,6 +12,6 @@
 */ -}}
 releases:
   - name: pr-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     postRenderer: /usr/local/bin/some-user-script

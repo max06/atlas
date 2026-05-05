@@ -1,0 +1,7 @@
+apps:
+  - template: app-named-multi
+    name: alpha
+    nameStyle: diagonal
+  - template: app-named-multi
+    name: beta
+    nameStyle: diagonal

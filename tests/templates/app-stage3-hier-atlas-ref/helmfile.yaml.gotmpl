@@ -1,8 +1,0 @@
-{{- /* Stage-3 fixture: deployment-level values.yaml.gotmpl uses
-     .Values.atlas.* during the hierarchy walk. The chart1 ConfigMap
-     re-emits .Values, so we can assert the rendered output carries
-     the resolved hierarchy values. */ -}}
-releases:
-  - name: stage3-hier-atlas-ref-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
-    namespace: test

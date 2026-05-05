@@ -1,12 +1,12 @@
 releases:
   - name: app-multi-first
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       - multiRelease: first
 
   - name: app-multi-second
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       - multiRelease: second

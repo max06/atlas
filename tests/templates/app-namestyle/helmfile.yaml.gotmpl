@@ -1,0 +1,13 @@
+{{- /*
+  exercises the apps[].nameStyle: suffix opt-in.
+
+  Template-author intent is the bare release name "vm". With the deployment
+  setting nameStyle: suffix and name: cust-abc, ATLAS munges to vm-cust-abc
+  (vs the default prefix that would produce cust-abc-vm).
+*/ -}}
+releases:
+  - name: vm
+    chart: ../../charts/chart1
+    namespace: test
+    values:
+      - probe.yaml.gotmpl

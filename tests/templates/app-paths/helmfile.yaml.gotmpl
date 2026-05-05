@@ -1,0 +1,19 @@
+{{- /*
+  scalar/nested-key path resolution.
+  ATLAS resolves template-relative paths in:
+    - keyring             (single scalar)
+    - set[].file          (nested key inside a list of maps)
+    - setString[].file    (same shape as set[])
+  Each is a sibling file in the template dir.
+*/ -}}
+releases:
+  - name: stage3-paths-release
+    chart: ../../charts/chart1
+    namespace: test
+    keyring: ./keyring.gpg
+    set:
+      - name: foo
+        file: ./set-foo.txt
+    setString:
+      - name: bar
+        file: ./setstr-bar.txt

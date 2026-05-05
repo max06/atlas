@@ -1,0 +1,17 @@
+{{- /*
+  progressive accumulator across the values: list (no SOPS).
+
+  Demonstrates that when the loader walks a release's values: list, a later
+  .yaml.gotmpl entry can reference keys defined by any earlier entry —
+  inline maps, plain .yaml files, etc. — plus the hierarchy baseline and
+  .Release.*.
+*/ -}}
+releases:
+  - name: stage3-crossref-release
+    chart: ../../charts/chart1
+    namespace: test
+    values:
+      - region: us-east-1
+        appName: crossref
+      - earlier-plain.yaml
+      - derived.yaml.gotmpl

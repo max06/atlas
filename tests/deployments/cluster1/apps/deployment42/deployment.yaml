@@ -1,7 +1,7 @@
 # Fixture: hierarchy .yaml.gotmpl that references .Values.atlas.*
 # at hierarchy-walk time. See sibling values.yaml.gotmpl.
 apps:
-  - template: app-stage3-hier-atlas-ref
+  - template: app-hier-atlas-ref
     namespace: test
 settings:
   branch: main

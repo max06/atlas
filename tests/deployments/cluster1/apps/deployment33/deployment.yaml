@@ -1,11 +1,11 @@
-# Fixture: stage-3 named instances. Same template instantiated twice with
+# Fixture: named instances. Same template instantiated twice with
 # distinct apps[].name values; each must render its own release with
 # atlas.instance.name correctly scoped.
 apps:
-  - template: app-stage3-named
+  - template: app-named-multi
     name: primary
     namespace: test
-  - template: app-stage3-named
+  - template: app-named-multi
     name: secondary
     namespace: test
 settings:

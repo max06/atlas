@@ -1,0 +1,15 @@
+{{- /*
+  a template instantiated multiple times in one deployment
+  via apps[].name. The release name is the bare template-author intent —
+  ATLAS auto-munges it with the instance name so each instance produces
+  a distinct release. Vanilla helmfile would produce duplicate release
+  names here; this template is intentionally not vanilla-runnable when
+  apps[].name is set, but it stays free of `{{ .Values.atlas.* }}`
+  references so it remains readable as a vanilla template otherwise.
+*/ -}}
+releases:
+  - name: stage3-named
+    chart: ../../charts/chart1
+    namespace: test
+    values:
+      - probe.yaml.gotmpl

@@ -1,7 +1,7 @@
 # Fixture: top-level template fields (repositories, helmDefaults, ...)
 # pass through ATLAS verbatim to the emitted helmfile state.
 apps:
-  - template: app-stage3-passthrough
+  - template: app-passthrough
     namespace: test
 settings:
   branch: main
