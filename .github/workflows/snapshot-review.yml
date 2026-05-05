@@ -963,7 +963,7 @@ jobs:
 
       - name: Post or update PR comment
         if: always() && steps.comment.outputs.body
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3.0.4
         with:
           header: atlas-review
           message: ${{ steps.comment.outputs.body }}
