@@ -1,7 +1,7 @@
-# Fixture: stage-3, condition + installed stripping.
-# See tests/templates/app-stage3-condinst/helmfile.yaml.gotmpl for context.
+# Fixture: condition + installed stripping.
+# See tests/templates/app-condinst/helmfile.yaml.gotmpl for context.
 apps:
-  - template: app-stage3-condinst
+  - template: app-condinst
     namespace: test
 settings:
   branch: main

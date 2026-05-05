@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 fixture: scalar/nested-key path resolution.
+  scalar/nested-key path resolution.
   ATLAS resolves template-relative paths in:
     - keyring             (single scalar)
     - set[].file          (nested key inside a list of maps)
@@ -8,7 +8,7 @@
 */ -}}
 releases:
   - name: stage3-paths-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     keyring: ./keyring.gpg
     set:

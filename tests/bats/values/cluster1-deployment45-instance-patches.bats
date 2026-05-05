@@ -2,7 +2,7 @@
 #
 # Scenario: instance-level list field overrides (jsonPatches from apps[]).
 #
-# The app-stage3-patches template defines strategicMergePatches at the
+# The app-patches template defines strategicMergePatches at the
 # release level (adding annotation atlas-test/patched=yes). deployment45
 # adds an instance-level jsonPatches entry that should be appended to the
 # release — proving the applyListOverride append path works for

@@ -1,6 +1,6 @@
-# Fixture: stage-3 release.secrets handling.
+# Fixture: release.secrets handling.
 apps:
-  - template: app-stage3-secrets
+  - template: app-secrets
     namespace: test
     secrets:
       - instance-secret.sops.yaml

@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 fixture: skipSchemaValidation default-true.
+  skipSchemaValidation default-true.
 
   ATLAS sets skipSchemaValidation: true on every release UNLESS the
   template already sets the field. Schema validation runs only on
@@ -14,9 +14,9 @@
 */ -}}
 releases:
   - name: schema-default-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
   - name: schema-explicit-false
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     skipSchemaValidation: false

@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 fixture: a template instantiated multiple times in one deployment
+  a template instantiated multiple times in one deployment
   via apps[].name. The release name is the bare template-author intent —
   ATLAS auto-munges it with the instance name so each instance produces
   a distinct release. Vanilla helmfile would produce duplicate release
@@ -9,7 +9,7 @@
 */ -}}
 releases:
   - name: stage3-named
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       - probe.yaml.gotmpl

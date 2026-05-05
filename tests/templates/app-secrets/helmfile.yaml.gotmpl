@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 fixture: release.secrets handling.
+  release.secrets handling.
 
   ATLAS re-accepts release[].secrets and merges every entry AFTER all
   values: entries — matching helmfile's env-level secret precedence
@@ -20,7 +20,7 @@
 */ -}}
 releases:
   - name: stage3-secrets-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       - key1: fromValues

@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 baseline-probe app template.
+  Baseline-probe app template.
 
   Exercises the value-loading pipeline where each release's `values:` list
   is processed at helmfile's release-evaluation time (stage 3) by a
@@ -13,7 +13,7 @@
 */ -}}
 releases:
   - name: stage3-probe-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       - inlineFromTemplate: present

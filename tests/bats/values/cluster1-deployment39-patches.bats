@@ -43,5 +43,5 @@ setup_file() { ensure_rendered; }
   # convertPaths preserves the original `./` prefix as `/./` in the joined
   # output — semantically identical to the cleaned form, kustomize accepts
   # either. A future refactor of convertPaths can normalize this.
-  [[ "$output" == /*tests/templates/app-stage3-patches/*patches/cm-patch.yaml ]]
+  [[ "$output" == /*tests/templates/app-patches/*patches/cm-patch.yaml ]]
 }

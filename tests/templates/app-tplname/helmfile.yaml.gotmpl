@@ -1,7 +1,7 @@
-{{- /* Stage-3 fixture: minimal release; the test exercises the
+{{- /* minimal release; the test exercises the
      deployment.yaml side, where apps[].name is templated against a
      hierarchy value. */ -}}
 releases:
   - name: stage3-tplname
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test

@@ -17,22 +17,22 @@
 
 load 'helpers/render'
 
-@test "default-name: template label = app-stage3-probe" {
+@test "default-name: template label = app-probe" {
   labels="$(release_labels cluster1 deployment30 stage3-probe-release)"
   run yq '.template' <<<"$labels"
-  [ "$output" = "app-stage3-probe" ]
+  [ "$output" = "app-probe" ]
 }
 
 @test "default-name: instance label defaults to template" {
   labels="$(release_labels cluster1 deployment30 stage3-probe-release)"
   run yq '.instance' <<<"$labels"
-  [ "$output" = "app-stage3-probe" ]
+  [ "$output" = "app-probe" ]
 }
 
-@test "named-primary: template label = app-stage3-named" {
+@test "named-primary: template label = app-named-multi" {
   labels="$(release_labels cluster1 deployment33 primary-stage3-named)"
   run yq '.template' <<<"$labels"
-  [ "$output" = "app-stage3-named" ]
+  [ "$output" = "app-named-multi" ]
 }
 
 @test "named-primary: instance label = primary" {

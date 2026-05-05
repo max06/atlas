@@ -1,6 +1,6 @@
 releases:
   - name: app-multiline-tplsops
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       # Direct multi-line block scalar inside the SOPS file — the whole value

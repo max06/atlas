@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 fixture: condition + installed should be stripped by atlas.
+  condition + installed should be stripped by atlas.
 
   ATLAS treats deployment.yaml presence as the deploy-intent signal (so
   ArgoCD does not produce empty deployments from helmfile-level skips).
@@ -18,7 +18,7 @@
 */ -}}
 releases:
   - name: condinst-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     condition: never.enabled
     installed: false

@@ -1,6 +1,6 @@
-# Fixture: stage-3 skipSchemaValidation defaulting.
+# Fixture: skipSchemaValidation defaulting.
 apps:
-  - template: app-stage3-schema
+  - template: app-schema
     namespace: test
 settings:
   branch: main

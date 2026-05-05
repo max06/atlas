@@ -32,17 +32,17 @@ setup_file() {
 
 @test "d40: keyring resolved to absolute path under template dir" {
   run yq '.keyring' <<<"$D40_RELEASE_YAML"
-  [[ "$output" == /*tests/templates/app-stage3-paths/*keyring.gpg ]]
+  [[ "$output" == /*tests/templates/app-paths/*keyring.gpg ]]
 }
 
 @test "d40: set[].file resolved to absolute path under template dir" {
   run yq '.set[0].file' <<<"$D40_RELEASE_YAML"
-  [[ "$output" == /*tests/templates/app-stage3-paths/*set-foo.txt ]]
+  [[ "$output" == /*tests/templates/app-paths/*set-foo.txt ]]
 }
 
 @test "d40: setString[].file resolved to absolute path under template dir" {
   run yq '.setString[0].file' <<<"$D40_RELEASE_YAML"
-  [[ "$output" == /*tests/templates/app-stage3-paths/*setstr-bar.txt ]]
+  [[ "$output" == /*tests/templates/app-paths/*setstr-bar.txt ]]
 }
 
 @test "d40: set[].name passed through unchanged" {

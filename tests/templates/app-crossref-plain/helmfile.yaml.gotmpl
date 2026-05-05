@@ -1,5 +1,5 @@
 {{- /*
-  Stage-3 fixture: progressive accumulator across the values: list (no SOPS).
+  progressive accumulator across the values: list (no SOPS).
 
   Demonstrates that when the loader walks a release's values: list, a later
   .yaml.gotmpl entry can reference keys defined by any earlier entry —
@@ -8,7 +8,7 @@
 */ -}}
 releases:
   - name: stage3-crossref-release
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test
     values:
       - region: us-east-1

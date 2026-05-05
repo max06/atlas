@@ -1,7 +1,7 @@
 # Fixture: release-context access. Exercises the values-loader where
 # .Release.* is available at evaluation time alongside the full atlas object.
 apps:
-  - template: app-stage3-probe
+  - template: app-probe
     namespace: test
 settings:
   branch: main

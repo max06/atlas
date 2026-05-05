@@ -7,7 +7,7 @@
 # entry in release.secrets and apps[].secrets lands AFTER all values:
 # entries are merged.
 #
-# Fixture (deployment38 / app-stage3-secrets):
+# Fixture (deployment38 / app-secrets):
 #   key1 — only in template values
 #   key2 — template values + template secrets (secret wins)
 #   key3 — template secrets + instance secrets (instance wins)

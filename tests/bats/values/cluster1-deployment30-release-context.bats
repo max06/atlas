@@ -39,12 +39,12 @@ setup_file() { ensure_rendered; }
 
 @test "d30: atlas.instance.template populated in env-values" {
   run get_path "$CLUSTER" "$DEPLOYMENT" "$RELEASE" .releaseAware.instanceTemplate
-  [ "$output" = "app-stage3-probe" ]
+  [ "$output" = "app-probe" ]
 }
 
 @test "d30: atlas.instance.name populated in env-values" {
   run get_path "$CLUSTER" "$DEPLOYMENT" "$RELEASE" .releaseAware.instanceName
-  [ "$output" = "app-stage3-probe" ]
+  [ "$output" = "app-probe" ]
 }
 
 @test "d30: atlas.deployment.cluster propagated" {

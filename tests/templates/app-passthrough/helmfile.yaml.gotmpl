@@ -1,4 +1,4 @@
-{{- /* Stage-3 fixture: top-level helmfile fields that ATLAS doesn't own
+{{- /* top-level helmfile fields that ATLAS doesn't own
      should pass through to the emitted state file unchanged.
 
      The user's app template can declare:
@@ -26,5 +26,5 @@ helmDefaults:
   wait: false
 releases:
   - name: stage3-passthrough
-    chart: "{{ .Values.atlas.cwd }}/tests/charts/chart1"
+    chart: ../../charts/chart1
     namespace: test

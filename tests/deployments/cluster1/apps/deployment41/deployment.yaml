@@ -1,7 +1,7 @@
-# Fixture: stage-3 template-render-time access to hierarchy values
-# (jsonPatches inline + inline values map). See app-stage3-tplhier.
+# Fixture: template-render-time access to hierarchy values
+# (jsonPatches inline + inline values map). See app-tplhier.
 apps:
-  - template: app-stage3-tplhier
+  - template: app-tplhier
     namespace: test
 settings:
   branch: main
