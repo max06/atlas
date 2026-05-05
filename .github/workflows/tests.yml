@@ -3,12 +3,13 @@
 # under tests/deployments/ and tests/templates/.
 #
 # Runs on every push and PR touching test inputs or template code.
+# Tests a matrix of Helm × Helmfile versions to catch compatibility issues.
 
 name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
@@ -18,8 +19,23 @@ permissions:
 jobs:
   bats:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        helm-version:
+          - v3.17.3 # helmfile-argocd-plugin
+          - v3.20.2
+          - v4.0.5
+          - v4.1.4
+          - latest
+        helmfile-version:
+          - v0.171.0 # helmfile-argocd-plugin
+          - v1.3.2
+          - v1.4.5
+          - v1.5.0
+          - latest
+    name: helm ${{ matrix.helm-version }} / helmfile ${{ matrix.helmfile-version }}
     env:
-      # The SOPS age key lives in the repo (for testing only) — see tests/sops-secret.txt.
       SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +46,16 @@ jobs:
       - name: Install helm
         uses: Azure/setup-helm@v5
         with:
-          version: v4.1.3
+          version: ${{ matrix.helm-version }}
 
       - name: Install helmfile
         uses: helmfile/helmfile-action@v2.4.1
         with:
-          helmfile-version: v1.4.3
+          helmfile-version: ${{ matrix.helmfile-version }}
           helmfile-args: "version"
 
       - name: Install helmfile plugins
-        run: helmfile init --force
+        run: helmfile init --force 2>/dev/null || true
 
       - name: Install bats and yq
         run: |
@@ -48,8 +64,14 @@ jobs:
           sudo wget -qO /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
-          yq --version
-          bats --version
+
+      - name: Show versions
+        run: |
+          echo "Helm: $(helm version --short 2>&1)"
+          echo "Helmfile: $(helmfile version 2>&1)"
+          echo "SOPS: $(sops --version 2>&1)"
+          echo "yq: $(yq --version 2>&1)"
+          echo "bats: $(bats --version 2>&1)"
 
       - name: Run bats tests
-        run: bats tests/bats/
+        run: bats --recursive tests/bats/
