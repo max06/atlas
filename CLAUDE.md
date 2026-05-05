@@ -36,7 +36,7 @@ helmfile build -f tests/helmfile.yaml.gotmpl \
 
 ### Entry Points
 
-- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments.
+- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` (three subdirectories: `values/`, `redaction/`, `integration/`) and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments.
 
 ### Core Template Pipeline
 
