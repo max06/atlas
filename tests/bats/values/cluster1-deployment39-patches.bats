@@ -32,7 +32,8 @@ setup_file() { ensure_rendered; }
 }
 
 @test "d39: helmfile build state has absolute path for the patch" {
-  root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  local root
+  root="$(_repo_root)"
   run bash -c "helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
     build --selector cluster=$CLUSTER,deploymentName=$DEPLOYMENT 2>/dev/null \
     | yq 'select(.releases != null) | .releases[] | select(.name == \"$RELEASE\") | .strategicMergePatches[0]'"

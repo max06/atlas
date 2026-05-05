@@ -40,7 +40,8 @@ setup_file() { ensure_rendered; }
 }
 
 @test "d38: helmfile build state strips release.secrets (loader handled them)" {
-  root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  local root
+  root="$(_repo_root)"
   run bash -c "helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
     build --selector cluster=$CLUSTER,deploymentName=$DEPLOYMENT 2>/dev/null \
     | yq 'select(.releases != null) | .releases[] | select(.name == \"$RELEASE\") | has(\"secrets\")'"

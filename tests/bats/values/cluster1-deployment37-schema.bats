@@ -20,7 +20,7 @@ setup_file() { ensure_rendered; }
 
 _build_release_field() {
   local release="$1" field="$2" root
-  root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  root="$(_repo_root)"
   helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
     build --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" 2>/dev/null |
       yq "select(.releases != null) | .releases[] | select(.name == \"$release\") | .$field"
