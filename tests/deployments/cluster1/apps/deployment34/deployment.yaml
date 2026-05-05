@@ -1,9 +1,0 @@
-# Fixture: stage-3 with template-level SOPS in the release values: list.
-# Reuses the existing app-tplsops template through the stage-3 engine — the
-# template ships values.yaml.gotmpl + an inline map + values.sops.yaml.
-apps:
-  - template: app-tplsops
-    namespace: test
-settings:
-  branch: main
-  autoSync: false

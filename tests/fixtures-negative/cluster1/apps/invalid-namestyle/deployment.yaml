@@ -1,0 +1,7 @@
+apps:
+  - template: app-stage3-named
+    name: alpha
+    nameStyle: diagonal
+  - template: app-stage3-named
+    name: beta
+    nameStyle: diagonal

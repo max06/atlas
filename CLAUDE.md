@@ -12,7 +12,10 @@ The codebase is primarily Go Templates (`.gotmpl`), Helm Templates (`.tpl`), and
 
 ```bash
 # Run bats integration tests (value inheritance, SOPS, instances, multi-template)
-bats tests/bats/
+# Wrapper script clears stale render caches and prints a pass/fail summary:
+.claude/utils/run-bats.sh
+# Or run directly (--recursive required since tests live in subdirectories):
+bats --recursive tests/bats/
 
 # Render a single deployment for debugging via the test entry point
 # (tests/helmfile.yaml.gotmpl pre-wires atlas.{cwd,appTemplates,
@@ -86,7 +89,6 @@ Templates receive an `atlas` values object containing:
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
 - `redactSecrets` — Enable type-aware secret redaction
-- `variant` — Variant label applied to every rendered resource (defaults to `default`)
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
 
 ## Development Rules

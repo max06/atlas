@@ -27,13 +27,13 @@ rm -rf /tmp/bats-run-* /tmp/atlas-bats-render* /tmp/atlas-bats-sidedump* 2>/dev/
 
 case "${1-}" in
   -v|--verbose)
-    exec bats tests/bats/
+    exec bats --recursive tests/bats/
     ;;
   "")
     # Summary mode: capture the run, count, list failures only.
     log=$(mktemp)
     trap 'rm -f "$log"' EXIT
-    bats tests/bats/ > "$log" 2>&1 || true
+    bats --recursive tests/bats/ > "$log" 2>&1 || true
     ok=$(grep -c '^ok ' "$log" || true)
     notok=$(grep -c '^not ok' "$log" || true)
     echo "ok: $ok"

@@ -14,11 +14,6 @@
 
 {{- $atlas := deepCopy .Values.atlas }}
 
-{{- /* Defaults */ -}}
-{{- if not (hasKey $atlas "variant") }}
-  {{- $_ := set $atlas "variant" "default" }}
-{{- end }}
-
 {{- /* Redaction toggle — env var is always the source of truth. */ -}}
 {{- $_ := set $atlas "redactSecrets" (eq (env "ATLAS_REDACT_SECRETS") "true") }}
 

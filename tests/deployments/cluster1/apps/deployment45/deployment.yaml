@@ -1,0 +1,18 @@
+# Fixture: instance-level jsonPatches appended to template-level patches.
+# The app-stage3-patches template already has strategicMergePatches from
+# the template side (./patches/cm-patch.yaml adds atlas-test/patched: yes).
+# This deployment adds an instance-level jsonPatches entry that adds a second
+# annotation, proving the applyListOverride append path works.
+apps:
+  - template: app-stage3-patches
+    namespace: test
+    jsonPatches:
+      - target:
+          version: v1
+          kind: ConfigMap
+          name: stage3-patches-release-chart1
+          namespace: test
+        patch:
+          - op: add
+            path: "/metadata/annotations/atlas-test~1from-instance"
+            value: "yes"

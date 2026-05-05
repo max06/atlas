@@ -15,15 +15,14 @@
      resolves variant, and dispatches to the per-cluster/per-deployment
      pipeline.
 
-     atlas.cwd is computed via `git rev-parse --show-toplevel` so this
-     entry works regardless of which subdirectory helmfile is invoked
-     from. The other two paths are deliberately repo-relative — they
-     describe where the test fixtures live, not where the user's pwd is. */}}
+     helmfile sets its working directory to the state file's parent,
+     so `pwd` reliably returns the tests/ directory. Templates and
+     deployments live right here — no repo-root reference needed. */}}
 
 helmfiles:
   - path: ../helmfile.yaml.gotmpl
     values:
       - atlas:
-          cwd: {{ exec "git" (list "rev-parse" "--show-toplevel") | trim }}
-          appTemplates: tests/templates
-          deploymentDefinitions: tests/deployments
+          cwd: {{ exec "pwd" (list) | trim }}
+          appTemplates: templates
+          deploymentDefinitions: deployments

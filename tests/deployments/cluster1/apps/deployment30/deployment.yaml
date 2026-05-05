@@ -1,7 +1,5 @@
-# Fixture: stage-3 prototype. Opts into the new release-aware value-loading
-# pipeline via the top-level `engine: stage3` flag — stage-2 fans the
-# deployment out to per-instance sub-helmfiles instead of resolving values
-# itself.
+# Fixture: release-context access. Exercises the values-loader where
+# .Release.* is available at evaluation time alongside the full atlas object.
 apps:
   - template: app-stage3-probe
     namespace: test

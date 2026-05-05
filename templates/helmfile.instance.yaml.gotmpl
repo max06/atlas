@@ -57,7 +57,6 @@ Purpose:
     .Values.atlas.deployment.clusterGroup    — present when cluster has a group
     .Values.atlas.deployment.deploymentName  — deployment dir name
     .Values.atlas.deployment.deploymentPath  — absolute deployment.yaml path
-    .Values.atlas.variant                    — variant label
     .Values.atlas.redactSecrets              — redaction toggle (twin-load)
 */}}
 
@@ -309,7 +308,6 @@ Purpose:
   "cluster"        .Values.atlas.deployment.cluster
   "clusterName"    .Values.atlas.deployment.clusterName
   "deploymentName" .Values.atlas.deployment.deploymentName
-  "variant"        .Values.atlas.variant
   "template"       .Values.atlas.instance.template
   "instance"       .Values.atlas.instance.name
 }}
