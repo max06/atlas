@@ -166,14 +166,14 @@ jobs:
       # to the PR branch HEAD and warn the reviewer.
       - name: Checkout merge result
         id: merge-checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
         continue-on-error: true
 
       - name: Fallback to PR branch if merge ref unavailable
         if: steps.merge-checkout.outcome == 'failure'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -335,7 +335,7 @@ jobs:
       # baseline reflects what is currently deployed / on main.
       # Errors here are non-blocking: the PR may be fixing a broken target branch.
       - name: Checkout target branch HEAD
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           clean: false

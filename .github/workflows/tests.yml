@@ -35,7 +35,7 @@ jobs:
     env:
       SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install SOPS
         uses: nhedger/setup-sops@v2
