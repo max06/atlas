@@ -25,10 +25,7 @@ export D44_BUILD_FILE
 setup_file() {
   local root
   root="$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)"
-  helmfile -f "$root/helmfile.yaml.gotmpl" \
-    --state-values-set "atlas.appTemplates=tests/templates" \
-    --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-    --state-values-set "atlas.cwd=$root" \
+  helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
     build --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" \
     > "$D44_BUILD_FILE" 2>/dev/null
 }

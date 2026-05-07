@@ -30,22 +30,18 @@ setup_file() { ensure_rendered; }
 }
 
 @test "d35: helmfile build state has no condition: field" {
-  root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  run bash -c "helmfile -f '$root/helmfile.yaml.gotmpl' \
-    --state-values-set 'atlas.appTemplates=tests/templates' \
-    --state-values-set 'atlas.deploymentDefinitions=tests/deployments' \
-    --state-values-set \"atlas.cwd=$root\" \
+  local root
+  root="$(_repo_root)"
+  run bash -c "helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
     build --selector cluster=$CLUSTER,deploymentName=$DEPLOYMENT 2>/dev/null \
     | yq 'select(.releases != null) | .releases[] | select(.name == \"$RELEASE\") | has(\"condition\")'"
   [ "$output" = "false" ]
 }
 
 @test "d35: helmfile build state has no installed: field" {
-  root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  run bash -c "helmfile -f '$root/helmfile.yaml.gotmpl' \
-    --state-values-set 'atlas.appTemplates=tests/templates' \
-    --state-values-set 'atlas.deploymentDefinitions=tests/deployments' \
-    --state-values-set \"atlas.cwd=$root\" \
+  local root
+  root="$(_repo_root)"
+  run bash -c "helmfile -f '$root/tests/helmfile.yaml.gotmpl' \
     build --selector cluster=$CLUSTER,deploymentName=$DEPLOYMENT 2>/dev/null \
     | yq 'select(.releases != null) | .releases[] | select(.name == \"$RELEASE\") | has(\"installed\")'"
   [ "$output" = "false" ]

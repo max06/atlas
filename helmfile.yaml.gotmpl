@@ -12,6 +12,20 @@
        ATLAS_FILTER_CLUSTER           stage-1 filter: render only this cluster
        ATLAS_FILTER_DEPLOYMENT_NAME   stage-1 filter: render only this deployment */ -}}
 
+{{- /* ── Version gate ──────────────────────────────────────────────────
+     ATLAS requires Helm >= 4.0.0 and Helmfile >= 1.0.0.
+     Older versions lack template-context fields (.Environment.Values)
+     and post-renderer features that the pipeline relies on. */ -}}
+{{- $helmVersion := exec "helm" (list "version" "--short") | trim | regexFind "\\d+\\.\\d+\\.\\d+" }}
+{{- if not (semverCompare ">=4.0.0" $helmVersion) }}
+  {{- fail (printf "ATLAS requires Helm >= 4.0.0 (found %s)" $helmVersion) }}
+{{- end }}
+
+{{- $hfVersion := exec "helmfile" (list "version") | regexFind "\\d+\\.\\d+\\.\\d+" }}
+{{- if not (semverCompare ">=1.0.0" $hfVersion) }}
+  {{- fail (printf "ATLAS requires Helmfile >= 1.0.0 (found %s)" $hfVersion) }}
+{{- end }}
+
 {{- $atlas := deepCopy .Values.atlas }}
 
 {{- /* Redaction toggle — env var is always the source of truth. */ -}}

@@ -14,10 +14,8 @@ _render_negative() {
   local deployment="$1" root
   root="$(_root)"
   ATLAS_FILTER_CLUSTER=cluster1 ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
-    helmfile -f "$root/helmfile.yaml.gotmpl" \
-      --state-values-set "atlas.appTemplates=tests/templates" \
-      --state-values-set "atlas.deploymentDefinitions=tests/fixtures-negative" \
-      --state-values-set "atlas.cwd=$root" \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
+      --state-values-set "atlas.deploymentDefinitions=fixtures-negative" \
       template --skip-schema-validation 2>&1
 }
 

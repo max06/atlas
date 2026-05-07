@@ -20,10 +20,7 @@ setup_file() {
   local root
   root="$(cd "${BATS_TEST_DIRNAME}/../../.." && pwd)"
   D40_RELEASE_YAML="$(
-    helmfile -f "$root/helmfile.yaml.gotmpl" \
-      --state-values-set "atlas.appTemplates=tests/templates" \
-      --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-      --state-values-set "atlas.cwd=$root" \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       build --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" 2>/dev/null \
         | yq "select(.releases != null) | .releases[] | select(.name == \"$RELEASE\")"
   )"

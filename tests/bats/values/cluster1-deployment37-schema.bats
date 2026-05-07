@@ -20,11 +20,8 @@ setup_file() { ensure_rendered; }
 
 _build_release_field() {
   local release="$1" field="$2" root
-  root="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  helmfile -f "$root/helmfile.yaml.gotmpl" \
-    --state-values-set "atlas.appTemplates=tests/templates" \
-    --state-values-set "atlas.deploymentDefinitions=tests/deployments" \
-    --state-values-set "atlas.cwd=$root" \
+  root="$(_repo_root)"
+  helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
     build --selector "cluster=$CLUSTER,deploymentName=$DEPLOYMENT" 2>/dev/null |
       yq "select(.releases != null) | .releases[] | select(.name == \"$release\") | .$field"
 }
