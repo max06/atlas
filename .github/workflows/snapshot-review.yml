@@ -633,6 +633,12 @@ jobs:
               SUPPRESSED_REMOVED=$((SUPPRESSED_REMOVED + 1))
             elif [ "$IN_BASELINE" = true ] && [ "$IN_PR" = true ] \
                  && [ -n "${NOMAP_SET[$RELEASE_PATH]:-}" ]; then
+              # No redaction map — we can't safely show a line-level diff.
+              # But if the rendered output is byte-identical, there is nothing
+              # to report (no secrets can leak from identical content).
+              if diff -rq "$BASELINE_DIR/$RELEASE_PATH" "$PR_DIR/$RELEASE_PATH" >/dev/null 2>&1; then
+                continue
+              fi
               SUPPRESS_REASON="no-map"
               SUPPRESSED_NOMAP=$((SUPPRESSED_NOMAP + 1))
             fi
