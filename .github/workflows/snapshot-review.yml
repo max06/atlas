@@ -90,7 +90,7 @@ jobs:
           version: ${{ inputs.helm-version }}
 
       - name: Install Helmfile
-        uses: helmfile/helmfile-action@v2.4.1
+        uses: helmfile/helmfile-action@v2.4.4
         with:
           helmfile-version: ${{ inputs.helmfile-version }}
           helmfile-args: "version"
