@@ -1,0 +1,14 @@
+{{- /* Template with inline values in release.values that reference both
+     instance-level and hierarchy-level values via Go template expressions.
+     Tests that ATLAS preserves inline map values and enriches the tpl
+     context so these expressions resolve at state-build time. */ -}}
+releases:
+  - name: app-inlinevals
+    chart: "{{ .Values.atlas.cwd }}/charts/chart1"
+    namespace: test
+    values:
+      - inlineFromInstance: "{{ .Values.instanceKey }}"
+        inlineFromHierarchy: "{{ .Values.globalOnly }}"
+        inlineStatic: staticValue
+        inlineNested:
+          deep: "{{ .Values.instanceKey }}-nested"

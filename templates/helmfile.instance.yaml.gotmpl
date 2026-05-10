@@ -117,7 +117,29 @@ Purpose:
   {{- end }}
 {{- end }}
 
-{{- /* ====================== RENDER APP TEMPLATE (atlas + hierarchy + synth Release; real .Release.* still left for the loader) ====================== */ -}}
+{{- /* ====================== ENRICH CTX WITH INSTANCE INLINE VALUES ====================== */ -}}
+{{- /* App templates may reference deployment-level values in their body
+     (e.g. `{{ .Values.targetPort }}` inside an inline values map for a raw
+     chart). At state-build time those values are not yet in the context —
+     the values-loader resolves them later at release-evaluation time. To
+     let the tpl call below succeed, merge the instance's inline map values
+     into the context now. File-based entries are skipped; the loader
+     resolves those at release-time with .Release.* available.
+
+     Merge order: instance inline values go in UNDER the hierarchy so that
+     hierarchy keys win consistently — matching the final value precedence
+     the loader establishes at release-time. Re-overlaying $hierarchy after
+     the instance merge achieves this because $ctx already had $hierarchy
+     merged in earlier. */ -}}
+{{- range $entry := ($thisInstance | get "values" list) }}
+  {{- if kindIs "map" $entry }}
+    {{- $ctx = mergeOverwrite $ctx $entry }}
+  {{- end }}
+{{- end }}
+{{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
+{{- $_ := set $ctx "Values" $ctx }}
+
+{{- /* ====================== RENDER APP TEMPLATE (atlas + hierarchy + instance values + synth Release; real .Release.* still left for the loader) ====================== */ -}}
 {{- $template := tpl (readFile $templateFile) $ctx | fromYaml }}
 
 {{- /* ====================== REWRITE EACH RELEASE ====================== */ -}}
@@ -168,7 +190,19 @@ Purpose:
       {{- $_ := set $release "chart" (printf "%s/%s" $templateDir $chart) }}
     {{- end }}
   {{- end }}
-  {{- $_ := set $release "values" (list $loaderPath) }}
+  {{- /* Preserve inline map values from the template's release.values list.
+       These may define chart-specific values (e.g. resources for a raw chart)
+       that only the template author knows about. File-based entries (strings)
+       are dropped — the values-loader resolves them at release-evaluation time
+       with .Release.* available. The loader is appended last so its hierarchy-
+       merged output takes precedence for any overlapping keys. */ -}}
+  {{- $preservedValues := list }}
+  {{- range $v := ($release | get "values" list) }}
+    {{- if kindIs "map" $v }}
+      {{- $preservedValues = append $preservedValues $v }}
+    {{- end }}
+  {{- end }}
+  {{- $_ := set $release "values" (append $preservedValues $loaderPath) }}
 
   {{- /* Drop atlas-incompatible release fields. See block-comment above. */ -}}
   {{- $_ := unset $release "condition" }}
