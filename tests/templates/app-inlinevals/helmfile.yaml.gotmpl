@@ -7,6 +7,7 @@ releases:
     chart: "{{ .Values.atlas.cwd }}/charts/chart1"
     namespace: test
     values:
+      - values.yaml.gotmpl
       - inlineFromInstance: "{{ .Values.instanceKey }}"
         inlineFromHierarchy: "{{ .Values.globalOnly }}"
         inlineStatic: staticValue

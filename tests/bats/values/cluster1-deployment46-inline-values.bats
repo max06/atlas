@@ -65,3 +65,20 @@ setup_file() { ensure_rendered; }
   run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .globalOnly
   [ "$output" = "fromGlobal" ]
 }
+
+# --- Template value FILE (.yaml.gotmpl) referencing instance values ---
+
+@test "d46: instance-level value resolves in template values file" {
+  run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .fileFromInstance
+  [ "$output" = "fromInstanceInline" ]
+}
+
+@test "d46: hierarchy value resolves in template values file" {
+  run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .fileFromHierarchy
+  [ "$output" = "fromGlobal" ]
+}
+
+@test "d46: static value from template values file passes through" {
+  run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .fileStatic
+  [ "$output" = "fromFile" ]
+}
