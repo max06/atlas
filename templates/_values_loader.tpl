@@ -241,6 +241,15 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
       {{- else if hasSuffix ".yaml.gotmpl" $entry }}
         {{- $progCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) }}
         {{- $progCtx = mergeOverwrite $progCtx (deepCopy $merged) }}
+        {{- /* Include instance inline map values so template value files can
+             reference deployment-level values (e.g. {{ .Values.targetPort }}).
+             Hierarchy is re-overlaid last to maintain precedence. */ -}}
+        {{- range $iv := ($thisInstance | get "values" list) }}
+          {{- if kindIs "map" $iv }}
+            {{- $progCtx = mergeOverwrite $progCtx $iv }}
+          {{- end }}
+        {{- end }}
+        {{- $progCtx = mergeOverwrite $progCtx (deepCopy $hierarchy) }}
         {{- $_ := set $progCtx "Values" $progCtx }}
         {{- $_ := set $progCtx "Release" $.Release }}
         {{- $merged = mergeOverwrite $merged (tpl (readFile $absPath) $progCtx | fromYaml) }}
