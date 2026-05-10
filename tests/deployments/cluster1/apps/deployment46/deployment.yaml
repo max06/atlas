@@ -1,0 +1,12 @@
+# Fixture: inline values in the app template reference instance-level
+# and hierarchy-level values. Tests that ATLAS enriches the tpl context
+# and preserves inline map values through the pipeline.
+apps:
+  - template: app-inlinevals
+    namespace: test
+    values:
+      - instanceKey: fromInstanceInline
+        globalOnly: instanceTriesToOverride
+settings:
+  branch: main
+  autoSync: false

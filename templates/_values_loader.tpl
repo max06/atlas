@@ -165,6 +165,40 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 {{- $_ := set $ctx "Values" $ctx }}
 {{- $_ := set $ctx "Release" .Release }}
 
+{{- /* ====================== DEPLOYMENT — find instance + nameStyle ====================== */ -}}
+{{- /* Read the deployment once to locate the matching instance. Used for:
+     1. nameStyle lookup (name-munging to match .Release.Name)
+     2. instance-level values (merged below, after template values)
+     3. enriching $ctx with instance inline values so the template's tpl
+        call can resolve expressions like {{ .Values.targetPort }} */ -}}
+{{- $deploymentRendered := tpl (readFile $deploymentPath) $ctx | fromYaml }}
+{{- $thisInstance := dict }}
+{{- $instanceName := .Values.atlas.instance.name }}
+{{- $needsMunge := ne $instanceName .Values.atlas.instance.template }}
+{{- $nameStyle := "prefix" }}
+{{- range $app := $deploymentRendered.apps }}
+  {{- $iName := $app.template }}
+  {{- if hasKey $app "name" }}{{- $iName = $app.name }}{{- end }}
+  {{- if and (eq $app.template $.Values.atlas.instance.template) (eq $iName $instanceName) }}
+    {{- $thisInstance = $app }}
+    {{- if and $needsMunge (hasKey $app "nameStyle") }}
+      {{- $nameStyle = $app.nameStyle }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{- /* Enrich tpl context with instance inline map values so template
+     expressions referencing deployment-level values resolve. Instance
+     values are merged UNDER the hierarchy (re-overlay) so hierarchy keys
+     win consistently — matching the final value precedence. */ -}}
+{{- range $entry := ($thisInstance | get "values" list) }}
+  {{- if kindIs "map" $entry }}
+    {{- $ctx = mergeOverwrite $ctx $entry }}
+  {{- end }}
+{{- end }}
+{{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
+{{- $_ := set $ctx "Values" $ctx }}
+
 {{- /* ====================== TEMPLATE-LEVEL VALUES ====================== */ -}}
 {{- /* Match the release this loader call serves. The template emits releases
      under their author-intended names (e.g. "vm"), but ATLAS may have
@@ -173,19 +207,6 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
      Munge logic mirrors helmfile.instance.yaml.gotmpl: skip when
      instance.name == template, otherwise prefix or suffix per nameStyle. */ -}}
 {{- $templateRendered := tpl (readFile $templateFile) $ctx | fromYaml }}
-{{- $instanceName := .Values.atlas.instance.name }}
-{{- $needsMunge := ne $instanceName .Values.atlas.instance.template }}
-{{- $nameStyle := "prefix" }}
-{{- if $needsMunge }}
-  {{- $deploymentRenderedForStyle := tpl (readFile $deploymentPath) $ctx | fromYaml }}
-  {{- range $app := $deploymentRenderedForStyle.apps }}
-    {{- $iName := $app.template }}
-    {{- if hasKey $app "name" }}{{- $iName = $app.name }}{{- end }}
-    {{- if and (eq $app.template $.Values.atlas.instance.template) (eq $iName $instanceName) }}
-      {{- if hasKey $app "nameStyle" }}{{- $nameStyle = $app.nameStyle }}{{- end }}
-    {{- end }}
-  {{- end }}
-{{- end }}
 {{- $thisRelease := dict }}
 {{- range $rel := $templateRendered.releases }}
   {{- $expected := $rel.name }}
@@ -233,17 +254,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 {{- end }}
 
 {{- /* ====================== INSTANCE-LEVEL VALUES ====================== */ -}}
-{{- $deploymentRendered := tpl (readFile $deploymentPath) $ctx | fromYaml }}
-{{- $thisInstance := dict }}
-{{- range $app := $deploymentRendered.apps }}
-  {{- $instanceName := $app.template }}
-  {{- if hasKey $app "name" }}
-    {{- $instanceName = $app.name }}
-  {{- end }}
-  {{- if and (eq $app.template $.Values.atlas.instance.template) (eq $instanceName $.Values.atlas.instance.name) }}
-    {{- $thisInstance = $app }}
-  {{- end }}
-{{- end }}
+{{- /* $thisInstance was found earlier (before template-level values) to
+     enrich the tpl context. Reuse it here for value processing. */ -}}
 {{- range $entry := ($thisInstance | get "values" list) }}
   {{- if kindIs "string" $entry }}
     {{- $absPath := printf "%s/%s" $deploymentDir $entry }}
