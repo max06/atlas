@@ -100,9 +100,15 @@ Purpose:
 ) | fromYaml }}
 
 {{- /* ====================== TPL CONTEXT (atlas + hierarchy + synthetic Release) ====================== */ -}}
+{{- /* NOTE on .Values: we avoid `set $ctx "Values" $ctx` (self-reference)
+     because a circular map causes stack overflow in Go's fmt.printValue
+     when any downstream code path (error formatting, debug logging) tries
+     to format the context. Instead, set .Release first, then snapshot
+     .Values via deepCopy — the copy has everything templates need (.foo
+     AND .Values.foo) without a back-pointer. */ -}}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Values" $ctx }}
 {{- $_ := set $ctx "Release" $synthRelease }}
+{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== DEPLOYMENT.YAML — find this instance for namespace override ====================== */ -}}
 {{- $deploymentRendered := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
@@ -137,7 +143,7 @@ Purpose:
   {{- end }}
 {{- end }}
 {{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Values" $ctx }}
+{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== RENDER APP TEMPLATE (atlas + hierarchy + instance values + synth Release; real .Release.* still left for the loader) ====================== */ -}}
 {{- $template := tpl (readFile $templateFile) $ctx | fromYaml }}
