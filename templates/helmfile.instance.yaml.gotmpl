@@ -306,7 +306,7 @@ Purpose:
        real .Release object, so build a minimal stand-in carrying the two
        fields the loader actually reads (Name + Namespace). */ -}}
   {{- if $.Values.atlas.redactSecrets }}
-    {{- $relCtx := dict "Name" $release.name "Namespace" $release.namespace }}
+    {{- $relCtx := dict "Name" $release.name "Namespace" ($release | get "namespace" "") }}
     {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" false) | fromYaml }}
     {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" true) | fromYaml }}
     {{- $replMap := index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
