@@ -129,8 +129,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
            later files can reference earlier hierarchy keys via the bare
            form (.foo) or the wrapped form (.Values.foo). */ -}}
       {{- $hCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) }}
-      {{- $_ := set $hCtx "Values" $hCtx }}
       {{- $_ := set $hCtx "Release" $.Release }}
+      {{- $_ := set $hCtx "Values" (deepCopy $hCtx) }}
       {{- $hierarchy = mergeOverwrite $hierarchy (tpl (readFile $f) $hCtx | fromYaml) }}
     {{- else }}
       {{- $hierarchy = mergeOverwrite $hierarchy (readFile $f | fromYaml) }}
@@ -161,9 +161,16 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 {{- /* Template authors expect `{{ .Values.<hierarchyKey> }}` in the
      template body to resolve. Build a context that has the merged
      hierarchy under .Values, alongside the atlas object and Release. */ -}}
+{{- /* NOTE on .Values: we deliberately avoid `set $ctx "Values" $ctx`
+     (self-reference) because it creates a circular map. If any downstream
+     code path tries to format/print the context (e.g. Go's error handler
+     calling fmt.Sprintf with %v), fmt.printValue recurses infinitely and
+     crashes with a stack overflow. Instead, set .Release first, then
+     snapshot .Values via deepCopy — the copy contains everything the
+     template needs (.foo AND .Values.foo) without a back-pointer. */ -}}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Values" $ctx }}
 {{- $_ := set $ctx "Release" .Release }}
+{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== DEPLOYMENT — find instance + nameStyle ====================== */ -}}
 {{- /* Read the deployment once to locate the matching instance. Used for:
@@ -197,7 +204,7 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
   {{- end }}
 {{- end }}
 {{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Values" $ctx }}
+{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== TEMPLATE-LEVEL VALUES ====================== */ -}}
 {{- /* Match the release this loader call serves. The template emits releases
@@ -250,8 +257,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
           {{- end }}
         {{- end }}
         {{- $progCtx = mergeOverwrite $progCtx (deepCopy $hierarchy) }}
-        {{- $_ := set $progCtx "Values" $progCtx }}
         {{- $_ := set $progCtx "Release" $.Release }}
+        {{- $_ := set $progCtx "Values" (deepCopy $progCtx) }}
         {{- $merged = mergeOverwrite $merged (tpl (readFile $absPath) $progCtx | fromYaml) }}
       {{- else }}
         {{- $merged = mergeOverwrite $merged (readFile $absPath | fromYaml) }}
@@ -279,8 +286,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
       {{- else if hasSuffix ".yaml.gotmpl" $entry }}
         {{- $progCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) }}
         {{- $progCtx = mergeOverwrite $progCtx (deepCopy $merged) }}
-        {{- $_ := set $progCtx "Values" $progCtx }}
         {{- $_ := set $progCtx "Release" $.Release }}
+        {{- $_ := set $progCtx "Values" (deepCopy $progCtx) }}
         {{- $merged = mergeOverwrite $merged (tpl (readFile $absPath) $progCtx | fromYaml) }}
       {{- else }}
         {{- $merged = mergeOverwrite $merged (readFile $absPath | fromYaml) }}
