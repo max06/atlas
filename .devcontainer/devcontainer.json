@@ -1,0 +1,63 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Atlas",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	// "image": "mcr.microsoft.com/devcontainers/python:3.13-trixie",
+	"image": "mcr.microsoft.com/devcontainers/base:2-trixie",
+	"features": {
+		"ghcr.io/devcontainers/features/github-cli:1": {
+			"extensions": "dlvhdr/gh-dash"
+		},
+		"ghcr.io/devcontainers-extra/features/argo-cd:1": {},
+		"ghcr.io/devcontainers-extra/features/eget:1": {},
+		"ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+		"ghcr.io/mpriscella/features/helm-chart-testing:1": {},
+		"ghcr.io/audacioustux/devcontainers/k9s:1": {},
+		"ghcr.io/rio/features/kustomize:1": {},
+		"ghcr.io/devcontainers/features/go:1": {},
+		"ghcr.io/szkiba/devcontainer-features/bats:1": {},
+		"ghcr.io/brokenpip3/devcontainers-bats/bats-libs:0": {},
+		"ghcr.io/devcontainer-community/devcontainer-features/yq:1": {},
+		"ghcr.io/devcontainers/features/python:1": {},
+		"ghcr.io/jsburckhardt/devcontainer-features/uv:1": {},
+		"ghcr.io/devcontainers-extra/features/sops:1": {},
+		"ghcr.io/devcontainers-extra/features/age:1": {},
+		"ghcr.io/devcontainers-extra/features/age-keygen:1": {},
+		"ghcr.io/devcontainers/features/docker-in-docker:3.0.1": {
+			"moby": false
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"redhat.vscode-yaml",
+				"vivaxy.vscode-conventional-commits",
+				"Anthropic.claude-code"
+			]
+		}
+	},
+	"remoteEnv": {
+		"PATH": "/home/vscode/.krew/bin:/home/vscode/.local/bin:${containerEnv:PATH}",
+		"ANTHROPIC_MODEL": "claude-opus-4-6",
+		"SOPS_AGE_KEY_FILE": "${containerWorkspaceFolder}/tests/sops-secret.txt"
+	},
+	"mounts": [
+		{
+			"source": "${localEnv:HOME}${localEnv:USERPROFILE}/.claude.json",
+			"target": "/home/vscode/.claude.json",
+			"type": "bind"
+		},
+		{
+			"source": "${localEnv:HOME}${localEnv:USERPROFILE}/.claude",
+			"target": "/home/vscode/.claude",
+			"type": "bind"
+		}
+	],
+	// add --network=host to docker run
+	"runArgs": [],
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "uv run .devcontainer/postCreate.py"
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

@@ -47,6 +47,7 @@ PR_FILTER="${PR_FILTER:-true}"
 WORKFLOW_PIN_TARGET="${WORKFLOW_PIN_TARGET:-}"
 WORKFLOW_PIN_MERGE="${WORKFLOW_PIN_MERGE:-}"
 LATEST_ATLAS_TAG="${LATEST_ATLAS_TAG:-}"
+LATEST_MAIN_SHA="${LATEST_MAIN_SHA:-}"
 DIFF_TOTAL="${DIFF_TOTAL:-0}"
 DIFF_RELEASES="${DIFF_RELEASES:-0}"
 DIFF_TRUNCATED="${DIFF_TRUNCATED:-}"
@@ -104,25 +105,49 @@ if [ "$MERGE_FALLBACK" = "true" ]; then
 fi
 
 # ── Workflow version check (security-relevant) ──
-# Check 1: Is the workflow itself current?
+# Scenarios (in priority order):
+#   @main                    → silent (always gets security fixes)
+#   @SHA matching main HEAD  → silent (equivalent to @main)
+#   pin changed by PR        → neutral note (regardless of old/new version)
+#   @SHA not matching main   → warning (pinned to unknown commit)
+#   @latest-tag              → note: on latest, but @main recommended for auto-fixes
+#   @old-tag                 → warning: behind latest, may miss security mitigations
+#   not detected             → silent (don't false-alarm on renamed/forked workflows)
+is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+
 if [ -n "$WORKFLOW_PIN_MERGE" ] && [ "$WORKFLOW_PIN_MERGE" != "main" ]; then
-  if [ -n "$LATEST_ATLAS_TAG" ] && [ "$WORKFLOW_PIN_MERGE" != "$LATEST_ATLAS_TAG" ]; then
-    if [ -n "$WORKFLOW_PIN_TARGET" ] && [ "$WORKFLOW_PIN_TARGET" != "$WORKFLOW_PIN_MERGE" ]; then
-      # PR changes the workflow pin
+  # SHA matching main HEAD is equivalent to @main — skip all messaging
+  if is_sha "$WORKFLOW_PIN_MERGE" && [ -n "$LATEST_MAIN_SHA" ] \
+     && [ "$WORKFLOW_PIN_MERGE" = "$LATEST_MAIN_SHA" ]; then
+    : # silent — current main commit
+  else
+    PIN_CHANGED=false
+    [ -n "$WORKFLOW_PIN_TARGET" ] && [ "$WORKFLOW_PIN_TARGET" != "$WORKFLOW_PIN_MERGE" ] && PIN_CHANGED=true
+
+    if [ "$PIN_CHANGED" = true ]; then
       emit '> [!NOTE]'
       emit "> This PR changes the ATLAS workflow pin: \`@${WORKFLOW_PIN_TARGET}\` → \`@${WORKFLOW_PIN_MERGE}\`."
       emit ''
-    else
-      # Pin unchanged, not on latest
-      emit '> [!NOTE]'
-      emit "> Workflow pinned to \`@${WORKFLOW_PIN_MERGE}\`, latest is \`@${LATEST_ATLAS_TAG}\`. You are responsible for updating to receive security fixes. Consider using \`@main\` to get fixes automatically."
-      emit ''
     fi
-  elif [ -n "$WORKFLOW_PIN_TARGET" ] && [ "$WORKFLOW_PIN_TARGET" != "$WORKFLOW_PIN_MERGE" ]; then
-    # PR changes pin but we can't compare to latest
-    emit '> [!NOTE]'
-    emit "> This PR changes the ATLAS workflow pin: \`@${WORKFLOW_PIN_TARGET}\` → \`@${WORKFLOW_PIN_MERGE}\`."
-    emit ''
+
+    if is_sha "$WORKFLOW_PIN_MERGE"; then
+      # SHA that doesn't match main HEAD
+      if [ "$PIN_CHANGED" = false ]; then
+        emit '> [!WARNING]'
+        emit "> Workflow pinned to a commit SHA (\`${WORKFLOW_PIN_MERGE:0:7}\`) that does not match the current \`main\` branch. This pin may miss secret-leak mitigations added in newer commits."
+        emit ''
+      fi
+    elif [ -n "$LATEST_ATLAS_TAG" ]; then
+      if [ "$WORKFLOW_PIN_MERGE" = "$LATEST_ATLAS_TAG" ]; then
+        emit '> [!NOTE]'
+        emit "> Workflow pinned to the latest release (\`@${WORKFLOW_PIN_MERGE}\`). Using \`@main\` is recommended to receive secret-leak mitigations automatically."
+        emit ''
+      elif [ "$PIN_CHANGED" = false ]; then
+        emit '> [!WARNING]'
+        emit "> Workflow pinned to \`@${WORKFLOW_PIN_MERGE}\`, latest is \`@${LATEST_ATLAS_TAG}\`. Older versions may miss secret-leak mitigations added in newer releases."
+        emit ''
+      fi
+    fi
   fi
 fi
 

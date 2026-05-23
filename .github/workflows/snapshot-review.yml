@@ -59,6 +59,9 @@ jobs:
           LATEST_TAG=$(gh release list -R max06/atlas --limit 1 \
             --json tagName --jq '.[0].tagName // ""' 2>/dev/null || echo "")
           echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          MAIN_SHA=$(gh api repos/max06/atlas/commits/main \
+            --jq '.sha' 2>/dev/null || echo "")
+          echo "main_sha=${MAIN_SHA}" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -122,10 +125,9 @@ jobs:
           workflow-pin-target: ${{ steps.baseline.outputs.workflow_pin }}
           workflow-pin-merge: ${{ steps.pr.outputs.workflow_pin }}
           latest-atlas-tag: ${{ steps.latest-release.outputs.tag }}
+          latest-main-sha: ${{ steps.latest-release.outputs.main_sha }}
           helmfile-path: ${{ inputs.helmfile-path }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          baseline-stderr-log: ${{ runner.temp }}/baseline-stderr.log
-          pr-stderr-log: ${{ runner.temp }}/pr-stderr.log
 
       # ── Post results ───────────────────────────────────────────────────────
       - name: Post PR comment
@@ -136,8 +138,11 @@ jobs:
           message: ${{ steps.diff.outputs.body }}
 
       - name: Write job summary
-        if: always() && steps.diff.outputs.summary-file
-        run: cat "${{ steps.diff.outputs.summary-file }}" >> "$GITHUB_STEP_SUMMARY"
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/summary.md" ]; then
+            cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Gate on PR render status
         if: always() && steps.pr.outputs.status == 'error'

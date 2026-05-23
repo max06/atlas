@@ -46,6 +46,9 @@ inputs:
   latest-atlas-tag:
     description: Latest ATLAS release tag (for update notification)
     required: false
+  latest-main-sha:
+    description: Latest commit SHA on max06/atlas main (for SHA-pinned workflow comparison)
+    required: false
   helmfile-path:
     description: Helmfile entry point path (for error messages)
     required: false
@@ -94,6 +97,7 @@ runs:
     INPUT_WORKFLOW_PIN_TARGET: ${{ inputs.workflow-pin-target }}
     INPUT_WORKFLOW_PIN_MERGE: ${{ inputs.workflow-pin-merge }}
     INPUT_LATEST_ATLAS_TAG: ${{ inputs.latest-atlas-tag }}
+    INPUT_LATEST_MAIN_SHA: ${{ inputs.latest-main-sha }}
     INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
     INPUT_RUN_URL: ${{ inputs.run-url }}
     INPUT_BASELINE_STDERR_LOG: ${{ inputs.baseline-stderr-log }}
