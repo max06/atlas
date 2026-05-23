@@ -14,6 +14,8 @@ ARG HELMFILE_VERSION=v1.5.0
 ARG SOPS_VERSION=v3.12.2
 # renovate: datasource=github-releases depName=mikefarah/yq
 ARG YQ_VERSION=v4.53.2
+# renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
+ARG KUSTOMIZE_VERSION=v5.6.0
 
 COPY install-tools.sh /install-tools.sh
 RUN chmod +x /install-tools.sh && \
@@ -21,7 +23,8 @@ RUN chmod +x /install-tools.sh && \
       helm=${HELM_VERSION} \
       helmfile=${HELMFILE_VERSION} \
       sops=${SOPS_VERSION} \
-      yq=${YQ_VERSION} && \
+      yq=${YQ_VERSION} \
+      kustomize=${KUSTOMIZE_VERSION} && \
     rm /install-tools.sh
 
 # helmfile init downloads helm plugins (diff, secrets, etc.) on first run.

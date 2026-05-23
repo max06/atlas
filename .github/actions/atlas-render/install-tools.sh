@@ -33,6 +33,11 @@ for spec in "$@"; do
         -o /usr/local/bin/yq
       chmod +x /usr/local/bin/yq
       ;;
+    kustomize)
+      curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${version}/kustomize_${version}_linux_amd64.tar.gz" \
+        | tar xz -C /tmp
+      mv /tmp/kustomize /usr/local/bin/kustomize
+      ;;
     *)
       echo "Unknown tool: ${tool}" >&2
       exit 1
