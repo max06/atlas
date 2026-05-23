@@ -124,8 +124,6 @@ jobs:
           latest-atlas-tag: ${{ steps.latest-release.outputs.tag }}
           helmfile-path: ${{ inputs.helmfile-path }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          baseline-stderr-log: ${{ runner.temp }}/baseline-stderr.log
-          pr-stderr-log: ${{ runner.temp }}/pr-stderr.log
 
       # ── Post results ───────────────────────────────────────────────────────
       - name: Post PR comment
@@ -136,8 +134,11 @@ jobs:
           message: ${{ steps.diff.outputs.body }}
 
       - name: Write job summary
-        if: always() && steps.diff.outputs.summary-file
-        run: cat "${{ steps.diff.outputs.summary-file }}" >> "$GITHUB_STEP_SUMMARY"
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/summary.md" ]; then
+            cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Gate on PR render status
         if: always() && steps.pr.outputs.status == 'error'
