@@ -42,6 +42,7 @@ export PR_FILTER="${INPUT_PR_FILTER:-true}"
 export WORKFLOW_PIN_TARGET="${INPUT_WORKFLOW_PIN_TARGET:-}"
 export WORKFLOW_PIN_MERGE="${INPUT_WORKFLOW_PIN_MERGE:-}"
 export LATEST_ATLAS_TAG="${INPUT_LATEST_ATLAS_TAG:-}"
+export LATEST_MAIN_SHA="${INPUT_LATEST_MAIN_SHA:-}"
 export DIFF_TOTAL=$(grep '^total=' "$DIFF_OUTPUT" | head -1 | cut -d= -f2- || echo "0")
 export DIFF_RELEASES=$(grep '^releases=' "$DIFF_OUTPUT" | head -1 | cut -d= -f2- || echo "0")
 export DIFF_TRUNCATED=$(grep '^truncated=' "$DIFF_OUTPUT" | head -1 | cut -d= -f2- || echo "")
