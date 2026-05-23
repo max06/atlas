@@ -1,0 +1,100 @@
+name: ATLAS Diff
+description: >
+  Replay redaction maps, diff rendered ATLAS manifests using dyff, and
+  build the PR comment and job summary markdown.
+
+inputs:
+  baseline-dir:
+    description: Path to the baseline render tree
+    required: true
+  pr-dir:
+    description: Path to the PR render tree
+    required: true
+  sidedump-map-dir:
+    description: Path to captured redaction maps from the PR render
+    required: false
+  scrub-script:
+    description: >
+      Path to scrub-baseline.sh. If omitted, uses $ATLAS_PLUGIN_DIR/scrub-baseline.sh.
+    required: false
+  baseline-status:
+    description: Baseline render status (success/error/missing)
+    required: false
+    default: success
+  pr-status:
+    description: PR render status (success/error)
+    required: false
+    default: success
+  merge-fallback:
+    description: Whether the merge ref was unavailable ("true"/"false")
+    required: false
+    default: "false"
+  baseline-filter:
+    description: Whether selector filtering worked on the baseline side
+    required: false
+    default: "true"
+  pr-filter:
+    description: Whether selector filtering worked on the PR side
+    required: false
+    default: "true"
+  workflow-pin-target:
+    description: ATLAS workflow ref detected on the target branch
+    required: false
+  workflow-pin-merge:
+    description: ATLAS workflow ref detected on the merge result
+    required: false
+  latest-atlas-tag:
+    description: Latest ATLAS release tag (for update notification)
+    required: false
+  helmfile-path:
+    description: Helmfile entry point path (for error messages)
+    required: false
+    default: helmfile.yaml.gotmpl
+  run-url:
+    description: GitHub Actions run URL (for job summary links)
+    required: false
+  baseline-stderr-log:
+    description: Path to baseline stderr log
+    required: false
+  pr-stderr-log:
+    description: Path to PR stderr log
+    required: false
+
+outputs:
+  body:
+    description: Full PR comment markdown
+  summary-file:
+    description: Path to job summary markdown file
+  status:
+    description: Diff result — empty, no-changes, or changes
+  total:
+    description: Number of changed releases
+  releases:
+    description: Number of affected releases
+  truncated:
+    description: Whether the PR comment was truncated
+  scrubbed-count:
+    description: Number of releases scrubbed by replay
+  no-map-count:
+    description: Number of releases with no redaction map
+
+runs:
+  using: docker
+  image: Dockerfile
+  env:
+    INPUT_BASELINE_DIR: ${{ inputs.baseline-dir }}
+    INPUT_PR_DIR: ${{ inputs.pr-dir }}
+    INPUT_SIDEDUMP_MAP_DIR: ${{ inputs.sidedump-map-dir }}
+    INPUT_SCRUB_SCRIPT: ${{ inputs.scrub-script }}
+    INPUT_BASELINE_STATUS: ${{ inputs.baseline-status }}
+    INPUT_PR_STATUS: ${{ inputs.pr-status }}
+    INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
+    INPUT_BASELINE_FILTER: ${{ inputs.baseline-filter }}
+    INPUT_PR_FILTER: ${{ inputs.pr-filter }}
+    INPUT_WORKFLOW_PIN_TARGET: ${{ inputs.workflow-pin-target }}
+    INPUT_WORKFLOW_PIN_MERGE: ${{ inputs.workflow-pin-merge }}
+    INPUT_LATEST_ATLAS_TAG: ${{ inputs.latest-atlas-tag }}
+    INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
+    INPUT_RUN_URL: ${{ inputs.run-url }}
+    INPUT_BASELINE_STDERR_LOG: ${{ inputs.baseline-stderr-log }}
+    INPUT_PR_STDERR_LOG: ${{ inputs.pr-stderr-log }}

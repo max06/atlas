@@ -1,0 +1,67 @@
+# Tests for the ATLAS Review action scripts (render.sh, diff.sh, comment.sh,
+# replay.sh). These scripts run inside Docker container actions with tools
+# baked in; this workflow replicates that environment on a bare runner.
+#
+# Separated from the main tests.yml matrix because the action scripts have
+# their own tool dependencies (dyff) and don't need Helm/Helmfile version
+# matrix coverage — they test the review pipeline, not the template engine.
+
+name: Action Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/**
+      - tests/bats/workflow/**
+  pull_request:
+    paths:
+      - .github/actions/**
+      - tests/bats/workflow/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-scripts:
+    runs-on: ubuntu-latest
+    name: action script tests
+    env:
+      SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install SOPS
+        uses: nhedger/setup-sops@v2
+
+      - name: Install helm
+        run: |
+          VERSION=$(curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -r .tag_name)
+          curl -fsSL "https://get.helm.sh/helm-${VERSION}-linux-amd64.tar.gz" | tar xz
+          sudo mv linux-amd64/helm /usr/local/bin/helm
+          rm -rf linux-amd64
+
+      - name: Install helmfile
+        run: |
+          VERSION=$(curl -fsSL https://api.github.com/repos/helmfile/helmfile/releases/latest | jq -r .tag_name)
+          CLEAN_VERSION="${VERSION#v}"
+          curl -fsSL "https://github.com/helmfile/helmfile/releases/download/${VERSION}/helmfile_${CLEAN_VERSION}_linux_amd64.tar.gz" | tar xz
+          sudo mv helmfile /usr/local/bin/helmfile
+
+      - name: Install helmfile plugins
+        run: helmfile init --force 2>/dev/null || true
+
+      - name: Install bats, yq, and dyff
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          DYFF_VERSION=$(curl -fsSL https://api.github.com/repos/homeport/dyff/releases/latest | jq -r .tag_name)
+          curl -fsSL "https://github.com/homeport/dyff/releases/download/${DYFF_VERSION}/dyff_${DYFF_VERSION#v}_linux_amd64.tar.gz" | tar xz
+          sudo mv dyff /usr/local/bin/dyff
+
+      - name: Run workflow script tests
+        run: bats --recursive tests/bats/workflow/

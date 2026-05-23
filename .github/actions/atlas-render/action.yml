@@ -1,0 +1,62 @@
+name: ATLAS Render
+description: >
+  Render one side (PR or baseline) of an ATLAS helmfile deployment.
+  Discovers deployments, runs helmfile template, and captures redaction
+  maps for the replay pipeline.
+
+inputs:
+  helmfile-path:
+    description: Path to the helmfile entry point
+    required: false
+    default: helmfile.yaml.gotmpl
+  snapshot-label:
+    description: Label for this render side ("pr" or "baseline")
+    required: true
+  sops-age-key:
+    description: >
+      SOPS Age private key for decrypting *.values.sops.yaml files.
+      Omit if your repo has no encrypted values.
+    required: false
+  enable-sidedump:
+    description: >
+      Enable redaction-map side-dump (set to "true" for the PR render).
+      The captured maps are used by the replay step to scrub the baseline.
+    required: false
+    default: "false"
+  blocking:
+    description: >
+      Whether render errors are blocking ("true" for PR, "false" for baseline).
+      Blocking errors are reported as ::error, non-blocking as ::warning.
+    required: false
+    default: "true"
+  merge-fallback:
+    description: Set to "true" if the merge ref was unavailable and we fell back to the PR branch
+    required: false
+    default: "false"
+
+outputs:
+  status:
+    description: Render result — success, error, or missing
+  snapshot-dir:
+    description: Path to the rendered manifest tree
+  sidedump-dir:
+    description: Path to captured redaction maps (only when enable-sidedump is true)
+  list-json:
+    description: Path to helmfile list JSON output
+  filter-supported:
+    description: Whether helmfile --selector filtering worked (true/false)
+  workflow-pin:
+    description: Detected ATLAS workflow ref from the caller's workflow file
+  merge-fallback:
+    description: Set to true when the merge ref was unavailable
+
+runs:
+  using: docker
+  image: Dockerfile
+  env:
+    INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
+    INPUT_SNAPSHOT_LABEL: ${{ inputs.snapshot-label }}
+    INPUT_SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
+    INPUT_ENABLE_SIDEDUMP: ${{ inputs.enable-sidedump }}
+    INPUT_BLOCKING: ${{ inputs.blocking }}
+    INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
