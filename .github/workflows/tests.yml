@@ -82,4 +82,4 @@ jobs:
           echo "bats: $(bats --version 2>&1)"
 
       - name: Run bats tests
-        run: bats --recursive tests/bats/
+        run: bats --recursive tests/bats/values/ tests/bats/redaction/ tests/bats/integration/
