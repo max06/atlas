@@ -24,7 +24,8 @@
 load 'helpers/render'
 
 REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
-PLUGIN_DIR="${REPO_ROOT}/templates/helm-plugin/atlas-redact"
+PLUGIN_DIR="${REPO_ROOT}/.github/actions/atlas-render/atlas-redact"
+SCRUB_SCRIPT="${REPO_ROOT}/.github/actions/atlas-diff/scrub-baseline.sh"
 
 # --- Stage 1: side-dump during a redacted render ----------------------------
 #
@@ -48,7 +49,7 @@ setup_file() {
   default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
   ATLAS_REDACT_SECRETS=true \
   ATLAS_SIDEDUMP_MAP_DIR="$SIDEDUMP_DIR" \
-  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/templates/helm-plugin" \
+  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/.github/actions/atlas-render" \
     helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       template --skip-schema-validation \
       --selector "cluster=cluster1,deploymentName=deployment20" \
@@ -90,7 +91,7 @@ setup_file() {
   root="$(cd "$REPO_ROOT" && pwd)"
   default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
   ATLAS_REDACT_SECRETS=true \
-  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/templates/helm-plugin" \
+  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/.github/actions/atlas-render" \
     helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       template --skip-schema-validation \
       --selector "cluster=cluster1,deploymentName=deployment20" \
@@ -132,7 +133,7 @@ YAML
 {"s3cretvalue":"REDACTED"}
 JSON
 
-  run bash "${PLUGIN_DIR}/scrub-baseline.sh" "$baseline" "$mapdir"
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
   [ "$status" -eq 0 ]
   [[ "$output" == *"scrubbed cluster1/dep/rel"* ]]
 
@@ -157,7 +158,7 @@ stringData:
   token: s3cretvalue
 YAML
 
-  run bash "${PLUGIN_DIR}/scrub-baseline.sh" "$baseline" "$mapdir"
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
   [ "$status" -eq 0 ]
   [[ "$output" == *"no-map cluster1/dep/orphan"* ]]
 
@@ -192,7 +193,7 @@ stringData:
   accessKeyId: AKIAIOSFODNN7EXAMPLE
 YAML
 
-  run bash "${PLUGIN_DIR}/scrub-baseline.sh" "$baseline" "$mapdir"
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
   [ "$status" -eq 0 ]
   [[ "$output" == *"scrubbed cluster1/deployment20/app-multiline-tplsops"* ]]
 

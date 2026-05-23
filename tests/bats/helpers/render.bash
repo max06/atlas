@@ -69,7 +69,7 @@ ensure_rendered_redacted() {
   # plugin dir so helm can load it as a post-renderer.
   default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
   ATLAS_REDACT_SECRETS=true \
-  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/templates/helm-plugin" \
+  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/.github/actions/atlas-render" \
     helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
       template --skip-schema-validation \
       --output-dir "$RENDER_DIR_REDACTED" \
