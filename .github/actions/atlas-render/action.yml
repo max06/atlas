@@ -53,3 +53,10 @@ outputs:
 runs:
   using: docker
   image: Dockerfile
+  env:
+    INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
+    INPUT_SNAPSHOT_LABEL: ${{ inputs.snapshot-label }}
+    INPUT_SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
+    INPUT_ENABLE_SIDEDUMP: ${{ inputs.enable-sidedump }}
+    INPUT_BLOCKING: ${{ inputs.blocking }}
+    INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}

@@ -81,3 +81,20 @@ outputs:
 runs:
   using: docker
   image: Dockerfile
+  env:
+    INPUT_BASELINE_DIR: ${{ inputs.baseline-dir }}
+    INPUT_PR_DIR: ${{ inputs.pr-dir }}
+    INPUT_SIDEDUMP_MAP_DIR: ${{ inputs.sidedump-map-dir }}
+    INPUT_SCRUB_SCRIPT: ${{ inputs.scrub-script }}
+    INPUT_BASELINE_STATUS: ${{ inputs.baseline-status }}
+    INPUT_PR_STATUS: ${{ inputs.pr-status }}
+    INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
+    INPUT_BASELINE_FILTER: ${{ inputs.baseline-filter }}
+    INPUT_PR_FILTER: ${{ inputs.pr-filter }}
+    INPUT_WORKFLOW_PIN_TARGET: ${{ inputs.workflow-pin-target }}
+    INPUT_WORKFLOW_PIN_MERGE: ${{ inputs.workflow-pin-merge }}
+    INPUT_LATEST_ATLAS_TAG: ${{ inputs.latest-atlas-tag }}
+    INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
+    INPUT_RUN_URL: ${{ inputs.run-url }}
+    INPUT_BASELINE_STDERR_LOG: ${{ inputs.baseline-stderr-log }}
+    INPUT_PR_STDERR_LOG: ${{ inputs.pr-stderr-log }}
