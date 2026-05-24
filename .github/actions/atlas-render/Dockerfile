@@ -2,7 +2,7 @@
 #
 # Tools baked in: helm, helmfile, sops, yq, jq, git.
 # Versions pinned below — Renovate manages bumps via regex.
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk add --no-cache bash curl git jq
 

@@ -2,7 +2,7 @@
 #
 # Lighter than atlas-render — no helm/helmfile/sops needed.
 # Tools baked in: dyff, yq, jq.
-FROM alpine:3.21
+FROM alpine:3.23
 
 RUN apk add --no-cache bash curl jq
 
