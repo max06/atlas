@@ -3,7 +3,7 @@
 # When the same deployment name exists at multiple hierarchy levels,
 # the most specific definition wins (cluster > group > global).
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() {
   ensure_rendered
