@@ -1,0 +1,3 @@
+apps:
+  - template: app-ns-multi
+    namespace: override-namespace

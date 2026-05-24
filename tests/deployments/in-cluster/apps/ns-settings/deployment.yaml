@@ -1,0 +1,4 @@
+settings:
+  namespace: settings-namespace
+apps:
+  - template: app-ns-bare
