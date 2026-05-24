@@ -150,7 +150,22 @@ fi
 echo "snapshot_dir=$SNAPSHOT_DIR" >> "$GITHUB_OUTPUT"
 
 # ── Sidedump directory ──────────────────────────────────────────────────────
-if [ -n "${ATLAS_SIDEDUMP_MAP_DIR:-}" ]; then
+# Backfill empty map files for releases that had no secrets. The redaction
+# pipeline only writes a sidedump when the replacement map is non-empty, so
+# secret-free releases (e.g. rook-ceph) get no file. The replay step treats
+# a missing file as "old ATLAS version — suppress diff", which causes ghost
+# entries. An empty JSON object signals "no secrets, safe to diff".
+if [ -n "${ATLAS_SIDEDUMP_MAP_DIR:-}" ] && [ -d "$SNAPSHOT_DIR" ]; then
+  while IFS= read -r templates_dir; do
+    [ -z "$templates_dir" ] && continue
+    release_dir="$(dirname "$(dirname "$templates_dir")")"
+    release_path="${release_dir#"$SNAPSHOT_DIR"/}"
+    map_file="${ATLAS_SIDEDUMP_MAP_DIR}/${release_path}.json"
+    if [ ! -f "$map_file" ]; then
+      mkdir -p "$(dirname "$map_file")"
+      echo '{}' > "$map_file"
+    fi
+  done < <(find "$SNAPSHOT_DIR" -type d -name templates 2>/dev/null | sort -u)
   echo "sidedump_dir=$ATLAS_SIDEDUMP_MAP_DIR" >> "$GITHUB_OUTPUT"
 fi
 
