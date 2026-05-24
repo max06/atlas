@@ -86,7 +86,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Render PR side
-        uses: ./.github/actions/atlas-render
+        uses: max06/atlas/.github/actions/atlas-render@main
         id: pr
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -104,7 +104,7 @@ jobs:
           clean: false
 
       - name: Render baseline
-        uses: ./.github/actions/atlas-render
+        uses: max06/atlas/.github/actions/atlas-render@main
         id: baseline
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -115,7 +115,7 @@ jobs:
 
       # ── Diff, replay, and comment ──────────────────────────────────────────
       - name: Diff and build comment
-        uses: ./.github/actions/atlas-diff
+        uses: max06/atlas/.github/actions/atlas-diff@main
         id: diff
         with:
           baseline-dir: ${{ steps.baseline.outputs.snapshot_dir }}
