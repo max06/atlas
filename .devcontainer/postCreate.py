@@ -195,6 +195,15 @@ def main():
         "install dyff", "sudo -E eget homeport/dyff --to /usr/local/bin/dyff"
     )
 
+    runner.add_task(
+        "apt-get update", "sudo apt-get update -qq"
+    )
+    runner.add_task(
+        "install parallel",
+        "sudo apt-get install -y -qq parallel",
+        ["apt-get update"]
+    )
+
     success = runner.run_tasks()
     sys.exit(0 if success else 1)
 
