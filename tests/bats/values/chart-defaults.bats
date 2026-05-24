@@ -8,7 +8,7 @@
 # the same key would override it. No template or fixture overrides aChartValue,
 # so the chart default should appear verbatim in every rendered release.
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 

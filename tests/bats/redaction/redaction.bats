@@ -17,7 +17,7 @@
 # every source type not previously covered (chart-defaults, template-include,
 # template-defaults, group/cluster/deployment gotmpl yaml-derived keys).
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered_redacted; }
 

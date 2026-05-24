@@ -11,7 +11,7 @@
 #        group1/cluster2/deployment8/app-multi-first/chart1/templates/configmap.yaml
 #
 # Usage in a .bats file:
-#   load 'helpers/render'
+#   load '../helpers/render'
 #   setup_file() { ensure_rendered; }
 #   @test "something" {
 #     run get_path cluster1 deployment1 app1 .globalOnly
@@ -37,13 +37,15 @@ _repo_root() {
 # ensure_rendered performs the bulk render exactly once per bats run.
 # Call from setup_file(); subsequent calls are no-ops.
 # Uses flock so parallel file execution (bats --jobs) is safe: the first
-# worker renders, others block on the lock and then find the directory.
+# worker renders, others block on the lock and then find the sentinel.
+# The sentinel file (.done) is written only after helmfile finishes, so
+# the pre-lock fast path never sees a half-written output tree.
 ensure_rendered() {
-  [[ -d "$RENDER_DIR" ]] && return 0
+  [[ -f "${RENDER_DIR}.done" ]] && return 0
   local lockfile="${RENDER_DIR}.lock"
   (
     flock -x 9
-    [[ -d "$RENDER_DIR" ]] && return 0
+    [[ -f "${RENDER_DIR}.done" ]] && return 0
     local root
     root="$(_repo_root)"
     helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
@@ -53,6 +55,7 @@ ensure_rendered() {
       > "${RENDER_DIR}.log" 2>&1 \
       || { echo "helmfile template failed. log:" >&2; \
            cat "${RENDER_DIR}.log" >&2; return 1; }
+    touch "${RENDER_DIR}.done"
   ) 9>"$lockfile"
 }
 
@@ -63,11 +66,11 @@ ensure_rendered() {
 # helm plugin is enabled via HELM_PLUGINS, appended only for this invocation.
 # Call from setup_file() in any .bats file that needs redacted output.
 ensure_rendered_redacted() {
-  [[ -d "$RENDER_DIR_REDACTED" ]] && return 0
+  [[ -f "${RENDER_DIR_REDACTED}.done" ]] && return 0
   local lockfile="${RENDER_DIR_REDACTED}.lock"
   (
     flock -x 9
-    [[ -d "$RENDER_DIR_REDACTED" ]] && return 0
+    [[ -f "${RENDER_DIR_REDACTED}.done" ]] && return 0
     local root default_plugins
     root="$(_repo_root)"
     default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
@@ -80,6 +83,7 @@ ensure_rendered_redacted() {
         > "${RENDER_DIR_REDACTED}.log" 2>&1 \
       || { echo "redacted helmfile template failed. log:" >&2; \
            cat "${RENDER_DIR_REDACTED}.log" >&2; return 1; }
+    touch "${RENDER_DIR_REDACTED}.done"
   ) 9>"$lockfile"
 }
 

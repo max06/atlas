@@ -24,6 +24,7 @@ GITHUB_OUTPUT="$REPLAY_OUTPUT" /replay.sh
 # ── Stage 2: Diff ──────────────────────────────────────────────────────────
 export PR_DIR="${INPUT_PR_DIR:-}"
 export DIFF_TEMP
+export DIFF_MODE="${INPUT_DIFF_MODE:-dyff}"
 export REPLAY_STATUS_FILE="${DIFF_TEMP}/replay-status.txt"
 
 DIFF_OUTPUT="${DIFF_TEMP}/diff-github-output"

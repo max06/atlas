@@ -10,7 +10,7 @@
 #   - .Release.Name and .Release.Namespace resolve inside a values gotmpl
 #   - .Values.atlas.instance.* and .Values.atlas.deployment.* are populated
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment30

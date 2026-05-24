@@ -4,7 +4,7 @@
 # Exercises the comment builder with various combinations of render status,
 # diff status, version pins, and security flags.
 
-load 'helpers/render'
+load '../helpers/render'
 
 _comment_script() {
   echo "$(_repo_root)/.github/actions/atlas-diff/comment.sh"
@@ -282,7 +282,7 @@ get_body() {
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
   body=$(get_body)
-  [[ "$body" == *"Changes detected in **3** release(s)"* ]]
+  [[ "$body" == *"Changes detected in **3** resource(s) across **2** release(s)"* ]]
   [[ "$body" == *"Affected releases"* ]]
   [[ "$body" == *"some diff content here"* ]]
 }

@@ -6,7 +6,7 @@
 # so that multiple instances of the same template produce unique releases.
 # Instance naming basics (atlas.instance.name/template) are covered by d9.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment33

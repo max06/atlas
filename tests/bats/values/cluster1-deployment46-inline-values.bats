@@ -17,7 +17,7 @@
 # tpl time, but the values-loader's hierarchy overlay replaces it at
 # release-evaluation time.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment46

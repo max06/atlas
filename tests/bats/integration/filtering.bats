@@ -22,7 +22,7 @@
 # became a no-op. v0.3.0 also deleted the stage-1 env path on the same
 # assumption. Both paths were restored; these tests pin the two contracts.
 
-load 'helpers/render'
+load '../helpers/render'
 
 # helmfile_list runs `helmfile list --output json` against the test fixtures
 # with the given extra args (selectors, etc.) and emits the JSON array on

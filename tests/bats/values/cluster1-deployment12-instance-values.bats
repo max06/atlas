@@ -10,7 +10,7 @@
 # sets four keys that collide at different layers in the chain to probe each
 # boundary in the precedence order.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment12

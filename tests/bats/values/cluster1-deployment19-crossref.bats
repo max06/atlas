@@ -25,7 +25,7 @@
 # must also be redacted in the redacted render — the twin-load pattern that
 # already works for hierarchy values should apply to the template list too.
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 

@@ -31,7 +31,7 @@
 #     credentials.yaml.gotmpl    awsCredentials: | block interpolating the
 #                                 two SOPS leaves above (transitive taint)
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment20

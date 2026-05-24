@@ -5,7 +5,7 @@
 # The setup_file renders the full test fixture set once, then individual tests
 # create modified copies to simulate PR changes.
 
-load 'helpers/render'
+load '../helpers/render'
 
 _diff_script() {
   echo "$(_repo_root)/.github/actions/atlas-diff/diff.sh"
@@ -103,9 +103,9 @@ setup() {
   [ "$status" -eq 0 ]
   grep -q 'status=changes' "$GITHUB_OUTPUT"
 
-  # dyff should show the full document as added
-  grep -q 'document added' "${DIFF_TEMP}/comment-diff.md" || \
-    grep -q 'deployment1' "${DIFF_TEMP}/comment-diff.md"
+  # Should show the resource as added
+  grep -q 'entire resource added' "${DIFF_TEMP}/comment-diff.md" || \
+    grep -q '(new)' "${DIFF_TEMP}/comment-diff.md"
 }
 
 # ── Removed release ─────────────────────────────────────────────────────────
@@ -258,6 +258,183 @@ setup() {
   [ "$status" -eq 0 ]
   grep -q 'status=changes' "$GITHUB_OUTPUT"
   grep -q 'truncated=true' "$GITHUB_OUTPUT"
+}
+
+# ── Grouped cluster paths ──────────────────────────────────────────────────
+
+# ── Diff modes ─────────────────────────────────────────────────────────────
+
+@test "diff.sh: dyff mode produces YAML-path-based output" {
+  local release="cluster1/deployment1/app1"
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+  export DIFF_MODE="dyff"
+  mkdir -p "$BASELINE_DIR/$release" "$PR_DIR/$release"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$BASELINE_DIR/$release/"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$PR_DIR/$release/"
+
+  find "$PR_DIR/$release" -name '*.yaml' -exec \
+    sed -i 's/aChartValue: on default/aChartValue: on updated/' {} \;
+
+  run bash "$(_diff_script)"
+  [ "$status" -eq 0 ]
+  grep -q 'status=changes' "$GITHUB_OUTPUT"
+
+  # dyff output uses @@ yaml.path @@ headers and ± value change annotations
+  grep -q '@@.*@@' "${DIFF_TEMP}/comment-diff.md"
+  grep -q 'value change' "${DIFF_TEMP}/comment-diff.md"
+}
+
+@test "diff.sh: classic mode produces unified diff output" {
+  local release="cluster1/deployment1/app1"
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+  export DIFF_MODE="classic"
+  mkdir -p "$BASELINE_DIR/$release" "$PR_DIR/$release"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$BASELINE_DIR/$release/"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$PR_DIR/$release/"
+
+  find "$PR_DIR/$release" -name '*.yaml' -exec \
+    sed -i 's/aChartValue: on default/aChartValue: on updated/' {} \;
+
+  run bash "$(_diff_script)"
+  [ "$status" -eq 0 ]
+  grep -q 'status=changes' "$GITHUB_OUTPUT"
+
+  # Classic diff shows --- baseline / +++ current headers and @@ line ranges
+  grep -q -- '--- baseline' "${DIFF_TEMP}/comment-diff.md"
+  grep -q -- '+++ current' "${DIFF_TEMP}/comment-diff.md"
+  grep -qE '@@ -[0-9]' "${DIFF_TEMP}/comment-diff.md"
+}
+
+@test "diff.sh: classic mode does not leak absolute paths" {
+  local release="cluster1/deployment1/app1"
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+  export DIFF_MODE="classic"
+  mkdir -p "$BASELINE_DIR/$release" "$PR_DIR/$release"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$BASELINE_DIR/$release/"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$PR_DIR/$release/"
+
+  find "$PR_DIR/$release" -name '*.yaml' -exec \
+    sed -i 's/aChartValue: on default/aChartValue: on updated/' {} \;
+
+  run bash "$(_diff_script)"
+  [ "$status" -eq 0 ]
+
+  # Must not contain absolute paths from the test environment
+  ! grep -q "$TEST_TEMP" "${DIFF_TEMP}/comment-diff.md"
+  ! grep -q "$BASELINE_SNAPSHOT_DIR" "${DIFF_TEMP}/comment-diff.md"
+}
+
+# ── Per-resource structure ─────────────────────────────────────────────────
+
+@test "diff.sh: per-resource sections with Kind/name headers" {
+  local release="cluster1/deployment1/app1"
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+  mkdir -p "$BASELINE_DIR/$release" "$PR_DIR/$release"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$BASELINE_DIR/$release/"
+  cp -r "$BASELINE_SNAPSHOT_DIR/$release/." "$PR_DIR/$release/"
+
+  find "$PR_DIR/$release" -name '*.yaml' -exec \
+    sed -i 's/aChartValue: on default/aChartValue: on updated/' {} \;
+
+  run bash "$(_diff_script)"
+  [ "$status" -eq 0 ]
+
+  # Inner <details> should show Kind/name as the resource label
+  grep -q 'ConfigMap/app1-chart1' "${DIFF_TEMP}/comment-diff.md"
+}
+
+@test "diff.sh: multiple resources in a release get separate sections" {
+  local release="cluster1/deployment-multi/multi-release"
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+
+  # Create a release with two resource files
+  mkdir -p "$BASELINE_DIR/$release/chart1/templates"
+  mkdir -p "$PR_DIR/$release/chart1/templates"
+
+  for side in "$BASELINE_DIR" "$PR_DIR"; do
+    cat > "$side/$release/chart1/templates/configmap.yaml" <<'EOF'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: myapp-config
+data:
+  key: value
+EOF
+    cat > "$side/$release/chart1/templates/service.yaml" <<'EOF'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-svc
+spec:
+  type: ClusterIP
+EOF
+  done
+
+  # Modify both resources on the PR side
+  sed -i 's/key: value/key: changed/' "$PR_DIR/$release/chart1/templates/configmap.yaml"
+  sed -i 's/ClusterIP/NodePort/' "$PR_DIR/$release/chart1/templates/service.yaml"
+
+  run bash "$(_diff_script)"
+  [ "$status" -eq 0 ]
+  grep -q 'status=changes' "$GITHUB_OUTPUT"
+  grep -q 'total=2' "$GITHUB_OUTPUT"
+  grep -q 'releases=1' "$GITHUB_OUTPUT"
+
+  # Both resources should have their own inner <details>
+  grep -q 'ConfigMap/myapp-config' "${DIFF_TEMP}/comment-diff.md"
+  grep -q 'Service/myapp-svc' "${DIFF_TEMP}/comment-diff.md"
+
+  # Outer release header should show resource count
+  grep -q '2 resources' "${DIFF_TEMP}/comment-diff.md"
+}
+
+@test "diff.sh: unchanged resource within a release is omitted" {
+  local release="cluster1/deployment-partial/partial-release"
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+
+  mkdir -p "$BASELINE_DIR/$release/chart1/templates"
+  mkdir -p "$PR_DIR/$release/chart1/templates"
+
+  for side in "$BASELINE_DIR" "$PR_DIR"; do
+    cat > "$side/$release/chart1/templates/configmap.yaml" <<'EOF'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unchanged-cm
+data:
+  key: same
+EOF
+    cat > "$side/$release/chart1/templates/deployment.yaml" <<'EOF'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+EOF
+  done
+
+  # Only modify the deployment, leave the configmap identical
+  sed -i 's/replicas: 3/replicas: 5/' "$PR_DIR/$release/chart1/templates/deployment.yaml"
+
+  run bash "$(_diff_script)"
+  [ "$status" -eq 0 ]
+  grep -q 'status=changes' "$GITHUB_OUTPUT"
+  grep -q 'total=1' "$GITHUB_OUTPUT"
+
+  # Only the changed resource should appear
+  grep -q 'Deployment/myapp' "${DIFF_TEMP}/comment-diff.md"
+  ! grep -q 'ConfigMap/unchanged-cm' "${DIFF_TEMP}/comment-diff.md"
 }
 
 # ── Grouped cluster paths ──────────────────────────────────────────────────

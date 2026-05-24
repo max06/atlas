@@ -10,7 +10,7 @@
 # via `helmfile build` / `helmfile list`. So we query the build state rather
 # than the rendered ConfigMap.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment11

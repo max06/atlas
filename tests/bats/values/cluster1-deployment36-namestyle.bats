@@ -14,7 +14,7 @@
 # All three instances share the bare template release name "vm". Munging
 # yields three distinct releases.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment36

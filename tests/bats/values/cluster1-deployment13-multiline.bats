@@ -15,7 +15,7 @@
 #   2. values.yaml.gotmpl — gotmpl-rendered block scalar (with interpolation)
 #   3. values.sops.yaml   — SOPS-encrypted block scalar (fake PEM key)
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment13

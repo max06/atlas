@@ -411,7 +411,7 @@ ATLAS provides a reusable GitHub Actions workflow that compares rendered Kuberne
 
 1. Checks out the **target branch HEAD**, renders all manifests as a baseline
 2. Checks out the **merge result** (what will be deployed after merging), renders manifests
-3. Generates per-release diffs, posts a sticky PR comment
+3. Generates per-resource diffs grouped by release, posts a sticky PR comment
 
 This "merge-result" strategy ensures the diff answers *"what changes if I hit merge right now?"* — it accounts for changes that landed on main since the PR was created.
 
@@ -454,8 +454,7 @@ jobs:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `helmfile-path` | `helmfile.yaml.gotmpl` | Path to the helmfile entry point |
-| `helmfile-version` | `v1.4.3` | Helmfile version to install |
-| `helm-version` | `v4.1.3` | Helm version to install |
+| `diff-mode` | `dyff` | Diff engine: `dyff` for YAML-aware semantic diffs, `classic` for standard unified diffs |
 
 ### Secrets
 

@@ -19,7 +19,7 @@
 #   tests/templates/app-extraobjects/values.yaml.gotmpl      — template entry + concat loop
 #   tests/deployments/cluster1/apps/deployment21/values.yaml — deployment entries
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment21

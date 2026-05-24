@@ -8,7 +8,7 @@
 # One shared render runs in setup_file; tests that need different env
 # configs (sidedump, merge_fallback, missing helmfile) run individually.
 
-load 'helpers/render'
+load '../helpers/render'
 
 _render_script() {
   echo "$(_repo_root)/.github/actions/atlas-render/render.sh"

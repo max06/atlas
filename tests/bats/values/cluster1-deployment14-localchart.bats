@@ -16,7 +16,7 @@
 # Assertion: the local chart's values.yaml default reaches the rendered output,
 # which proves both that the chart was located and that its defaults merged.
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 
