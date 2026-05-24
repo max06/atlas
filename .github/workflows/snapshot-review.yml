@@ -69,18 +69,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # ── Checkout ATLAS actions at the same SHA as this workflow ────────────
-      # github.workflow_sha is the commit that provided this reusable workflow,
-      # so the actions are always version-locked to the workflow the consumer
-      # pinned — no drift between workflow logic and action code.
-      - name: Checkout ATLAS actions
-        uses: actions/checkout@v6
-        with:
-          repository: max06/atlas
-          ref: ${{ github.workflow_sha }}
-          path: .atlas
-          sparse-checkout: .github/actions
-
       # ── Render merge result (PR side) ──────────────────────────────────────
       # Order matters: PR render runs first to capture sidedump maps that the
       # replay step uses to scrub the (potentially leaky) baseline.
@@ -89,7 +77,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          clean: false
         continue-on-error: true
 
       - name: Fallback to PR branch
@@ -97,10 +84,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          clean: false
 
       - name: Render PR side
-        uses: ./.atlas/.github/actions/atlas-render
+        uses: max06/atlas/.github/actions/atlas-render@main
         id: pr
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -118,7 +104,7 @@ jobs:
           clean: false
 
       - name: Render baseline
-        uses: ./.atlas/.github/actions/atlas-render
+        uses: max06/atlas/.github/actions/atlas-render@main
         id: baseline
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -129,7 +115,7 @@ jobs:
 
       # ── Diff, replay, and comment ──────────────────────────────────────────
       - name: Diff and build comment
-        uses: ./.atlas/.github/actions/atlas-diff
+        uses: max06/atlas/.github/actions/atlas-diff@main
         id: diff
         with:
           baseline-dir: ${{ steps.baseline.outputs.snapshot_dir }}
