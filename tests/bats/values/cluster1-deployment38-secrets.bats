@@ -12,7 +12,7 @@
 #   key2 — template values + template secrets (secret wins)
 #   key3 — template secrets + instance secrets (instance wins)
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment38

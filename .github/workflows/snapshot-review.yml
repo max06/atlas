@@ -38,6 +38,10 @@ on:
         description: "Path to the helmfile entry point"
         type: string
         default: "helmfile.yaml.gotmpl"
+      diff-mode:
+        description: 'Diff engine: "dyff" (default) for YAML-aware semantic diffs, "classic" for standard unified diffs'
+        type: string
+        default: "dyff"
     secrets:
       sops-age-key:
         required: false
@@ -128,6 +132,7 @@ jobs:
           latest-main-sha: ${{ steps.latest-release.outputs.main_sha }}
           helmfile-path: ${{ inputs.helmfile-path }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          diff-mode: ${{ inputs.diff-mode }}
 
       # ── Post results ───────────────────────────────────────────────────────
       - name: Post PR comment

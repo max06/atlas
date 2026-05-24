@@ -194,7 +194,7 @@ if [ "$PR_STATUS" = "error" ] && [ "$BASELINE_STATUS" != "success" ]; then
 elif [ "$DIFF_STATUS" = "no-changes" ]; then
   emit 'No changes detected in rendered Kubernetes manifests.'
 elif [ "$DIFF_STATUS" = "changes" ]; then
-  emit "Changes detected in **${DIFF_TOTAL}** release(s)."
+  emit "Changes detected in **${DIFF_TOTAL}** resource(s) across **${DIFF_RELEASES}** release(s)."
   emit 'Please review before merging.'
   emit ''
   if [ "$DIFF_TRUNCATED" = "true" ] && [ -n "$RUN_URL" ]; then

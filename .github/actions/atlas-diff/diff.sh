@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # ATLAS snapshot-review: generate per-release diffs between baseline and PR renders.
 #
-# Uses dyff for YAML-aware, Kubernetes-aware diffing. Handles release bucketing
-# (added/removed/modified/suppressed) based on the redaction replay status.
+# Diffs individual resources within each release, producing nested collapsible
+# sections: outer per-release, inner per-resource. Supports two diff modes:
+#   dyff    — YAML-aware, Kubernetes-aware semantic diff (default)
+#   classic — standard unified diff
+#
+# Handles release bucketing (added/removed/modified/suppressed) based on the
+# redaction replay status.
 #
 # Required environment:
 #   BASELINE_DIR     — path to baseline render tree
@@ -10,9 +15,10 @@
 #   DIFF_TEMP        — temporary directory for scratch files (defaults to $RUNNER_TEMP)
 #
 # Optional environment:
-#   SIDEDUMP_MAP_DIR — path to captured redaction maps from the PR render
+#   DIFF_MODE          — "dyff" (default) or "classic"
+#   SIDEDUMP_MAP_DIR   — path to captured redaction maps from the PR render
 #   REPLAY_STATUS_FILE — path to replay-status.txt from the replay step
-#   GITHUB_OUTPUT    — output file for step outputs (default: /dev/null)
+#   GITHUB_OUTPUT      — output file for step outputs (default: /dev/null)
 #
 # Outputs (written to $GITHUB_OUTPUT):
 #   status              — empty / no-changes / changes
@@ -32,6 +38,7 @@ set -euo pipefail
 BASELINE_DIR="${BASELINE_DIR:-}"
 PR_DIR="${PR_DIR:-}"
 DIFF_TEMP="${DIFF_TEMP:-${RUNNER_TEMP:-/tmp}}"
+DIFF_MODE="${DIFF_MODE:-dyff}"
 SIDEDUMP_MAP_DIR="${SIDEDUMP_MAP_DIR:-}"
 REPLAY_STATUS_FILE="${REPLAY_STATUS_FILE:-${DIFF_TEMP}/replay-status.txt}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
@@ -84,6 +91,68 @@ release_paths() {
 
 RELEASE_PATHS=$( { release_paths "$BASELINE_DIR"; release_paths "$PR_DIR"; } | sort -u )
 
+# ── Resource helpers ────────────────────────────────────────────────────────
+
+# Discover individual resource YAML files under a release dir.
+# Returns paths relative to the release dir, sorted for stable pairing.
+resource_files() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  find "$dir" -name '*.yaml' -type f 2>/dev/null | sort
+}
+
+# Extract a human-readable resource label from YAML content: "Kind/name".
+# Falls back to the filename if parsing fails.
+resource_label() {
+  local file="$1" filename kind name
+  filename=$(basename "$file" .yaml)
+  kind=$(grep -m1 '^kind:' "$file" 2>/dev/null | sed 's/^kind:[[:space:]]*//' || true)
+  name=$(grep -m1 '^  name:' "$file" 2>/dev/null | sed 's/^  name:[[:space:]]*//' || true)
+  if [ -n "$kind" ] && [ -n "$name" ]; then
+    echo "${kind}/${name}"
+  else
+    echo "$filename"
+  fi
+}
+
+# Diff a single resource file pair. Outputs the diff text (empty if identical).
+# Classic mode uses --label to show "baseline" / "current" instead of absolute paths.
+diff_resource() {
+  local base_file="$1" pr_file="$2" output=""
+  if [ "$DIFF_MODE" = "classic" ]; then
+    output=$(diff -u --label baseline --label current "$base_file" "$pr_file" 2>/dev/null || true)
+  else
+    # dyff: exit code 1 = differences found (not an error)
+    if ! output=$(dyff between "$base_file" "$pr_file" \
+      --output github --detect-kubernetes --omit-header --set-exit-code 2>/dev/null); then
+      true
+    fi
+  fi
+  echo "$output"
+}
+
+# Show the full content of a file as an "added" or "removed" block.
+diff_resource_full() {
+  local file="$1" direction="$2" content prefix
+  content=$(cat "$file")
+  if [ "$DIFF_MODE" = "classic" ]; then
+    if [ "$direction" = "added" ]; then
+      prefix="+"
+    else
+      prefix="-"
+    fi
+    echo "$content" | sed "s/^/${prefix} /"
+  else
+    if [ "$direction" = "added" ]; then
+      prefix="+ "
+    else
+      prefix="- "
+    fi
+    echo "! ${prefix}entire resource ${direction}:"
+    echo "$content" | sed "s/^/${prefix}/"
+  fi
+}
+
 # ── Walk releases and diff ──────────────────────────────────────────────────
 HAS_CHANGES=false
 COMMENT_BODY=""
@@ -94,14 +163,6 @@ AFFECTED_DEPLOYMENTS=""
 HAS_TRUNCATION=false
 SUPPRESSED_NOMAP=0
 SUPPRESSED_REMOVED=0
-
-# Concatenate all YAML files under a release dir into a single multi-doc stream.
-cat_yamls() {
-  local dir="$1"
-  if [ -d "$dir" ]; then
-    find "$dir" -name '*.yaml' -type f 2>/dev/null | sort | xargs cat 2>/dev/null || true
-  fi
-}
 
 for RELEASE_PATH in $RELEASE_PATHS; do
   RELEASE=$(basename "$RELEASE_PATH")
@@ -155,29 +216,85 @@ for RELEASE_PATH in $RELEASE_PATHS; do
     continue
   fi
 
-  # ── Bucket: diff with dyff ─────────────────────────────────────────────
-  BASE_CONCAT="${DIFF_TEMP}/dyff-base-${RELEASE//\//_}.yaml"
-  PR_CONCAT="${DIFF_TEMP}/dyff-pr-${RELEASE//\//_}.yaml"
+  # ── Per-resource diffing ────────────────────────────────────────────────
+  # Collect all resource files from both sides, paired by their path relative
+  # to the release dir. Each resource gets its own inner <details> section.
+  BASE_DIR="$BASELINE_DIR/$RELEASE_PATH"
+  HEAD_DIR="$PR_DIR/$RELEASE_PATH"
 
-  cat_yamls "$BASELINE_DIR/$RELEASE_PATH" > "$BASE_CONCAT"
-  cat_yamls "$PR_DIR/$RELEASE_PATH" > "$PR_CONCAT"
-
-  # dyff between with GitHub markdown output. --set-exit-code returns 1 when
-  # differences are found (0 = identical).
-  RELEASE_DIFF=""
-  if ! RELEASE_DIFF=$(dyff between "$BASE_CONCAT" "$PR_CONCAT" \
-    --output github --detect-kubernetes --omit-header --set-exit-code 2>/dev/null); then
-    # Exit code 1 = differences found (not an error)
-    true
+  # Build a union of relative resource paths from both sides
+  RESOURCE_RELPATHS=""
+  if [ -d "$BASE_DIR" ]; then
+    RESOURCE_RELPATHS=$(find "$BASE_DIR" -name '*.yaml' -type f 2>/dev/null \
+      | sed "s|^${BASE_DIR}/||" | sort)
   fi
+  if [ -d "$HEAD_DIR" ]; then
+    PR_RELPATHS=$(find "$HEAD_DIR" -name '*.yaml' -type f 2>/dev/null \
+      | sed "s|^${HEAD_DIR}/||" | sort)
+    RESOURCE_RELPATHS=$(printf '%s\n%s' "$RESOURCE_RELPATHS" "$PR_RELPATHS" | sort -u)
+  fi
+  # Filter empty lines
+  RESOURCE_RELPATHS=$(echo "$RESOURCE_RELPATHS" | grep -v '^$' || true)
 
-  [ -z "$RELEASE_DIFF" ] && continue
+  [ -z "$RESOURCE_RELPATHS" ] && continue
+
+  RELEASE_RESOURCE_BLOCKS=""
+  RELEASE_RESOURCE_COUNT=0
+  RELEASE_TOTAL_LINES=0
+
+  while IFS= read -r REL_FILE; do
+    BASE_FILE="$BASE_DIR/$REL_FILE"
+    PR_FILE="$HEAD_DIR/$REL_FILE"
+    HAS_BASE=false
+    HAS_PR=false
+    [ -f "$BASE_FILE" ] && HAS_BASE=true
+    [ -f "$PR_FILE" ] && HAS_PR=true
+
+    # Determine resource label from whichever side exists
+    if [ "$HAS_PR" = true ]; then
+      RES_LABEL=$(resource_label "$PR_FILE")
+    else
+      RES_LABEL=$(resource_label "$BASE_FILE")
+    fi
+
+    RES_DIFF=""
+    RES_TYPE=""
+    if [ "$HAS_BASE" = true ] && [ "$HAS_PR" = true ]; then
+      RES_DIFF=$(diff_resource "$BASE_FILE" "$PR_FILE")
+      [ -z "$RES_DIFF" ] && continue
+    elif [ "$HAS_BASE" = false ] && [ "$HAS_PR" = true ]; then
+      RES_DIFF=$(diff_resource_full "$PR_FILE" "added")
+      RES_TYPE=" (new)"
+    elif [ "$HAS_BASE" = true ] && [ "$HAS_PR" = false ]; then
+      RES_DIFF=$(diff_resource_full "$BASE_FILE" "removed")
+      RES_TYPE=" (removed)"
+    fi
+
+    [ -z "$RES_DIFF" ] && continue
+
+    RES_LINES=$(echo "$RES_DIFF" | wc -l)
+    RELEASE_RESOURCE_COUNT=$((RELEASE_RESOURCE_COUNT + 1))
+    RELEASE_TOTAL_LINES=$((RELEASE_TOTAL_LINES + RES_LINES))
+
+    RELEASE_RESOURCE_BLOCKS="${RELEASE_RESOURCE_BLOCKS}
+<details>
+<summary>${RES_LABEL}${RES_TYPE} (${RES_LINES} lines)</summary>
+
+\`\`\`diff
+${RES_DIFF}
+\`\`\`
+
+</details>
+"
+  done <<< "$RESOURCE_RELPATHS"
+
+  [ "$RELEASE_RESOURCE_COUNT" -eq 0 ] && continue
 
   HAS_CHANGES=true
   TOTAL_RELEASES=$((TOTAL_RELEASES + 1))
-  TOTAL_CHANGES=$((TOTAL_CHANGES + 1))
+  TOTAL_CHANGES=$((TOTAL_CHANGES + RELEASE_RESOURCE_COUNT))
 
-  # Determine change type label
+  # Determine release-level change type label
   if [ "$IN_BASELINE" = false ]; then
     TYPE_LABEL=" (new)"
   elif [ "$IN_PR" = false ]; then
@@ -186,18 +303,13 @@ for RELEASE_PATH in $RELEASE_PATHS; do
     TYPE_LABEL=""
   fi
 
-  DIFF_LINES=$(echo "$RELEASE_DIFF" | wc -l)
-  AFFECTED_DEPLOYMENTS="$(printf '%s\n%s' "$AFFECTED_DEPLOYMENTS" "- **${RELEASE_HEADER}**${TYPE_LABEL} (${DIFF_LINES} lines)")"
+  AFFECTED_DEPLOYMENTS="$(printf '%s\n%s' "$AFFECTED_DEPLOYMENTS" "- **${RELEASE_HEADER}**${TYPE_LABEL} (${RELEASE_RESOURCE_COUNT} resources)")"
 
-  # Full diff block (used in both comment and summary)
+  # Outer release block wrapping the inner per-resource blocks
   DIFF_BLOCK="
 <details>
-<summary>${RELEASE_HEADER}${TYPE_LABEL} (${DIFF_LINES} lines)</summary>
-
-\`\`\`
-${RELEASE_DIFF}
-\`\`\`
-
+<summary>${RELEASE_HEADER}${TYPE_LABEL} (${RELEASE_RESOURCE_COUNT} resources)</summary>
+${RELEASE_RESOURCE_BLOCKS}
 </details>
 "
 
@@ -205,13 +317,13 @@ ${RELEASE_DIFF}
   SUMMARY_BODY="${SUMMARY_BODY}${DIFF_BLOCK}"
 
   # PR comment — truncate if exceeding 55KB
-  CURRENT_SIZE=$(( ${#COMMENT_BODY} ))
-  DIFF_SIZE=${#RELEASE_DIFF}
-  if [ $((CURRENT_SIZE + DIFF_SIZE)) -gt 55000 ]; then
+  CURRENT_SIZE=${#COMMENT_BODY}
+  BLOCK_SIZE=${#DIFF_BLOCK}
+  if [ $((CURRENT_SIZE + BLOCK_SIZE)) -gt 55000 ]; then
     HAS_TRUNCATION=true
     COMMENT_BODY="${COMMENT_BODY}
 <details>
-<summary>${RELEASE_HEADER}${TYPE_LABEL} (${DIFF_LINES} lines, truncated)</summary>
+<summary>${RELEASE_HEADER}${TYPE_LABEL} (${RELEASE_RESOURCE_COUNT} resources, truncated)</summary>
 
 > Full diff available in the [job summary].
 

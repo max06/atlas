@@ -12,7 +12,7 @@
 # actually applies the patch (the rendered ConfigMap carries the
 # annotation introduced by the patch).
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment39

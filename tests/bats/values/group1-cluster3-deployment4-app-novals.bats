@@ -7,7 +7,7 @@
 #
 # Ported from tests/charts/chart1/tests/group1-cluster3-deployment4-app-novals-default_test.yaml
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=group1/cluster3
 DEPLOYMENT=deployment4

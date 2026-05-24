@@ -19,7 +19,7 @@
 # user-visible because no fixture or production case exercised
 # .Values.atlas in a hierarchy gotmpl until 2026-05-01.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment42

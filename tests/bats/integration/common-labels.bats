@@ -15,7 +15,7 @@
 # Release labels live in helmfile build state (not rendered manifests), so
 # we use release_labels which queries `helmfile build`.
 
-load 'helpers/render'
+load '../helpers/render'
 
 @test "default-name: template label = app-probe" {
   labels="$(release_labels cluster1 deployment30 stage3-probe-release)"

@@ -9,7 +9,7 @@
 # installed. User intent (explicit true OR explicit false) wins over the
 # default.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment37

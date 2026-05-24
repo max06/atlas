@@ -16,7 +16,7 @@
 # Auto-munge prefixes the release name with the resolved instance name,
 # producing "fromGlobal-stage3-tplname".
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment43

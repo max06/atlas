@@ -21,7 +21,7 @@
 #   - SOPS (last in the values list) overrides an earlier inline default of
 #     the same key.
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 

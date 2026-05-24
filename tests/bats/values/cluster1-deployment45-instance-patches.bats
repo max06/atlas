@@ -8,7 +8,7 @@
 # release — proving the applyListOverride append path works for
 # instance-sourced overrides.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment45

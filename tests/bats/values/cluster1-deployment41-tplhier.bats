@@ -14,7 +14,7 @@
 # becomes empty silently and downstream patches produce nonsense or
 # fail to match.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment41

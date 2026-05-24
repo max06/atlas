@@ -12,7 +12,7 @@
 # release. ATLAS must drop those fields and render normally; if either field
 # leaks through, helmfile produces no manifest and the first assertion fails.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment35

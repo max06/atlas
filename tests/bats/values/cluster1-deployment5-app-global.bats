@@ -7,7 +7,7 @@
 #
 # Ported from tests/charts/chart1/tests/cluster1-deployment5-app-global-default_test.yaml
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment5

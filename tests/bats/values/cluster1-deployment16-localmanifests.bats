@@ -12,7 +12,7 @@
 #     manifests/
 #       configmap.yaml         a plain manifest, no kustomization or chart metadata
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 

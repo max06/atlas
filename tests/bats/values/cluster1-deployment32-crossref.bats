@@ -5,7 +5,7 @@
 # The derived .yaml.gotmpl must see every key defined by earlier entries,
 # plus hierarchy values and .Release.*.
 
-load 'helpers/render'
+load '../helpers/render'
 
 CLUSTER=cluster1
 DEPLOYMENT=deployment32

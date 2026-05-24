@@ -19,7 +19,7 @@
 #   - The values: list honors position: an inline map after the SOPS file
 #     overrides same-key entries from the SOPS file.
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 

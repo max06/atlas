@@ -14,7 +14,7 @@
 #       kustomization.yaml     resources + commonLabels
 #       configmap.yaml         a plain manifest resource
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() { ensure_rendered; }
 

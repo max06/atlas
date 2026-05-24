@@ -21,7 +21,7 @@
 # These two pieces together let the snapshot-review workflow close leaks
 # in old-baseline renders without patching released ATLAS versions.
 
-load 'helpers/render'
+load '../helpers/render'
 
 REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
 PLUGIN_DIR="${REPO_ROOT}/.github/actions/atlas-render/atlas-redact"

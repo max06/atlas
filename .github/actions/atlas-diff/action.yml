@@ -62,6 +62,12 @@ inputs:
   pr-stderr-log:
     description: Path to PR stderr log
     required: false
+  diff-mode:
+    description: >
+      Diff engine: "dyff" (default) for YAML-aware semantic diffs,
+      "classic" for standard unified diffs.
+    required: false
+    default: dyff
 
 outputs:
   body:
@@ -102,3 +108,4 @@ runs:
     INPUT_RUN_URL: ${{ inputs.run-url }}
     INPUT_BASELINE_STDERR_LOG: ${{ inputs.baseline-stderr-log }}
     INPUT_PR_STDERR_LOG: ${{ inputs.pr-stderr-log }}
+    INPUT_DIFF_MODE: ${{ inputs.diff-mode }}

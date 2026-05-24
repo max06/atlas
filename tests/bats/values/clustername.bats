@@ -14,7 +14,7 @@
 # helmfile.all.yaml.gotmpl, so two cases (standalone + grouped) cover the
 # behaviour for all deployments without needing a dedicated fixture.
 
-load 'helpers/render'
+load '../helpers/render'
 
 setup_file() {
   ensure_rendered
