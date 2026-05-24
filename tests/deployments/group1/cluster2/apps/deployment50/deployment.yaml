@@ -1,0 +1,5 @@
+apps:
+  - template: app-dedup
+    namespace: test
+    values:
+      - source: cluster

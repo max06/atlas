@@ -126,8 +126,16 @@
   {{- $clusterDeployments := include "glob" $clusterPattern | fromJson }}
   {{- $collectedDeploymentsRaw = concat $collectedDeploymentsRaw $clusterDeployments }}
 
+  {{- /* Dedup: when the same deployment name appears at multiple hierarchy levels
+         (e.g., group and cluster), the most specific definition wins.
+         Collection order is global → group → cluster, so later entries override. */}}
+  {{- $seen := dict }}
   {{- range $collectedDeploymentsRaw }}
-    {{- $deployment := dict "deploymentName" (. | dir | base) "path" . }}
+    {{- $name := . | dir | base }}
+    {{- $_ := set $seen $name . }}
+  {{- end }}
+  {{- range $name, $path := $seen }}
+    {{- $deployment := dict "deploymentName" $name "path" $path }}
     {{- $collectedDeployments = append $collectedDeployments $deployment }}
   {{- end }}
 
