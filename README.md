@@ -130,7 +130,8 @@ apps:
     namespace: production      # Optional: target namespace
   - template: database         # Multiple apps per deployment
     namespace: production
-settings:                      # Settings affecting your argocd application
+settings:                      # Settings consumed by ArgoCD and ATLAS
+  namespace: production        # Optional: deployment-wide namespace default
   branch: main
   autoSync: false
 ```
@@ -163,6 +164,53 @@ ATLAS automatically rewrites release names so each instance produces a distinct 
 | `cust-abc`               | `suffix`     | `vm-cust-abc`          |
 
 `prefix` is the default. `suffix` is offered for naming conventions (e.g. multi-tenant `vm-cust-abc`) where the leading label reads better at the end. Templates remain readable as vanilla helmfile when no `name` is set.
+
+---
+
+## Namespace Handling
+
+ATLAS does not require a namespace on releases — templates, deployments, and even the final rendered manifests can omit it entirely. When no namespace is set at any level, ArgoCD applies `destination.namespace` to resources that lack `metadata.namespace` in the manifest. Cluster-scoped resources (CRDs, ClusterRoles, etc.) are never affected by namespace settings.
+
+### Namespace Precedence (highest wins)
+
+| Priority | Source | Description |
+|----------|--------|-------------|
+| 1 | Template release `namespace:` | Defined by the template author in `helmfile.yaml.gotmpl` |
+| 2 | `settings.namespace` | Deployment-wide default in `deployment.yaml` — applies to all releases |
+| 3 | `apps[].namespace` | Per-instance override in `deployment.yaml` — most specific |
+
+Higher-priority sources override lower ones. If none are set, the release has no namespace.
+
+### Examples
+
+```yaml
+# Template defines namespace: monitoring
+# deployment.yaml — no override → release uses "monitoring"
+apps:
+  - template: kube-prometheus
+
+# deployment.yaml — settings.namespace overrides all template namespaces
+settings:
+  namespace: observability
+apps:
+  - template: kube-prometheus     # → namespace: observability
+
+# deployment.yaml — apps[].namespace overrides settings.namespace
+settings:
+  namespace: default
+apps:
+  - template: virtual-machine
+    name: vm-a                    # → namespace: default (from settings)
+  - template: virtual-machine
+    name: vm-b
+    namespace: tenant-b           # → namespace: tenant-b (instance wins)
+```
+
+### ArgoCD integration
+
+The ATLAS ApplicationSet template sets `destination.namespace` to `settings.namespace` when defined, falling back to the deployment name (`appInstance`) otherwise. This namespace is cosmetic for resources that already carry a namespace in the rendered manifest — ArgoCD only applies `destination.namespace` to resources that lack `metadata.namespace`.
+
+The helmfile-argocd-plugin passes `--namespace $ARGOCD_APP_NAMESPACE` by default, which overrides **all** release namespaces at the helmfile CLI level — ATLAS cannot prevent this. To preserve template and deployment-level namespace settings, set `HELMFILE_USE_CONTEXT_NAMESPACE=true` in the ApplicationSet plugin configuration. This tells the plugin to skip the `--namespace` flag, letting ATLAS's namespace precedence take effect.
 
 ---
 

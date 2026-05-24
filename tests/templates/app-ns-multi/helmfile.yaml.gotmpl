@@ -1,0 +1,12 @@
+releases:
+  - name: ns-multi-main
+    chart: ../../charts/chart1
+    namespace: main-namespace
+    values:
+      - scenario: multi-namespace-main
+
+  - name: ns-multi-extra
+    chart: ../../charts/chart1
+    namespace: extra-namespace
+    values:
+      - scenario: multi-namespace-extra

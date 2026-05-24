@@ -187,8 +187,18 @@ Purpose:
     {{- fail (printf "release %q sets postRenderer (%v) — ATLAS owns this slot for its redaction post-renderer and helm 4 cannot chain post-renderers. Open an issue at https://github.com/max06/atlas to discuss your use case (template=%s instance=%s)." $release.name $release.postRenderer $.Values.atlas.instance.template $.Values.atlas.instance.name) }}
   {{- end }}
 
+  {{- /* Namespace override precedence (highest wins):
+         1. apps[].namespace     — per-instance override from deployment.yaml
+         2. settings.namespace   — deployment-wide default from deployment.yaml
+         3. template release.namespace — whatever the template author set
+       If none of these are set, the release has no namespace and ArgoCD's
+       destination.namespace becomes the fallback (applied to resources
+       without metadata.namespace in the manifest). */ -}}
+  {{- $deploymentSettings := $deploymentRendered | get "settings" dict }}
   {{- if hasKey $thisInstance "namespace" }}
     {{- $_ := set $release "namespace" $thisInstance.namespace }}
+  {{- else if hasKey $deploymentSettings "namespace" }}
+    {{- $_ := set $release "namespace" $deploymentSettings.namespace }}
   {{- end }}
   {{- if hasKey $release "chart" }}
     {{- $chart := $release.chart }}
@@ -306,7 +316,7 @@ Purpose:
        real .Release object, so build a minimal stand-in carrying the two
        fields the loader actually reads (Name + Namespace). */ -}}
   {{- if $.Values.atlas.redactSecrets }}
-    {{- $relCtx := dict "Name" $release.name "Namespace" $release.namespace }}
+    {{- $relCtx := dict "Name" $release.name "Namespace" ($release | get "namespace" "") }}
     {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" false) | fromYaml }}
     {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" true) | fromYaml }}
     {{- $replMap := index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
