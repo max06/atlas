@@ -6,9 +6,9 @@
 # with one allowlistable invocation. Runs from any cwd inside the repo.
 #
 # Usage:
-#   .claude/utils/run-bats.sh                       # full suite, summary
+#   .claude/utils/run-bats.sh                       # full suite, summary (parallel if available)
 #   .claude/utils/run-bats.sh tests/bats/foo.bats   # single file, full output
-#   .claude/utils/run-bats.sh -v                    # full suite, full output
+#   .claude/utils/run-bats.sh -v                    # full suite, full output (parallel if available)
 #
 # Exit code reflects test result: 0 if all tests passed, non-zero otherwise.
 
@@ -25,15 +25,21 @@ cd "$(git rev-parse --show-toplevel)"
 # inside this script (which IS allowlisted) it runs unprompted.
 rm -rf /tmp/bats-run-* /tmp/atlas-bats-render* /tmp/atlas-bats-sidedump* 2>/dev/null || true
 
+# Use parallel execution when GNU parallel is available
+JOBS_FLAG=()
+if command -v parallel &>/dev/null; then
+  JOBS_FLAG=(--jobs 4)
+fi
+
 case "${1-}" in
   -v|--verbose)
-    exec bats --recursive tests/bats/
+    exec bats --recursive "${JOBS_FLAG[@]}" tests/bats/
     ;;
   "")
     # Summary mode: capture the run, count, list failures only.
     log=$(mktemp)
     trap 'rm -f "$log"' EXIT
-    bats --recursive tests/bats/ > "$log" 2>&1 || true
+    bats --recursive "${JOBS_FLAG[@]}" tests/bats/ > "$log" 2>&1 || true
     ok=$(grep -c '^ok ' "$log" || true)
     notok=$(grep -c '^not ok' "$log" || true)
     echo "ok: $ok"

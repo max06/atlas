@@ -36,23 +36,24 @@ _repo_root() {
 
 # ensure_rendered performs the bulk render exactly once per bats run.
 # Call from setup_file(); subsequent calls are no-ops.
+# Uses flock so parallel file execution (bats --jobs) is safe: the first
+# worker renders, others block on the lock and then find the directory.
 ensure_rendered() {
   [[ -d "$RENDER_DIR" ]] && return 0
-  local root
-  root="$(_repo_root)"
-  # Uses tests/helmfile.yaml.gotmpl which pre-wires atlas.cwd,
-  # appTemplates, and deploymentDefinitions for the test fixtures.
-  #
-  # --skip-schema-validation: no CRD dependency needed for value assertions.
-  # --output-dir-template: lays out manifests by cluster/deployment/release so
-  # tests can look up a single instance by path rather than filtering YAML.
-  helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
-    template --skip-schema-validation \
-    --output-dir "$RENDER_DIR" \
-    --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-    > "${RENDER_DIR}.log" 2>&1 \
-    || { echo "helmfile template failed. log:" >&2; \
-         cat "${RENDER_DIR}.log" >&2; return 1; }
+  local lockfile="${RENDER_DIR}.lock"
+  (
+    flock -x 9
+    [[ -d "$RENDER_DIR" ]] && return 0
+    local root
+    root="$(_repo_root)"
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
+      template --skip-schema-validation \
+      --output-dir "$RENDER_DIR" \
+      --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+      > "${RENDER_DIR}.log" 2>&1 \
+      || { echo "helmfile template failed. log:" >&2; \
+           cat "${RENDER_DIR}.log" >&2; return 1; }
+  ) 9>"$lockfile"
 }
 
 # ensure_rendered_redacted performs the redacted render once per bats run.
@@ -63,20 +64,23 @@ ensure_rendered() {
 # Call from setup_file() in any .bats file that needs redacted output.
 ensure_rendered_redacted() {
   [[ -d "$RENDER_DIR_REDACTED" ]] && return 0
-  local root default_plugins
-  root="$(_repo_root)"
-  # Preserve any HELM_PLUGINS the user already has and append the atlas-redact
-  # plugin dir so helm can load it as a post-renderer.
-  default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
-  ATLAS_REDACT_SECRETS=true \
-  HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/.github/actions/atlas-render" \
-    helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
-      template --skip-schema-validation \
-      --output-dir "$RENDER_DIR_REDACTED" \
-      --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
-      > "${RENDER_DIR_REDACTED}.log" 2>&1 \
-    || { echo "redacted helmfile template failed. log:" >&2; \
-         cat "${RENDER_DIR_REDACTED}.log" >&2; return 1; }
+  local lockfile="${RENDER_DIR_REDACTED}.lock"
+  (
+    flock -x 9
+    [[ -d "$RENDER_DIR_REDACTED" ]] && return 0
+    local root default_plugins
+    root="$(_repo_root)"
+    default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
+    ATLAS_REDACT_SECRETS=true \
+    HELM_PLUGINS="${default_plugins:+${default_plugins}:}${root}/.github/actions/atlas-render" \
+      helmfile -f "$root/tests/helmfile.yaml.gotmpl" \
+        template --skip-schema-validation \
+        --output-dir "$RENDER_DIR_REDACTED" \
+        --output-dir-template '{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}' \
+        > "${RENDER_DIR_REDACTED}.log" 2>&1 \
+      || { echo "redacted helmfile template failed. log:" >&2; \
+           cat "${RENDER_DIR_REDACTED}.log" >&2; return 1; }
+  ) 9>"$lockfile"
 }
 
 # _release_dir returns the per-release output directory. The output-dir-template

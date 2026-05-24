@@ -52,10 +52,10 @@ jobs:
       - name: Install helmfile plugins
         run: helmfile init --force 2>/dev/null || true
 
-      - name: Install bats, yq, and dyff
+      - name: Install bats, yq, dyff, and parallel
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats
+          sudo apt-get install -y bats parallel
           sudo wget -qO /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
@@ -64,4 +64,4 @@ jobs:
           sudo mv dyff /usr/local/bin/dyff
 
       - name: Run workflow script tests
-        run: bats --recursive tests/bats/workflow/
+        run: bats --recursive --jobs 4 tests/bats/workflow/
