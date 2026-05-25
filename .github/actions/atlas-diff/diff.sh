@@ -91,6 +91,38 @@ release_paths() {
 
 RELEASE_PATHS=$( { release_paths "$BASELINE_DIR"; release_paths "$PR_DIR"; } | sort -u )
 
+# ── Multi-document splitting ────────────────────────────────────────────────
+# Helm 4's kustomize post-renderer (strategicMergePatches / jsonPatches)
+# combines all chart resources into a single patched_resources.yaml.  CRD
+# bundles can also contain many documents.  Split every multi-document YAML
+# into one file per resource using yq, so the per-resource diff loop can
+# pair them by canonical <kind>-<name>.yaml across baseline and PR.
+# Single-document files are also normalized to kind-name.yaml so that
+# adding/removing patches in a PR doesn't break file pairing.
+
+split_multi_doc_dir() {
+  local root="$1"
+  [ -d "$root" ] || return 0
+  local yq_split_expr='(.kind + "-" + .metadata.name | downcase | sub("[./:]"; "-")) + ".yaml"'
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    local dir tmp_src
+    dir=$(dirname "$f")
+    # Move original to a temp file first so yq's output can't collide
+    # with the source (e.g. a file already named deployment-my-app.yaml).
+    tmp_src="${f}.splitting"
+    mv "$f" "$tmp_src"
+    if (cd "$dir" && yq -s "${yq_split_expr}" "$(basename "$tmp_src")" 2>/dev/null); then
+      rm -f "$tmp_src"
+    else
+      mv "$tmp_src" "$f"
+    fi
+  done < <(find "$root" -name '*.yaml' -type f 2>/dev/null)
+}
+
+split_multi_doc_dir "$BASELINE_DIR"
+split_multi_doc_dir "$PR_DIR"
+
 # ── Resource helpers ────────────────────────────────────────────────────────
 
 # Discover individual resource YAML files under a release dir.
