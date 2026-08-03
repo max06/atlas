@@ -80,6 +80,19 @@ Inputs (passed via `include "atlas.hierarchy.merged" $args`):
             renders, which is generally an anti-pattern).
   .redact   Bool. When true, every SOPS-decrypted value tree is
             rewritten through atlas.redact.value BEFORE merge.
+  .skipSecrets
+            Bool (optional). When true, *.sops.yaml hierarchy files are
+            parsed WITHOUT decryption: keys are merged as-is (they are
+            plaintext in SOPS YAML) with their encrypted ENC[...] values,
+            and the sops metadata block is dropped. Hierarchy gotmpl
+            files that reference secret keys keep resolving (to the
+            ENC[...] placeholder), so structural templating stays intact
+            while state-build makes zero SOPS/gpg calls. Secret-derived
+            release STRUCTURE is unsupported by contract (the placeholder
+            would leak into it visibly); real values reach releases
+            exclusively through the stage-3 values-loader. Without this
+            flag every render decrypts every deployment's hierarchy
+            (~N_deployments × sops per render).
 
 Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 */ -}}
@@ -114,12 +127,23 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 {{- range $f := $hierarchyFiles }}
   {{- if isFile $f }}
     {{- if hasSuffix ".sops.yaml" $f }}
-      {{- $sopsRef := printf "ref+sops://%s?format=yaml" $f }}
-      {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-      {{- if $.redact }}
-        {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
+      {{- /* tolerant lookup — callers that don't pass skipSecrets
+           (stage-3 loader) must not trip missingkey=error. */ -}}
+      {{- if sprigGet $ "skipSecrets" }}
+        {{- /* No decryption: merge the plaintext key structure with its
+             ENC[...] values so later hierarchy gotmpls can still reference
+             the keys. The sops metadata block is not a value — drop it. */ -}}
+        {{- $parsed := readFile $f | fromYaml }}
+        {{- $encrypted := omit $parsed "sops" }}
+        {{- $hierarchy = mergeOverwrite $hierarchy $encrypted }}
+      {{- else }}
+        {{- $sopsRef := printf "ref+sops://%s?format=yaml" $f }}
+        {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
+        {{- if $.redact }}
+          {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
+        {{- end }}
+        {{- $hierarchy = mergeOverwrite $hierarchy $decrypted }}
       {{- end }}
-      {{- $hierarchy = mergeOverwrite $hierarchy $decrypted }}
     {{- else if hasSuffix ".yaml.gotmpl" $f }}
       {{- /* Tpl ctx: atlas object (from .Values) + the accumulating
            hierarchy. Authors of hierarchy gotmpl files routinely reference

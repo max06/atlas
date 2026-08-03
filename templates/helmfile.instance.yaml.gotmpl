@@ -91,12 +91,18 @@ Purpose:
      see empty values during this state-build pass; they will see the
      real values when the loader walks the hierarchy a second time per
      release. Different output between the two passes is an anti-pattern
-     and should be avoided in hierarchy templates. */ -}}
+     and should be avoided in hierarchy templates.
+
+     skipSecrets: this pass never decrypts SOPS files — template bodies
+     (jsonPatches, inline values, chart paths) must not derive from
+     secrets; put secret consumption in values files so it resolves in
+     the stage-3 loader instead. Keeps state-build SOPS-free. */ -}}
 {{- $synthRelease := dict "Name" "" "Namespace" "" }}
 {{- $hierarchy := include "atlas.hierarchy.merged" (dict
-    "Values"  .Values
-    "Release" $synthRelease
-    "redact"  false
+    "Values"      .Values
+    "Release"     $synthRelease
+    "redact"      false
+    "skipSecrets" true
 ) | fromYaml }}
 
 {{- /* ====================== TPL CONTEXT (atlas + hierarchy + synthetic Release) ====================== */ -}}
