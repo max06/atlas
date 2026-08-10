@@ -55,12 +55,17 @@ Output:
      .Release is a synthetic placeholder — helmfile's real .Release is
      only available later inside the values-loader. Hierarchy gotmpl
      files that reference .Release.* see empty values during this
-     state-build pass; same caveat as helmfile.instance.yaml.gotmpl. */ -}}
+     state-build pass; same caveat as helmfile.instance.yaml.gotmpl.
+
+     skipSecrets: this pass never decrypts SOPS files — deployment.yaml
+     structure (apps[].name etc.) must not derive from secrets. Secrets
+     resolve only in the stage-3 values-loader. */ -}}
 {{- $synthRelease := dict "Name" "" "Namespace" "" }}
 {{- $hierarchy := include "atlas.hierarchy.merged" (dict
-    "Values"  .Values
-    "Release" $synthRelease
-    "redact"  false
+    "Values"      .Values
+    "Release"     $synthRelease
+    "redact"      false
+    "skipSecrets" true
 ) | fromYaml }}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Values" $ctx }}
