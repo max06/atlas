@@ -1,0 +1,6 @@
+# Fixture: structural Secret redaction (see app-secret-resource template).
+# Deliberately contributes no SOPS values of its own — the release's
+# replacement map is empty and the post-renderer must still run.
+apps:
+  - template: app-secret-resource
+    namespace: test

@@ -1,0 +1,11 @@
+# Fixture: a release whose chart renders a v1/Secret with values that never
+# touched SOPS (the chart-generated-cert / random-password class). Exercises
+# the structural Secret redaction in the atlas-redact post-renderer — which
+# must be wired even though this deployment contributes NOTHING to the SOPS
+# replacement map (the map is empty for this release).
+releases:
+  - name: secret-app
+    chart: ./chart
+    values:
+      - certContent: fake-cert-payload-AAAA
+        plainNote: not-a-secret

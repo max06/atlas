@@ -93,9 +93,47 @@ while IFS= read -r templates_dir; do
   fi
 
   for yf in "${yaml_files[@]}"; do
-    # Write to a tempfile then move — never truncate the source until yq
-    # succeeded, so a scrub error leaves the baseline untouched rather
-    # than half-written.
+    # Pass 1 — structural Secret redaction, BEFORE the map replay, exactly
+    # mirroring atlas-redact.sh (keep the two in sync): every v1/Secret's
+    # data/stringData value becomes "REDACTED:sha256:<12-hex-of-value>".
+    # Hashing the REAL baseline value makes the marker line up with the
+    # current-side render — unchanged Secrets vanish from the diff, rotated
+    # ones show a marker change. Running the map replay first would hash
+    # already-redacted shapes instead and break that alignment.
+    secret_vals="$(yq eval -N '
+      [ select(.kind == "Secret" and .apiVersion == "v1")
+        | (.data[]?, .stringData[]?)
+        | select(tag != "!!null")
+        | tostring | @base64 ]
+      | .[]' "$yf" 2>/dev/null | sort -u)" || secret_vals=""
+    if [ -n "$secret_vals" ]; then
+      secret_map_json="$(while IFS= read -r b64; do
+          [ -z "$b64" ] && continue
+          hash="$(printf '%s' "$b64" | base64 -d | sha256sum | head -c 12)"
+          printf '%s\t%s\n' "$b64" "$hash"
+        done <<< "$secret_vals" | jq -Rn '
+          reduce inputs as $line ({};
+            ($line | split("\t")) as [$b64, $h]
+            | . + {($b64 | @base64d): ("REDACTED:sha256:" + $h)})')"
+      secret_map_yaml="$(printf '%s' "$secret_map_json" | yq -p json -o yaml)"
+      tmp_out="$(mktemp)"
+      if SECRET_REPL="$secret_map_yaml" yq eval '
+        (strenv(SECRET_REPL) | from_yaml) as $m |
+        (select(.kind == "Secret" and .apiVersion == "v1")
+          | (.data[]?, .stringData[]?)
+          | select(tag != "!!null")
+        ) |= ($m[(. | tostring)] // "REDACTED:sha256:unmapped")
+      ' "$yf" > "$tmp_out" 2>/dev/null; then
+        mv "$tmp_out" "$yf"
+      else
+        rm -f "$tmp_out"
+        echo "scrub-baseline: structural Secret pass failed on $yf — left unchanged" >&2
+      fi
+    fi
+
+    # Pass 2 — replacement-map replay. Write to a tempfile then move —
+    # never truncate the source until yq succeeded, so a scrub error
+    # leaves the baseline untouched rather than half-written.
     tmp_out="$(mktemp)"
     if REPL="$repl_yaml" yq eval '
       (strenv(REPL) | from_yaml) as $repl |

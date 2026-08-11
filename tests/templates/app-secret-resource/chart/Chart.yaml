@@ -1,0 +1,5 @@
+apiVersion: v2
+name: chart-secret
+description: Test chart rendering a v1/Secret for structural redaction tests
+type: application
+version: 0.1.0
