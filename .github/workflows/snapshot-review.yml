@@ -137,7 +137,7 @@ jobs:
       # ── Post results ───────────────────────────────────────────────────────
       - name: Post PR comment
         if: always() && steps.diff.outputs.body
-        uses: marocchino/sticky-pull-request-comment@v3.0.4
+        uses: marocchino/sticky-pull-request-comment@v3.0.5
         with:
           header: atlas-review
           message: ${{ steps.diff.outputs.body }}
