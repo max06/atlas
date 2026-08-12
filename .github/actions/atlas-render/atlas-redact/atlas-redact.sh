@@ -33,9 +33,65 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-# No replacements → nothing to redact.
+# ---------------------------------------------------------------------------
+# Structural Secret redaction (runs BEFORE the map pass — order matters).
+#
+# Every v1/Secret resource's data/stringData values are replaced with a
+# deterministic marker "REDACTED:sha256:<first-12-hex>" of the value as it
+# appears in the manifest. This covers secrets that never touched SOPS
+# (chart-generated certs/passwords), which the replacement map cannot know.
+#
+# Why the hash: identical real values produce identical markers on both
+# sides of a snapshot diff (unchanged Secrets vanish from the diff), while
+# a rotated value shows up as a one-line marker change without leaking
+# content. 12 hex chars of SHA-256 are not reversible.
+#
+# Why BEFORE the map pass: the marker must hash the REAL value. If the map
+# pass ran first, two different secrets redacting to the same REDACTED
+# shape would collide into one marker and a rotation would become
+# invisible in the diff. scrub-baseline.sh applies the same two passes in
+# the same order — keep them in sync.
+#
+# Scope is per-document: only values under a Secret's data/stringData are
+# replaced. A secret value that a chart ALSO inlines elsewhere (e.g. an env
+# var in a Deployment) is out of scope here — that vector is covered by the
+# SOPS replacement map when the value is SOPS-sourced.
+# ---------------------------------------------------------------------------
+SECRET_VALS="$(printf '%s' "$INPUT" | yq eval -N '
+  [ select(.kind == "Secret" and .apiVersion == "v1")
+    | (.data[]?, .stringData[]?)
+    | select(tag != "!!null")
+    | tostring | @base64 ]
+  | .[]' 2>/dev/null | sort -u)" || SECRET_VALS=""
+if [ -n "$SECRET_VALS" ]; then
+  # Build {raw-value: marker} as JSON (jq handles arbitrary string content),
+  # transported base64-per-line so multi-line values survive the shell.
+  SECRET_MAP_JSON="$(while IFS= read -r b64; do
+      [ -z "$b64" ] && continue
+      hash="$(printf '%s' "$b64" | base64 -d | sha256sum | head -c 12)"
+      printf '%s\t%s\n' "$b64" "$hash"
+    done <<< "$SECRET_VALS" | jq -Rn '
+      reduce inputs as $line ({};
+        ($line | split("\t")) as [$b64, $h]
+        | . + {($b64 | @base64d): ("REDACTED:sha256:" + $h)})')"
+  # Same JSON → YAML dance as the map pass below (yq yaml auto-detect
+  # stumbles on some JSON escape sequences).
+  SECRET_MAP_YAML="$(printf '%s' "$SECRET_MAP_JSON" | yq -p json -o yaml)"
+  INPUT="$(printf '%s' "$INPUT" | SECRET_REPL="$SECRET_MAP_YAML" yq eval '
+    (strenv(SECRET_REPL) | from_yaml) as $m |
+    (select(.kind == "Secret" and .apiVersion == "v1")
+      | (.data[]?, .stringData[]?)
+      | select(tag != "!!null")
+    ) |= ($m[(. | tostring)] // "REDACTED:sha256:unmapped")
+  ')" || {
+    echo "atlas-redact: structural Secret redaction failed" >&2
+    exit 1
+  }
+fi
+
+# No replacements → structural pass was everything.
 if [ -z "$REPL_B64" ]; then
-  printf '%s' "$INPUT"
+  printf '%s\n' "$INPUT"
   exit 0
 fi
 

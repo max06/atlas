@@ -326,30 +326,37 @@ Purpose:
     {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" false) | fromYaml }}
     {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" true) | fromYaml }}
     {{- $replMap := index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
-    {{- if gt (len $replMap) 0 }}
-      {{- $postRendererArgs := $replMap | toJson | b64enc }}
-      {{- /* 1MB safety: postRendererArgs is a single argv entry, subject
-           to the kernel's ARG_MAX (~2MB on Linux). 1 MiB headroom keeps
-           the rest of argv+envp safe. */ -}}
-      {{- if gt (len $postRendererArgs) 1048576 }}
-        {{- $sizeKb := divf (len $postRendererArgs) 1024 }}
-        {{- fail (printf "atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Cluster=%s Deployment=%s Release=%s" $sizeKb $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name) }}
-      {{- end }}
-      {{- $_ := set $release "postRenderer" "atlas-redact" }}
-      {{- /* Optional side-dump: when ATLAS_SIDEDUMP_MAP_DIR is set at render
-           time, append the per-release map path as a second argv element.
-           The atlas-redact plugin writes the decoded JSON map to this path
-           in addition to scrubbing stdin. snapshot-review's scrub-baseline
-           later replays each map against an older-baseline render. Layout
-           mirrors --output-dir-template so the scrubber finds maps by
-           release directory without parsing manifests. */ -}}
-      {{- $sidedumpDir := env "ATLAS_SIDEDUMP_MAP_DIR" }}
-      {{- if $sidedumpDir }}
-        {{- $sidedumpPath := printf "%s/%s/%s/%s.json" $sidedumpDir $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name }}
-        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs $sidedumpPath) }}
-      {{- else }}
-        {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
-      {{- end }}
+    {{- /* The post-renderer is wired even when the replacement map is empty:
+         besides map-based value replacement it structurally redacts every
+         v1/Secret resource's data/stringData (chart-generated certs,
+         passwords, ... that never touched SOPS values). An empty map
+         b64-encodes to "e30=" ("{}"), which the plugin treats as a no-op
+         for the map pass. */ -}}
+    {{- $postRendererArgs := $replMap | toJson | b64enc }}
+    {{- /* 1MB safety: postRendererArgs is a single argv entry, subject
+         to the kernel's ARG_MAX (~2MB on Linux). 1 MiB headroom keeps
+         the rest of argv+envp safe. */ -}}
+    {{- if gt (len $postRendererArgs) 1048576 }}
+      {{- $sizeKb := divf (len $postRendererArgs) 1024 }}
+      {{- fail (printf "atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Cluster=%s Deployment=%s Release=%s" $sizeKb $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name) }}
+    {{- end }}
+    {{- $_ := set $release "postRenderer" "atlas-redact" }}
+    {{- /* Optional side-dump: when ATLAS_SIDEDUMP_MAP_DIR is set at render
+         time, append the per-release map path as a second argv element.
+         The atlas-redact plugin writes the decoded JSON map to this path
+         in addition to scrubbing stdin. snapshot-review's scrub-baseline
+         later replays each map against an older-baseline render. Layout
+         mirrors --output-dir-template so the scrubber finds maps by
+         release directory without parsing manifests. Empty maps are dumped
+         too — their presence tells scrub-baseline the release exists on
+         the current side (bucketing) and triggers the structural Secret
+         pass on the baseline. */ -}}
+    {{- $sidedumpDir := env "ATLAS_SIDEDUMP_MAP_DIR" }}
+    {{- if $sidedumpDir }}
+      {{- $sidedumpPath := printf "%s/%s/%s/%s.json" $sidedumpDir $.Values.atlas.deployment.cluster $.Values.atlas.deployment.deploymentName $release.name }}
+      {{- $_ := set $release "postRendererArgs" (list $postRendererArgs $sidedumpPath) }}
+    {{- else }}
+      {{- $_ := set $release "postRendererArgs" (list $postRendererArgs) }}
     {{- end }}
   {{- end }}
 {{- end }}

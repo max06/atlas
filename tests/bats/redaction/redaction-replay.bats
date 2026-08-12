@@ -118,13 +118,16 @@ setup_file() {
   local release_dir="${baseline}/cluster1/dep/rel/chart/templates"
   mkdir -p "$release_dir" "${mapdir}/cluster1/dep"
 
-  # Leaky manifest — cleartext secret in a stringData field.
+  # Leaky manifest — cleartext secret in a ConfigMap field. (A ConfigMap,
+  # not a Secret: v1/Secret documents are handled by the structural
+  # sha256-marker pass since the Secret-resource redaction feature; the
+  # whole-scalar map replay this test locks in applies to everything else.)
   cat > "$release_dir/secret.yaml" <<'YAML'
 apiVersion: v1
-kind: Secret
+kind: ConfigMap
 metadata:
   name: leaky
-stringData:
+data:
   token: s3cretvalue
 YAML
 
@@ -138,8 +141,87 @@ JSON
   [[ "$output" == *"scrubbed cluster1/dep/rel"* ]]
 
   # Baseline file rewritten in place with the replacement applied.
-  run yq '.stringData.token' "$release_dir/secret.yaml"
+  run yq '.data.token' "$release_dir/secret.yaml"
   [ "$output" = "REDACTED" ]
+}
+
+@test "scrubber: v1/Secret values become sha256 markers before the map replay" {
+  local scratch="${BATS_TEST_TMPDIR}/scrub-secret-structural"
+  local baseline="${scratch}/baseline"
+  local mapdir="${scratch}/maps"
+  local release_dir="${baseline}/cluster1/dep/rel/chart/templates"
+  mkdir -p "$release_dir" "${mapdir}/cluster1/dep"
+
+  # A Secret with one map-known value and one map-unknown value, plus a
+  # ConfigMap carrying the map-known value outside a Secret document.
+  cat > "$release_dir/secret.yaml" <<'YAML'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: leaky
+stringData:
+  token: s3cretvalue
+  generated: chart-minted-cert
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sibling
+data:
+  token: s3cretvalue
+YAML
+
+  cat > "${mapdir}/cluster1/dep/rel.json" <<'JSON'
+{"s3cretvalue":"REDACTED"}
+JSON
+
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"scrubbed cluster1/dep/rel"* ]]
+
+  # Secret values: deterministic markers of the REAL values — the
+  # structural pass runs BEFORE the replay, so the map-known value hashes
+  # its cleartext (marker matches what atlas-redact.sh produces on the
+  # current side), never the string "REDACTED".
+  expected_token="REDACTED:sha256:$(printf '%s' 's3cretvalue' | sha256sum | head -c 12)"
+  expected_generated="REDACTED:sha256:$(printf '%s' 'chart-minted-cert' | sha256sum | head -c 12)"
+  run yq 'select(.kind == "Secret") | .stringData.token' "$release_dir/secret.yaml"
+  [ "$output" = "$expected_token" ]
+  run yq 'select(.kind == "Secret") | .stringData.generated' "$release_dir/secret.yaml"
+  [ "$output" = "$expected_generated" ]
+
+  # Outside Secret documents the map replay still owns redaction.
+  run yq 'select(.kind == "ConfigMap") | .data.token' "$release_dir/secret.yaml"
+  [ "$output" = "REDACTED" ]
+}
+
+@test "scrubber: empty map still triggers the structural Secret pass" {
+  # Since the always-wire change, releases without SOPS values dump "{}"
+  # maps. Their baseline Secrets must still be marker-redacted so both
+  # diff sides align.
+  local scratch="${BATS_TEST_TMPDIR}/scrub-secret-emptymap"
+  local baseline="${scratch}/baseline"
+  local mapdir="${scratch}/maps"
+  local release_dir="${baseline}/cluster1/dep/rel/chart/templates"
+  mkdir -p "$release_dir" "${mapdir}/cluster1/dep"
+
+  cat > "$release_dir/secret.yaml" <<'YAML'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: leaky
+stringData:
+  token: s3cretvalue
+YAML
+  printf '{}' > "${mapdir}/cluster1/dep/rel.json"
+
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"scrubbed cluster1/dep/rel"* ]]
+
+  expected="REDACTED:sha256:$(printf '%s' 's3cretvalue' | sha256sum | head -c 12)"
+  run yq '.stringData.token' "$release_dir/secret.yaml"
+  [ "$output" = "$expected" ]
 }
 
 @test "scrubber: release with no matching map is reported 'no-map' and left untouched" {
@@ -183,13 +265,15 @@ YAML
      "${mapdir}/cluster1/deployment20/app-multiline-tplsops.json"
 
   # Synthetic "leaky baseline" manifest containing the cleartext secret
-  # shape an older ATLAS would have emitted.
+  # shape an older ATLAS would have emitted. (A ConfigMap, not a Secret:
+  # v1/Secret documents get sha256 markers from the structural pass; this
+  # test locks in the stage-1↔stage-2 map format for everything else.)
   cat > "$release_dir/secret.yaml" <<'YAML'
 apiVersion: v1
-kind: Secret
+kind: ConfigMap
 metadata:
   name: aws-creds
-stringData:
+data:
   accessKeyId: AKIAIOSFODNN7EXAMPLE
 YAML
 
@@ -197,6 +281,6 @@ YAML
   [ "$status" -eq 0 ]
   [[ "$output" == *"scrubbed cluster1/deployment20/app-multiline-tplsops"* ]]
 
-  run yq '.stringData.accessKeyId' "$release_dir/secret.yaml"
+  run yq '.data.accessKeyId' "$release_dir/secret.yaml"
   [ "$output" = "REDACTED" ]
 }
