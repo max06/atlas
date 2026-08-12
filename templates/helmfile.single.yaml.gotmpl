@@ -67,9 +67,15 @@ Output:
     "redact"      false
     "skipSecrets" true
 ) | fromYaml }}
+{{- /* NOTE on .Values: we avoid `set $ctx "Values" $ctx` (self-reference)
+     because a circular map causes stack overflow in Go's fmt.printValue
+     when any downstream code path (error formatting, debug logging) tries
+     to format the context. Instead, set .Release first, then snapshot
+     .Values via deepCopy — same pattern as helmfile.instance.yaml.gotmpl
+     and _values_loader.tpl. */ -}}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Values" $ctx }}
 {{- $_ := set $ctx "Release" $synthRelease }}
+{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 {{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
 
 {{- /* ====================== INSTANCE FAN-OUT ====================== */ -}}
