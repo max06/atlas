@@ -42,6 +42,10 @@ jobs:
     name: helm ${{ matrix.helm-version }} / helmfile ${{ matrix.helmfile-version }}
     env:
       SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
+      # helmfile's update notice phones home to github.com on every
+      # invocation — a transient TLS/network failure there must not be
+      # able to flake a test run.
+      HELMFILE_UPGRADE_NOTICE_DISABLED: "1"
     steps:
       - uses: actions/checkout@v7
 
