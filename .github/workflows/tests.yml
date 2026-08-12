@@ -9,7 +9,7 @@ name: Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -21,19 +21,31 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Version policy: latest patch release of every supported minor,
+      # plus the production baseline pins (helm v4.1.4 / helmfile v1.5.0,
+      # what the argo-cd-helmfile plugin image ships) and `latest`.
+      # helm v4.2.1/v4.2.2 are intentionally not listed: 4.2.1 shipped a
+      # WaitForDelete fix that 4.2.2 reverted; 4.2.3 == 4.2.2 + dep bump.
       matrix:
         helm-version:
           - v4.0.5
           - v4.1.4
+          - v4.2.3
           - latest
         helmfile-version:
           - v1.3.2
           - v1.4.5
-          - v1.5.0
+          - v1.5.5
+          - v1.6.0
+          - v1.7.3
           - latest
     name: helm ${{ matrix.helm-version }} / helmfile ${{ matrix.helmfile-version }}
     env:
       SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
+      # helmfile's update notice phones home to github.com on every
+      # invocation — a transient TLS/network failure there must not be
+      # able to flake a test run.
+      HELMFILE_UPGRADE_NOTICE_DISABLED: "1"
     steps:
       - uses: actions/checkout@v7
 
