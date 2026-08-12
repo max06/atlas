@@ -86,18 +86,42 @@
 {{- $clustersRaw := include "glob" $clustersPattern | fromJson }}
 
 {{- $clusters := dict }}
+{{- $leafNamesSeen := dict }}
 
 {{- range $clustersRaw }}
   {{- $clusterPath := . | trimPrefix (printf "%s/" $deploymentsDir) | dir }}
 
-  {{- if ne $clusterPath "" }}
+  {{- /* "" would be an empty match; "." is the global apps/ dir itself
+       (trimPrefix+dir collapse it to the current dir) — in a repo with
+       global deployments but no clusters yet it would otherwise register
+       as a pseudo-cluster and produce a nonsense render target. */ -}}
+  {{- if and (ne $clusterPath "") (ne $clusterPath ".") }}
     {{- $childPattern := printf "%s/%s/*/apps" $deploymentsDir $clusterPath }}
     {{- $hasChildren := include "glob" $childPattern | fromJson }}
     {{- $isLeaf := eq (len $hasChildren) 0 }}
+    {{- if $isLeaf }}
+      {{- /* Leaf-name bookkeeping runs BEFORE the stage-1 filter so a
+           filtered (per-app ArgoCD) render still validates the whole
+           repo — name collisions are a global problem and must not
+           hide behind atlas.filter.cluster. */ -}}
+      {{- $leafName := $clusterPath | base }}
+      {{- $seenAt := $leafNamesSeen | get $leafName list }}
+      {{- $_ := set $leafNamesSeen $leafName (append $seenAt $clusterPath) }}
+    {{- end }}
     {{- $clusterMatches := or (eq $filterCluster "") (eq $clusterPath $filterCluster) }}
     {{- if and $isLeaf $clusterMatches }}
       {{- $_ := set $clusters $clusterPath (list) }}
     {{- end }}
+  {{- end }}
+{{- end }}
+
+{{- /* Leaf cluster names must be unique across the repo: clusterName (the
+     leaf) is used to name downstream resources (ArgoCD Applications etc.),
+     so two groups containing same-named clusters silently produce
+     colliding names. Fail with the offending paths instead. */ -}}
+{{- range $leafName, $paths := $leafNamesSeen }}
+  {{- if gt (len $paths) 1 }}
+    {{- fail (printf "cluster discovery: duplicate leaf cluster name %q used by: %s — leaf names must be unique across the repo (clusterName names downstream resources)" $leafName (join ", " $paths)) }}
   {{- end }}
 {{- end }}
 
@@ -142,9 +166,14 @@
   {{- $_ := set $clusters $cluster $collectedDeployments -}}
 {{- end }}
 
+{{- /* Discovery dump: the full clusters/deployments dict as comment lines.
+     Real bytes in every rendered state file on large repos, so it is
+     opt-in for debugging only. */ -}}
+{{- if env "ATLAS_DEBUG_DISCOVERY" }}
 # All recognized deployments
 {{- range (toYaml $clusters | splitList "\n") }}
   # {{ . }}
+{{- end }}
 {{- end }}
 
 # OUTPUT
