@@ -100,10 +100,17 @@ while IFS= read -r templates_dir; do
     # current-side render — unchanged Secrets vanish from the diff, rotated
     # ones show a marker change. Running the map replay first would hash
     # already-redacted shapes instead and break that alignment.
+    #
+    # Idempotency guard: baselines rendered by a post-Secret-redaction
+    # ATLAS already carry REDACTED:sha256: markers — re-hashing those
+    # produces sha256("REDACTED:sha256:<hash>") and every Secret shows as
+    # changed (#70). Values already in marker form are left untouched, so
+    # replaying over an already-redacted tree is a no-op.
     secret_vals="$(yq eval -N '
       [ select(.kind == "Secret" and .apiVersion == "v1")
         | (.data[]?, .stringData[]?)
         | select(tag != "!!null")
+        | select((tostring | test("^REDACTED:sha256:")) | not)
         | tostring | @base64 ]
       | .[]' "$yf" 2>/dev/null | sort -u)" || secret_vals=""
     if [ -n "$secret_vals" ]; then
@@ -122,6 +129,7 @@ while IFS= read -r templates_dir; do
         (select(.kind == "Secret" and .apiVersion == "v1")
           | (.data[]?, .stringData[]?)
           | select(tag != "!!null")
+          | select((tostring | test("^REDACTED:sha256:")) | not)
         ) |= ($m[(. | tostring)] // "REDACTED:sha256:unmapped")
       ' "$yf" > "$tmp_out" 2>/dev/null; then
         mv "$tmp_out" "$yf"
