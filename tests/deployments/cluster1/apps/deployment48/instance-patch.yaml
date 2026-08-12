@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stage3-patches-release-chart1
+  namespace: test
+  annotations:
+    atlas-test/from-instance-file: "yes"

@@ -1,0 +1,10 @@
+# Fixture: instance-level strategicMergePatches FILE entry (issue #63).
+# The path is deployment-relative — applyListOverride anchors it to this
+# directory before appending, so the patch file lives next to this
+# deployment.yaml (unanchored it would resolve against helmfile's cache
+# dir and never apply in remote consumption).
+apps:
+  - template: app-patches
+    namespace: test
+    strategicMergePatches:
+      - ./instance-patch.yaml
