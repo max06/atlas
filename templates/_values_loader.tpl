@@ -287,6 +287,11 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
       {{- else }}
         {{- $merged = mergeOverwrite $merged (readFile $absPath | fromYaml) }}
       {{- end }}
+    {{- else }}
+      {{- /* Explicit per-release reference — a typo would render the release
+           without these values, indistinguishable from success. Hierarchy
+           files stay optional-by-convention; these do not. */ -}}
+      {{- fail (printf "values-loader: release %q: values file not found: %s" $.Release.Name $absPath) }}
     {{- end }}
   {{- else if kindIs "map" $entry }}
     {{- $merged = mergeOverwrite $merged $entry }}
@@ -316,6 +321,10 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
       {{- else }}
         {{- $merged = mergeOverwrite $merged (readFile $absPath | fromYaml) }}
       {{- end }}
+    {{- else }}
+      {{- /* Same contract as template-level values: explicit reference,
+           missing file must fail loudly. */ -}}
+      {{- fail (printf "values-loader: release %q: instance values file not found: %s" $.Release.Name $absPath) }}
     {{- end }}
   {{- else if kindIs "map" $entry }}
     {{- $merged = mergeOverwrite $merged $entry }}
@@ -340,6 +349,10 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
         {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
       {{- end }}
       {{- $merged = mergeOverwrite $merged $decrypted }}
+    {{- else }}
+      {{- /* A missing secrets file would deploy without credentials (or
+           with chart defaults) — the most dangerous silent skip. */ -}}
+      {{- fail (printf "values-loader: release %q: secrets file not found: %s" $.Release.Name $absPath) }}
     {{- end }}
   {{- end }}
 {{- end }}
@@ -355,6 +368,9 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
         {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
       {{- end }}
       {{- $merged = mergeOverwrite $merged $decrypted }}
+    {{- else }}
+      {{- /* Same contract as release.secrets: fail loudly. */ -}}
+      {{- fail (printf "values-loader: release %q: instance secrets file not found: %s" $.Release.Name $absPath) }}
     {{- end }}
   {{- end }}
 {{- end }}
