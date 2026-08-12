@@ -1,0 +1,5 @@
+apps:
+  - template: app-novals
+    namespace: test
+    secrets:
+      - ./no-such-secrets.sops.yaml

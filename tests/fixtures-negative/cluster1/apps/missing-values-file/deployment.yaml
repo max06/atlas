@@ -1,0 +1,5 @@
+apps:
+  - template: app-novals
+    namespace: test
+    values:
+      - ./no-such-values.yaml

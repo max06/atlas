@@ -1,0 +1,12 @@
+{{- /*
+  NEGATIVE fixture: strategicMergePatches referencing a file that does not
+  exist. ATLAS must fail the render loudly (issue #61) — silently dropping
+  the patch would deploy the release unpatched, indistinguishable from
+  success.
+*/ -}}
+releases:
+  - name: missing-patch-release
+    chart: ../../charts/chart1
+    namespace: test
+    strategicMergePatches:
+      - ./patches/does-not-exist.yaml

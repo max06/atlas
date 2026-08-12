@@ -29,6 +29,7 @@ Context: dict with "release", "instance", "templateDir", and "field".
       {{- $converted := include "convertPaths" (dict
         "targetPath" $templateDir
         "values"     (toJson $val)
+        "field"      $field
       ) | fromJson }}
       {{- $_ := set .release $field $converted }}
     {{- end }}
@@ -57,6 +58,11 @@ the template directory. Non-string entries (inline maps) are passed through.
       {{- if isFile (printf "%s/%s" $.targetPath $entry ) }}
         {{- $newValues = append $newValues (printf "%s/%s" $.targetPath $entry) }}
       {{- else }}
+        {{- /* A string entry is an explicit file reference by the template
+             author — a missing file means the release would deploy without
+             its patch/transformer, indistinguishable from success. Fail
+             loudly instead of silently dropping the entry. */ -}}
+        {{- fail (printf "%s: file not found: %s/%s" ($.field | default "convertPaths") $.targetPath $entry) }}
       {{- end }}
     {{- else }}
       {{- $newValues = append $newValues $entry  }}
