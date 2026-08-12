@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install SOPS
-        uses: nhedger/setup-sops@v2
+        uses: nhedger/setup-sops@v3
 
       - name: Install helm
         run: |
