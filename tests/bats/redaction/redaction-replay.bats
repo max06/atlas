@@ -284,3 +284,73 @@ YAML
   run yq '.data.accessKeyId' "$release_dir/secret.yaml"
   [ "$output" = "REDACTED" ]
 }
+
+# --- Idempotency: already-redacted baselines must pass through (issue #70) ---
+
+@test "scrubber: already-redacted Secret markers are left untouched" {
+  local scratch="${BATS_TEST_TMPDIR}/scrub-idempotent"
+  local baseline="${scratch}/baseline"
+  local mapdir="${scratch}/maps"
+  local release_dir="${baseline}/cluster1/dep/rel/chart/templates"
+  mkdir -p "$release_dir" "${mapdir}/cluster1/dep"
+
+  # Baseline as a post-Secret-redaction ATLAS renders it: markers already
+  # in place, plus one raw value (the class the structural pass is for).
+  cat > "$release_dir/secret.yaml" <<'YAML'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: already-done
+stringData:
+  fromSops: REDACTED:sha256:9fab3a1ed1c3
+  unmapped: REDACTED:sha256:unmapped
+  stillRaw: leaked-cleartext
+YAML
+
+  cat > "${mapdir}/cluster1/dep/rel.json" <<'JSON'
+{"never-matches":"REDACTED"}
+JSON
+
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
+  [ "$status" -eq 0 ]
+
+  # Existing markers unchanged — NOT re-hashed into sha256("REDACTED:...").
+  run yq '.stringData.fromSops' "$release_dir/secret.yaml"
+  [ "$output" = "REDACTED:sha256:9fab3a1ed1c3" ]
+  run yq '.stringData.unmapped' "$release_dir/secret.yaml"
+  [ "$output" = "REDACTED:sha256:unmapped" ]
+  # The raw value still gets its structural marker.
+  run yq '.stringData.stillRaw' "$release_dir/secret.yaml"
+  [[ "$output" == REDACTED:sha256:* ]]
+  [ "$output" != "REDACTED:sha256:unmapped" ]
+}
+
+@test "scrubber: running twice produces identical output (no-op replay)" {
+  local scratch="${BATS_TEST_TMPDIR}/scrub-twice"
+  local baseline="${scratch}/baseline"
+  local mapdir="${scratch}/maps"
+  local release_dir="${baseline}/cluster1/dep/rel/chart/templates"
+  mkdir -p "$release_dir" "${mapdir}/cluster1/dep"
+
+  cat > "$release_dir/secret.yaml" <<'YAML'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fresh
+stringData:
+  token: s3cretvalue
+YAML
+
+  cat > "${mapdir}/cluster1/dep/rel.json" <<'JSON'
+{"s3cretvalue":"REDACTED"}
+JSON
+
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
+  [ "$status" -eq 0 ]
+  local first_pass
+  first_pass="$(cat "$release_dir/secret.yaml")"
+
+  run bash "${SCRUB_SCRIPT}" "$baseline" "$mapdir"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$release_dir/secret.yaml")" = "$first_pass" ]
+}
