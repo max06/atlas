@@ -262,10 +262,11 @@ Purpose:
        resolves entries itself at release-evaluation time. */ -}}
   {{- range $listField := list "strategicMergePatches" "jsonPatches" "transformers" }}
     {{- include "atlas.applyListOverride" (dict
-        "release"     $release
-        "instance"    $thisInstance
-        "templateDir" $templateDir
-        "field"       $listField
+        "release"       $release
+        "instance"      $thisInstance
+        "templateDir"   $templateDir
+        "deploymentDir" (dir $.Values.atlas.deployment.deploymentPath)
+        "field"         $listField
     ) }}
   {{- end }}
 

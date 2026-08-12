@@ -1,0 +1,7 @@
+# NEGATIVE fixture (issue #63): instance-level strategicMergePatches file
+# that does not exist — must fail loudly, not deploy unpatched.
+apps:
+  - template: app-novals
+    namespace: test
+    strategicMergePatches:
+      - ./does-not-exist.yaml

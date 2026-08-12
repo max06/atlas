@@ -1,0 +1,5 @@
+# Fixture (issue #64): leaf cluster name "dupe" also exists in group-a —
+# discovery must fail listing both paths.
+apps:
+  - template: app-novals
+    namespace: test

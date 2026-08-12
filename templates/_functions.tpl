@@ -16,7 +16,10 @@ wholesale by helmfile.instance with the values-loader path, and the loader
 runs the progressive merge (SOPS decryption, .yaml.gotmpl rendering, and
 merging in declaration order) at release-evaluation time.
 
-Context: dict with "release", "instance", "templateDir", and "field".
+Context: dict with "release", "instance", "templateDir", "deploymentDir",
+and "field". Template-level entries anchor template-relative,
+instance-level entries anchor deployment-relative (mirroring how the
+respective values: files resolve).
 */ -}}
 {{- define "atlas.applyListOverride" -}}
   {{- $field       := .field }}
@@ -35,12 +38,21 @@ Context: dict with "release", "instance", "templateDir", and "field".
     {{- end }}
   {{- end }}
 
-  {{- /* 2. Append any instance-level overrides */ -}}
+  {{- /* 2. Append any instance-level overrides. String entries are file
+       references authored in deployment.yaml — anchor them relative to
+       the deployment dir (unanchored they would resolve against
+       helmfile's cache dir, effectively undefined in remote
+       consumption). Inline maps pass through untouched. */ -}}
   {{- if hasKey .instance $field }}
     {{- $toAdd := .instance | get $field list }}
     {{- if $toAdd }}
+      {{- $convertedAdd := include "convertPaths" (dict
+        "targetPath" .deploymentDir
+        "values"     (toJson $toAdd)
+        "field"      (printf "%s (instance-level)" $field)
+      ) | fromJson }}
       {{- $current := .release | get $field list }}
-      {{- $_ := set .release $field (concat $current $toAdd) }}
+      {{- $_ := set .release $field (concat $current $convertedAdd) }}
     {{- end }}
   {{- end }}
 {{- end }}

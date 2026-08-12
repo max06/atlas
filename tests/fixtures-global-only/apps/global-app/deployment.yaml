@@ -1,0 +1,7 @@
+# Fixture for the zero-cluster repo shape (issue #65): global deployments
+# exist but no cluster directories do. Discovery must not register the
+# global apps/ dir itself as pseudo-cluster "." — the correct result is
+# zero render targets, not a nonsense one.
+apps:
+  - template: app-novals
+    namespace: test
