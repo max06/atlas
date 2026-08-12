@@ -74,14 +74,14 @@ jobs:
       # replay step uses to scrub the (potentially leaky) baseline.
       - name: Checkout merge result
         id: merge-checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
         continue-on-error: true
 
       - name: Fallback to PR branch
         if: steps.merge-checkout.outcome == 'failure'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -98,7 +98,7 @@ jobs:
 
       # ── Render baseline (target branch) ────────────────────────────────────
       - name: Checkout target branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           clean: false
