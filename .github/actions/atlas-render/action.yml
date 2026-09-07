@@ -42,7 +42,9 @@ outputs:
   sidedump-dir:
     description: Path to captured redaction maps (only when enable-sidedump is true)
   list-json:
-    description: Path to helmfile list JSON output
+    description: >
+      Path to the discovery JSON (same shape as `helmfile list --output json`,
+      derived from `helmfile build` — see render.sh for why)
   filter-supported:
     description: Whether helmfile --selector filtering worked (true/false)
   workflow-pin:

@@ -60,14 +60,37 @@ if [ ! -f "$HELMFILE_PATH" ]; then
 fi
 
 # ── Discover deployments ────────────────────────────────────────────────────
-if ! DEPLOY_JSON=$(ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS list \
-  --output json 2>"$STDERR_LOG"); then
-  echo "::${LEVEL_TAG}::Failed to list deployments on ${SIDE_LABEL}"
+# Discovery deliberately avoids `helmfile list`. Since helmfile v1.2.0 its
+# ListReleases collects per-state results through a channel with a fixed buffer
+# of 100 that is drained only after every state was visited, so a tree with more
+# than 100 states carrying releases deadlocks: no output, no error, and the
+# process ignores SIGTERM (the CI job then runs into its timeout).
+# `helmfile build` streams one YAML document per state instead. Each document
+# carries the state's commonLabels and releases, which is all the pair derivation
+# below needs. The documents are converted into the JSON shape that
+# `helmfile list --output json` produces (name, namespace, labels as "k:v,k:v")
+# so downstream consumers keep working. The build output itself is never stored:
+# it embeds rendered values, which may contain decrypted secrets. yq only turns
+# the YAML document stream into one JSON array; the shaping happens in jq, whose
+# variable binding (`as $state`) is lexically scoped — yq's would produce a
+# cross product over all states.
+DISCOVERY_QUERY='map(
+  select(.commonLabels != null) | . as $state
+  | (.releases // [])[]
+  | {
+      name: .name,
+      namespace: (.namespace // ""),
+      labels: ($state.commonLabels | to_entries | sort_by(.key)
+               | map("\(.key):\(.value)") | join(","))
+    })'
+if ! helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
+  | yq eval-all -o=json '[.]' - \
+  | jq "$DISCOVERY_QUERY" > "$LIST_JSON"; then
+  echo "::${LEVEL_TAG}::Failed to discover deployments on ${SIDE_LABEL}"
   echo "status=error" >> "$GITHUB_OUTPUT"
   cat "$STDERR_LOG"
   exit 0
 fi
-echo "$DEPLOY_JSON" > "$LIST_JSON"
 echo "list_json=$LIST_JSON" >> "$GITHUB_OUTPUT"
 
 TOTAL=$(jq length "$LIST_JSON")
