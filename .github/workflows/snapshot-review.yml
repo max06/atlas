@@ -149,7 +149,7 @@ jobs:
       - name: Discovery map (merge result)
         id: map-pr
         if: steps.subset.outputs.mode != 'off'
-        uses: max06/atlas/.github/actions/atlas-render@main
+        uses: max06/atlas/.github/actions/atlas-render@review-subsetting
         with:
           mode: discover
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -158,7 +158,7 @@ jobs:
       - name: Discovery map (target branch)
         id: map-baseline
         if: steps.subset.outputs.mode != 'off' && steps.prep.outputs.base_tree != ''
-        uses: max06/atlas/.github/actions/atlas-render@main
+        uses: max06/atlas/.github/actions/atlas-render@review-subsetting
         with:
           mode: discover
           helmfile-path: ${{ steps.prep.outputs.base_tree }}/${{ inputs.helmfile-path }}
@@ -167,7 +167,7 @@ jobs:
       - name: Classify changed paths
         id: classify
         if: steps.subset.outputs.mode != 'off'
-        uses: max06/atlas/.github/actions/atlas-render@main
+        uses: max06/atlas/.github/actions/atlas-render@review-subsetting
         with:
           mode: classify
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -177,7 +177,7 @@ jobs:
           changes-file: ${{ steps.prep.outputs.changes_file }}
 
       - name: Render PR side
-        uses: max06/atlas/.github/actions/atlas-render@main
+        uses: max06/atlas/.github/actions/atlas-render@review-subsetting
         id: pr
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -196,7 +196,7 @@ jobs:
           clean: false
 
       - name: Render baseline
-        uses: max06/atlas/.github/actions/atlas-render@main
+        uses: max06/atlas/.github/actions/atlas-render@review-subsetting
         id: baseline
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
@@ -208,7 +208,7 @@ jobs:
 
       # ── Diff, replay, and comment ──────────────────────────────────────────
       - name: Diff and build comment
-        uses: max06/atlas/.github/actions/atlas-diff@main
+        uses: max06/atlas/.github/actions/atlas-diff@review-subsetting
         id: diff
         with:
           baseline-dir: ${{ steps.baseline.outputs.snapshot_dir }}
