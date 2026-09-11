@@ -14,6 +14,21 @@
 #   - Baseline render errors → warning (the PR may be the fix)
 #   - PR render errors → pipeline failure (can't verify the PR is safe)
 #
+# Changed-file render subsetting (input `render-subset`):
+#   The ATLAS directory convention is the dependency graph, so the PR's changed
+#   paths select the (cluster, deployment) pairs whose render can differ. Both
+#   revisions' discovery maps (ATLAS_DISCOVERY_MAP) plus `git diff --name-status`
+#   feed the classifier (atlas-render mode=classify); default-deny — anything
+#   outside deployments/templates, global values, or the entry helmfile means a
+#   full render. Modes:
+#     off    — classic full render, no classification
+#     shadow — full render, classification computed alongside and CHECKED: every
+#              changed release must lie inside the selection (default; the cutover
+#              gate — a violation surfaces as a warning in the comment)
+#     on     — render only the selection
+#   Escape hatch: a PR label (input `full-render-label`) forces `off`. A pinned
+#   ATLAS without map support falls back to a full render automatically.
+#
 # Usage in consumer repos:
 #
 #   # .github/workflows/atlas-review.yml
@@ -42,6 +57,14 @@ on:
         description: 'Diff engine: "dyff" (default) for YAML-aware semantic diffs, "classic" for standard unified diffs'
         type: string
         default: "dyff"
+      render-subset:
+        description: 'Changed-file render subsetting: "off", "shadow" (default — full render + coverage check of the classifier), or "on"'
+        type: string
+        default: "shadow"
+      full-render-label:
+        description: "PR label that forces a full render (subsetting off) for that PR"
+        type: string
+        default: "atlas-full-render"
     secrets:
       sops-age-key:
         required: false
@@ -69,6 +92,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # ── Subsetting mode ────────────────────────────────────────────────────
+      - name: Determine render-subsetting mode
+        id: subset
+        env:
+          REQUESTED: ${{ inputs.render-subset }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, inputs.full-render-label) }}
+        run: |
+          MODE="$REQUESTED"
+          case "$MODE" in off|shadow|on) ;; *) echo "::warning::render-subset='$MODE' unknown — using shadow"; MODE=shadow ;; esac
+          if [ "$LABELED" = "true" ]; then
+            echo "PR carries the full-render label — subsetting off for this run"
+            MODE=off
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+
       # ── Render merge result (PR side) ──────────────────────────────────────
       # Order matters: PR render runs first to capture sidedump maps that the
       # replay step uses to scrub the (potentially leaky) baseline.
@@ -85,6 +123,59 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # ── Classification inputs ──────────────────────────────────────────────
+      # The target branch tip is fetched into a worktree so its discovery map
+      # and the changed-file list are available BEFORE the first render, without
+      # a third checkout. Any failure here leaves the outputs empty, and the
+      # classifier then defaults to a full render.
+      - name: Prepare classification inputs
+        id: prep
+        if: steps.subset.outputs.mode != 'off'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if git fetch --depth=1 origin "refs/heads/${BASE_REF}" \
+             && git worktree add --detach "${RUNNER_TEMP}/base-tree" FETCH_HEAD \
+             && git diff --name-status --no-renames FETCH_HEAD HEAD > "${RUNNER_TEMP}/changes.txt"; then
+            echo "base_tree=${RUNNER_TEMP}/base-tree" >> "$GITHUB_OUTPUT"
+            echo "changes_file=${RUNNER_TEMP}/changes.txt" >> "$GITHUB_OUTPUT"
+            echo "Changed paths: $(wc -l < "${RUNNER_TEMP}/changes.txt")"
+          else
+            echo "::warning::Could not prepare classification inputs — full render"
+            echo "base_tree=" >> "$GITHUB_OUTPUT"
+            echo "changes_file=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Discovery map (merge result)
+        id: map-pr
+        if: steps.subset.outputs.mode != 'off'
+        uses: max06/atlas/.github/actions/atlas-render@main
+        with:
+          mode: discover
+          helmfile-path: ${{ inputs.helmfile-path }}
+          snapshot-label: pr
+
+      - name: Discovery map (target branch)
+        id: map-baseline
+        if: steps.subset.outputs.mode != 'off' && steps.prep.outputs.base_tree != ''
+        uses: max06/atlas/.github/actions/atlas-render@main
+        with:
+          mode: discover
+          helmfile-path: ${{ steps.prep.outputs.base_tree }}/${{ inputs.helmfile-path }}
+          snapshot-label: baseline
+
+      - name: Classify changed paths
+        id: classify
+        if: steps.subset.outputs.mode != 'off'
+        uses: max06/atlas/.github/actions/atlas-render@main
+        with:
+          mode: classify
+          helmfile-path: ${{ inputs.helmfile-path }}
+          snapshot-label: classify
+          map-baseline: ${{ steps.map-baseline.outputs.map_file }}
+          map-pr: ${{ steps.map-pr.outputs.map_file }}
+          changes-file: ${{ steps.prep.outputs.changes_file }}
+
       - name: Render PR side
         uses: max06/atlas/.github/actions/atlas-render@main
         id: pr
@@ -95,6 +186,7 @@ jobs:
           enable-sidedump: "true"
           blocking: "true"
           merge-fallback: ${{ steps.merge-checkout.outcome == 'failure' }}
+          pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_pr_file || '' }}
 
       # ── Render baseline (target branch) ────────────────────────────────────
       - name: Checkout target branch
@@ -112,6 +204,7 @@ jobs:
           sops-age-key: ${{ secrets.sops-age-key }}
           enable-sidedump: "false"
           blocking: "false"
+          pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_baseline_file || '' }}
 
       # ── Diff, replay, and comment ──────────────────────────────────────────
       - name: Diff and build comment
@@ -133,6 +226,9 @@ jobs:
           helmfile-path: ${{ inputs.helmfile-path }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           diff-mode: ${{ inputs.diff-mode }}
+          subset-mode: ${{ steps.subset.outputs.mode }}
+          classify-dir: ${{ steps.classify.outputs.classify_dir }}
+          render-mode: ${{ steps.pr.outputs.render_mode }}
 
       # ── Post results ───────────────────────────────────────────────────────
       - name: Post PR comment
