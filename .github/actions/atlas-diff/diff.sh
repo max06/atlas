@@ -32,6 +32,10 @@
 #   comment-diff.md     — per-release diff blocks for PR comment
 #   summary-diff.md     — per-release diff blocks for job summary (untruncated)
 #   affected.md         — bullet list of affected releases
+#   affected-paths.txt  — one "<cluster>/<deployment>/<release>" per affected
+#                         release (incl. suppressed), machine-readable; the
+#                         render-subsetting shadow check compares it against the
+#                         classifier's selection. Always written (may be empty).
 
 set -euo pipefail
 
@@ -44,6 +48,7 @@ REPLAY_STATUS_FILE="${REPLAY_STATUS_FILE:-${DIFF_TEMP}/replay-status.txt}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 
 # ── Empty check ─────────────────────────────────────────────────────────────
+: > "${DIFF_TEMP}/affected-paths.txt"
 HAS_BASELINE=false
 HAS_PR=false
 [ -d "$BASELINE_DIR" ] && [ -n "$(ls -A "$BASELINE_DIR" 2>/dev/null)" ] && HAS_BASELINE=true
@@ -186,6 +191,8 @@ diff_resource_full() {
 }
 
 # ── Walk releases and diff ──────────────────────────────────────────────────
+AFFECTED_PATHS_FILE="${DIFF_TEMP}/affected-paths.txt"
+: > "$AFFECTED_PATHS_FILE"
 HAS_CHANGES=false
 COMMENT_BODY=""
 SUMMARY_BODY=""
@@ -245,6 +252,7 @@ for RELEASE_PATH in $RELEASE_PATHS; do
     COMMENT_BODY="${COMMENT_BODY}${SUPPRESS_BLOCK}"
     SUMMARY_BODY="${SUMMARY_BODY}${SUPPRESS_BLOCK}"
     AFFECTED_DEPLOYMENTS="$(printf '%s\n%s' "$AFFECTED_DEPLOYMENTS" "- **${RELEASE_HEADER}** (${SUPPRESS_REASON})")"
+    echo "$RELEASE_PATH" >> "$AFFECTED_PATHS_FILE"
     continue
   fi
 
@@ -336,6 +344,7 @@ ${RES_DIFF}
   fi
 
   AFFECTED_DEPLOYMENTS="$(printf '%s\n%s' "$AFFECTED_DEPLOYMENTS" "- **${RELEASE_HEADER}**${TYPE_LABEL} (${RELEASE_RESOURCE_COUNT} resources)")"
+  echo "$RELEASE_PATH" >> "$AFFECTED_PATHS_FILE"
 
   # Outer release block wrapping the inner per-resource blocks
   DIFF_BLOCK="
