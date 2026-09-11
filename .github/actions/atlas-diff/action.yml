@@ -68,6 +68,20 @@ inputs:
       "classic" for standard unified diffs.
     required: false
     default: dyff
+  subset-mode:
+    description: >
+      Changed-file render subsetting mode the workflow ran with:
+      "off" (no classification), "shadow" (classified, but rendered in
+      full — the shadow check compares the two), "on" (rendered the subset).
+    required: false
+    default: "off"
+  classify-dir:
+    description: Directory written by the classify step (classify.json, classify-summary.md)
+    required: false
+  render-mode:
+    description: What the render steps actually did — full or subset
+    required: false
+    default: full
 
 outputs:
   body:
@@ -86,6 +100,10 @@ outputs:
     description: Number of releases scrubbed by replay
   no-map-count:
     description: Number of releases with no redaction map
+  shadow-result:
+    description: Shadow check — covered / uncovered / full / skipped
+  shadow-missed:
+    description: Shadow check — changed deployments outside the classifier's selection
 
 runs:
   using: docker
@@ -109,3 +127,6 @@ runs:
     INPUT_BASELINE_STDERR_LOG: ${{ inputs.baseline-stderr-log }}
     INPUT_PR_STDERR_LOG: ${{ inputs.pr-stderr-log }}
     INPUT_DIFF_MODE: ${{ inputs.diff-mode }}
+    INPUT_SUBSET_MODE: ${{ inputs.subset-mode }}
+    INPUT_CLASSIFY_DIR: ${{ inputs.classify-dir }}
+    INPUT_RENDER_MODE: ${{ inputs.render-mode }}

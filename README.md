@@ -407,15 +407,45 @@ The split lets each stage do exactly one thing and lets the loader run inside he
 
 ### Single-deployment rendering (fast path)
 
-When a consumer (e.g. an ArgoCD ApplicationSet) only needs one deployment rendered, pass a standard helmfile `--selector`:
+Two complementary filters exist:
+
+- **`--selector`** — the standard helmfile flag; matches release-level `commonLabels` (`cluster`, `clusterName`, `clusterGroup`, `deploymentName`, `template`, `instance`). It filters *after* every sub-helmfile is parsed, so it does not avoid SOPS decryption of unrelated deployments.
+- **`ATLAS_FILTER_CLUSTER` / `ATLAS_FILTER_DEPLOYMENT_NAME`** — stage-1 environment filters: non-matching clusters and deployments are dropped in the discovery stage, before any sub-helmfile is emitted. This is the cheap path for per-deployment renders (ArgoCD ApplicationSet pattern: one ATLAS render per Application). Both take comma-separated lists; both set means the cross product.
 
 ```bash
-helmfile template --selector cluster=staging/cluster-a,deploymentName=my-app
+# one deployment
+ATLAS_FILTER_CLUSTER=staging/cluster-a ATLAS_FILTER_DEPLOYMENT_NAME=my-app helmfile template
+
+# several deployments of one cluster in one invocation
+ATLAS_FILTER_CLUSTER=staging/cluster-a ATLAS_FILTER_DEPLOYMENT_NAME=my-app,other-app helmfile template
 ```
 
-Every sub-helmfile ATLAS emits carries a matching `selectors:` spec (`cluster=…,deploymentName=…,variant=…`) plus `selectorsInherited: true` at the top-level dispatcher. Non-matching sub-helmfiles are skipped before they're parsed and their SOPS values decrypted, so per-deployment renders only pay the cost of the single target.
+The filter matches the cluster *path* (`staging/cluster-a`), not the leaf name.
 
-Requires a helmfile version that includes [helmfile/helmfile#2545](https://github.com/helmfile/helmfile/pull/2545). Without it, the `selectors:` entries on each sub-helmfile override the CLI `--selector` and the filter has no effect.
+### Discovery map
+
+`ATLAS_DISCOVERY_MAP=1` makes ATLAS describe what it would render instead of rendering it: `helmfile build` then prints one release-less state whose values hold every `(cluster, deployment)` pair, its `deployment.yaml` path (repo-relative) and the app templates it instantiates.
+
+```bash
+ATLAS_DISCOVERY_MAP=1 helmfile build --allow-no-matching-release \
+  | yq eval-all -o=json '[.]' - \
+  | jq '[.[] | .renderedvalues.atlasDiscovery? // empty] | .[0]'
+```
+
+```json
+{
+  "version": 1,
+  "deploymentsRoot": "deployments",
+  "templatesRoot": "templates",
+  "pairs": [
+    { "cluster": "staging/cluster-a", "clusterName": "cluster-a", "clusterGroup": "staging",
+      "deploymentName": "my-app", "deploymentPath": "deployments/staging/apps/my-app/deployment.yaml",
+      "templates": ["my-app"] }
+  ]
+}
+```
+
+One discovery pass, no values loader, no SOPS — well under a second on a repo with a hundred deployments. The review workflow uses it to pick the render subset for a PR (see below); it is also the right input for anything else that needs the repo's dependency graph (e.g. ArgoCD `manifest-generate-paths` annotations).
 
 ---
 
@@ -462,6 +492,27 @@ ATLAS provides a reusable GitHub Actions workflow that compares rendered Kuberne
 3. Generates per-resource diffs grouped by release, posts a sticky PR comment
 
 This "merge-result" strategy ensures the diff answers *"what changes if I hit merge right now?"* — it accounts for changes that landed on main since the PR was created.
+
+### Changed-file render subsetting
+
+The directory convention *is* the dependency graph, so a PR's changed paths select the `(cluster, deployment)` pairs whose render can differ. The workflow emits the discovery map of both revisions, classifies `git diff --name-status` against them, and — depending on the `render-subset` input — either renders only the selection or renders everything while checking the classifier:
+
+| Changed path | Selected |
+|---|---|
+| `deployments/<prefix>/apps/<name>/**` | `<name>` on every cluster under `<prefix>` (global `apps/` → all clusters) |
+| `deployments/<prefix>/<file>` (cluster/group values) | every deployment of every cluster under `<prefix>` |
+| `deployments/<file>` (global values) | **full render** |
+| `templates/<t>/**` | every deployment instantiating template `<t>` |
+| entry helmfile, anything else (`charts/`, docs, …) | **full render** (default-deny) |
+| pairs present on one revision only (new cluster, removed deployment) | always selected |
+
+| `render-subset` | Behaviour |
+|---|---|
+| `shadow` (default) | Full render; the classification is computed alongside and every changed release must lie inside the selection. A violation is reported in the comment as a warning — this is the evidence for cutting over. |
+| `on` | Renders only the selection; the comment states the scope ("N of M deployments") and the rules applied. |
+| `off` | Classic full render. |
+
+The PR label named by `full-render-label` (default `atlas-full-render`) forces a full render for that PR. A consumer pinned to an ATLAS version without `ATLAS_DISCOVERY_MAP` falls back to a full render automatically.
 
 ### Error handling
 
