@@ -1,0 +1,8 @@
+# Discovery-map carrier state (see helmfile.all.yaml.gotmpl, DISCOVERY MAP MODE).
+#
+# Deliberately empty: it defines no releases and is never applied. Its only
+# job is to exist as the target of the single sub-helmfile entry that
+# helmfile.all emits in ATLAS_DISCOVERY_MAP mode, so the discovery result —
+# passed in as this state's values — shows up in `helmfile build` output as
+# this state's rendered values.
+releases: []
