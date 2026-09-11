@@ -62,10 +62,13 @@
 
 # OPTIONAL STAGE-1 FILTER
 # ATLAS can narrow the emitted helmfiles: list before helmfile processes it.
-# When atlas.filter.cluster and/or atlas.filter.deploymentName are set,
+# When atlas.filter.cluster and/or atlas.filter.deploymentName are set (each a
+# LIST of names, built from the comma-separated env vars by the entry point),
 # non-matching clusters are skipped here in STEP 1 (no FS scan, no deployment
 # collection, no sub-helmfile emission) and non-matching deployments are
-# skipped in OUTPUT.
+# skipped in OUTPUT. Both lists set = cross product: every listed deployment
+# on every listed cluster. An exact set of (cluster, deployment) pairs is one
+# invocation per cluster with that cluster's deployment list.
 #
 # Why this exists: helmfile's --selector only filters releases AFTER every
 # sub-helmfile is parsed and its values (including SOPS) are materialized,
@@ -74,8 +77,8 @@
 # atlas.filter.* for an up-front short-circuit. Absent both filters, behavior
 # matches pre-filter ATLAS exactly (full repo rendered).
 {{- $filter := $.Values.atlas | get "filter" dict }}
-{{- $filterCluster    := $filter | get "cluster"        "" }}
-{{- $filterDeployment := $filter | get "deploymentName" "" }}
+{{- $filterClusters    := $filter | get "cluster"        list }}
+{{- $filterDeployments := $filter | get "deploymentName" list }}
 
 # STEP 1: DISCOVER ALL CLUSTERS
 # Identify all directories with an "apps" subdirectory. Only leaf clusters
@@ -108,7 +111,7 @@
       {{- $seenAt := $leafNamesSeen | get $leafName list }}
       {{- $_ := set $leafNamesSeen $leafName (append $seenAt $clusterPath) }}
     {{- end }}
-    {{- $clusterMatches := or (eq $filterCluster "") (eq $clusterPath $filterCluster) }}
+    {{- $clusterMatches := or (not $filterClusters) (has $clusterPath $filterClusters) }}
     {{- if and $isLeaf $clusterMatches }}
       {{- $_ := set $clusters $clusterPath (list) }}
     {{- end }}
@@ -187,7 +190,73 @@
 # Leaving it in would leak the filter values through .Values.atlas into every
 # chart, silently corrupting renders whose output should be identical with or
 # without the filter applied.
-{{- $atlasForSub := omit $.Values.atlas "filter" }}
+{{- $atlasForSub := omit $.Values.atlas "filter" "discoveryMap" }}
+
+{{- /* ── DISCOVERY MAP MODE ──────────────────────────────────────────────
+     ATLAS_DISCOVERY_MAP=1 (entry point → atlas.discoveryMap) swaps the OUTPUT:
+     instead of one sub-helmfile per pair this state emits ONE sub-helmfile
+     entry — the static, release-less helmfile.discovery-map.yaml — and hands
+     it the discovery result as values, so
+
+         ATLAS_DISCOVERY_MAP=1 helmfile -f <consumer entry> build --allow-no-matching-release
+
+     prints the map (as that state's rendered values) after a single
+     discovery pass — no per-instance states, no values loader, no SOPS.
+     The review pipeline's changed-file subsetting reads it for both
+     revisions of a PR: which (cluster, deployment) pairs exist, where each
+     deployment.yaml lives, and which app templates it instantiates.
+     Emitting it here — from the same discovery that drives the real render,
+     through the same deployment.yaml parse (atlas.deployment.definition) —
+     keeps a single source of truth for "what does this repo render".
+
+     Why a sub-helmfile and not an `environments:` block: helmfile splits a
+     state file into parts on `---` BEFORE templating and requires
+     environments in a part of their own, so a conditional environments
+     block would need the discovery result in two parts (= two discovery
+     runs). Values passed to a sub-helmfile need neither.
+
+     Filters still apply (a filtered map is a filtered pair set); the map is
+     meant to be produced unfiltered. deploymentPath is repo-relative
+     (relative to atlas.cwd) so the consumer of the map can match it against
+     `git diff --name-status` output. */ -}}
+{{- if $.Values.atlas.discoveryMap }}
+  {{- $pairs := list }}
+  {{- range $cluster, $deployments := $clusters }}
+    {{- range $deployment := $deployments }}
+      {{- if or (not $filterDeployments) (has $deployment.deploymentName $filterDeployments) }}
+        {{- $pairAtlas := deepCopy $atlasForSub }}
+        {{- $pairDeployment := dict
+              "cluster"        $cluster
+              "clusterName"    ($cluster | base)
+              "deploymentName" $deployment.deploymentName
+              "deploymentPath" $deployment.path }}
+        {{- if contains "/" $cluster }}{{- $_ := set $pairDeployment "clusterGroup" ($cluster | dir) }}{{- end }}
+        {{- $_ := set $pairAtlas "deployment" $pairDeployment }}
+        {{- $definition := include "atlas.deployment.definition" (dict "Values" (dict "atlas" $pairAtlas)) | fromYaml }}
+        {{- $templates := list }}
+        {{- range $app := ($definition | get "apps" list) }}
+          {{- $templates = append $templates ($app | get "template" "") }}
+        {{- end }}
+        {{- $pair := omit $pairDeployment "deploymentPath" }}
+        {{- $_ := set $pair "deploymentPath" ($deployment.path | trimPrefix (printf "%s/" $repoRoot)) }}
+        {{- $_ := set $pair "templates" ($templates | uniq | sortAlpha) }}
+        {{- $pairs = append $pairs $pair }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+helmfiles:
+  - path: helmfile.discovery-map.yaml
+    values:
+      - atlasDiscovery:
+          version: 1
+          deploymentsRoot: {{ $.Values.atlas.deploymentDefinitions }}
+          templatesRoot: {{ $.Values.atlas.appTemplates }}
+          pairs:
+            {{- if $pairs }}
+            {{- $pairs | toYaml | nindent 12 }}
+            {{- else }} []
+            {{- end }}
+{{- else }}
 helmfiles:
 {{- range $cluster, $deployments := $clusters }}
   {{- $clusterName := $cluster | base }}
@@ -199,7 +268,7 @@ helmfiles:
     {{- $clusterGroup = $cluster | dir }}
   {{- end }}
   {{- range $deployment := $deployments }}
-    {{- if or (eq $filterDeployment "") (eq $deployment.deploymentName $filterDeployment) }}
+    {{- if or (not $filterDeployments) (has $deployment.deploymentName $filterDeployments) }}
   - path: helmfile.single.yaml.gotmpl
     values:
       - atlas:
@@ -214,4 +283,5 @@ helmfiles:
             deploymentPath: {{ $deployment.path }}
     {{- end }}
   {{- end }}
+{{- end }}
 {{- end }}
