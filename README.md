@@ -5,9 +5,10 @@
 Navigate your GitOps deployments across any cluster topology with hierarchical inheritance.
 
 **Disclaimer:**
-- **Not** created by AI!
-- Claude was used to create tests, to find issues and to add a huge amount of code comments.
-- Every bit created by AI is controlled and verified by a human.
+- Created and improved in cooperation with AI.
+- Claude was used to create tests, to find and fix issues, to add a huge amounts of code comments and to heavily improve the performance.
+- Every bit created by AI is reviewed and verified by a human.
+- This utility is highly opinionated, based on multiple actual real world use-cases. One of these collected over 120 deployments by now, with many more anticipated. 
 
 ---
 
