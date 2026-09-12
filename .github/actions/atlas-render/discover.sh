@@ -35,16 +35,37 @@ trap 'rm -f "$BUILD_ERR"' EXIT
 # `helmfile build` prints every state; the map is the rendered values of the
 # release-less carrier state. yq only turns the YAML stream into a JSON array,
 # the shaping happens in jq.
-if ! MAP_JSON="$(ATLAS_DISCOVERY_MAP=1 helmfile -f "$HELMFILE_PATH" build --allow-no-matching-release 2>"$BUILD_ERR" \
+build_map() {
+  ATLAS_DISCOVERY_MAP=1 helmfile -f "$HELMFILE_PATH" build --allow-no-matching-release 2>"$BUILD_ERR" \
     | yq eval-all -o=json '[.]' - \
-    | jq -c '[.[] | .renderedvalues.atlasDiscovery? // empty] | .[0] // empty')"; then
+    | jq -c '[.[] | .renderedvalues.atlasDiscovery? // empty] | .[0] // empty'
+}
+
+# ── Support probe ───────────────────────────────────────────────────────────
+# An ATLAS without map mode ignores ATLAS_DISCOVERY_MAP and runs its normal
+# discovery — on a large tree that is a full state build (slow, and it needs
+# the SOPS key this step deliberately does not have). Probe first with a
+# stage-1 cluster filter that matches nothing: a map-aware ATLAS still emits
+# the carrier state (with zero pairs), an older one emits no sub-helmfile at
+# all. Either way the probe is one cheap state parse.
+if ! PROBE_JSON="$(export ATLAS_FILTER_CLUSTER=__atlas_discovery_probe__; build_map)"; then
+  echo "discover: helmfile build failed (probe)" >&2
+  cat "$BUILD_ERR" >&2
+  exit 1
+fi
+if [ -z "$PROBE_JSON" ]; then
+  echo "discover: no discovery map in build output (ATLAS without ATLAS_DISCOVERY_MAP support)" >&2
+  exit 2
+fi
+
+# ── The map ─────────────────────────────────────────────────────────────────
+if ! MAP_JSON="$(build_map)"; then
   echo "discover: helmfile build failed" >&2
   cat "$BUILD_ERR" >&2
   exit 1
 fi
-
 if [ -z "$MAP_JSON" ]; then
-  echo "discover: no discovery map in build output (ATLAS without ATLAS_DISCOVERY_MAP support)" >&2
+  echo "discover: probe succeeded but the unfiltered build carried no map — treating as unsupported" >&2
   exit 2
 fi
 
