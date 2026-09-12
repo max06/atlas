@@ -9,8 +9,12 @@
      arbitrary .Values keys, so env vars are the only knobs that reach
      ATLAS reliably):
        ATLAS_REDACT_SECRETS           enable post-renderer redaction
-       ATLAS_FILTER_CLUSTER           stage-1 filter: render only this cluster
-       ATLAS_FILTER_DEPLOYMENT_NAME   stage-1 filter: render only this deployment */ -}}
+       ATLAS_FILTER_CLUSTER           stage-1 filter: render only these clusters
+       ATLAS_FILTER_DEPLOYMENT_NAME   stage-1 filter: render only these deployments
+                                      (both: comma-separated lists, whitespace around
+                                      items ignored; both set = cross product)
+       ATLAS_DISCOVERY_MAP            emit the discovery map instead of sub-helmfiles
+                                      (see templates/helmfile.all.yaml.gotmpl) */ -}}
 
 {{- /* ── Version gate ──────────────────────────────────────────────────
      ATLAS requires Helm >= 4.0.0 and Helmfile >= 1.0.0.
@@ -33,16 +37,31 @@
 
 {{- /* Stage-1 filter. Always overwritten from env vars — an atlas.filter key
      a caller tried to pass through .Values is discarded so there's exactly
-     one input path and no silent surprises. */ -}}
+     one input path and no silent surprises.
+
+     Each variable is a comma-separated list; items are trimmed and empty
+     items dropped, so "a, b," means the same as "a,b". The filter dict
+     carries LISTS (atlas.filter.cluster / atlas.filter.deploymentName), and
+     the discovery template matches with `has`. A variable that is set but
+     contains no items after cleanup is treated as unset. */ -}}
 {{- $_ := unset $atlas "filter" }}
-{{- $envCluster    := env "ATLAS_FILTER_CLUSTER"         | default "" }}
-{{- $envDeployment := env "ATLAS_FILTER_DEPLOYMENT_NAME" | default "" }}
-{{- if or $envCluster $envDeployment }}
+{{- $filterClusters    := list }}
+{{- $filterDeployments := list }}
+{{- range splitList "," (env "ATLAS_FILTER_CLUSTER" | default "") }}
+  {{- with trim . }}{{- $filterClusters = append $filterClusters . }}{{- end }}
+{{- end }}
+{{- range splitList "," (env "ATLAS_FILTER_DEPLOYMENT_NAME" | default "") }}
+  {{- with trim . }}{{- $filterDeployments = append $filterDeployments . }}{{- end }}
+{{- end }}
+{{- if or $filterClusters $filterDeployments }}
   {{- $filter := dict }}
-  {{- if $envCluster    }}{{- $_ := set $filter "cluster"        $envCluster    }}{{- end }}
-  {{- if $envDeployment }}{{- $_ := set $filter "deploymentName" $envDeployment }}{{- end }}
+  {{- if $filterClusters    }}{{- $_ := set $filter "cluster"        $filterClusters    }}{{- end }}
+  {{- if $filterDeployments }}{{- $_ := set $filter "deploymentName" $filterDeployments }}{{- end }}
   {{- $_ := set $atlas "filter" $filter }}
 {{- end }}
+
+{{- /* Discovery-map mode — env var is the source of truth, like the others. */ -}}
+{{- $_ := set $atlas "discoveryMap" (eq (env "ATLAS_DISCOVERY_MAP") "1") }}
 
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
