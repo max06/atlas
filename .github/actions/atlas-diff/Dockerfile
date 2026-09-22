@@ -25,6 +25,7 @@ COPY entrypoint.sh /entrypoint.sh
 COPY replay.sh /replay.sh
 COPY diff.sh /diff.sh
 COPY comment.sh /comment.sh
-RUN chmod +x /entrypoint.sh /replay.sh /diff.sh /comment.sh /scrub-baseline.sh
+COPY shadow-check.sh /shadow-check.sh
+RUN chmod +x /entrypoint.sh /replay.sh /diff.sh /comment.sh /scrub-baseline.sh /shadow-check.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

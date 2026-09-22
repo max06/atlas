@@ -83,3 +83,50 @@ the template directory. Non-string entries (inline maps) are passed through.
 
   {{ $newValues | toJson }}
 {{- end -}}
+
+{{- /*
+  atlas.deployment.definition — load and template one deployment.yaml.
+
+  Input: dict with "Values" = the atlas sub-context (.Values.atlas.deployment.*
+  set for the pair being resolved). Output: the templated deployment.yaml text;
+  callers pipe it through fromYaml.
+
+  Why templating: deployment.yaml authors may use `{{ .Values.<hierarchyKey> }}`
+  in apps[].name, apps[].template or any other field. Without the hierarchy in
+  scope those references resolve to empty strings, which silently malforms the
+  per-instance fan-out (instance.name="" leaks through to helmfile.instance and
+  breaks the auto-munge contract). The hierarchy (global → group → cluster →
+  deployment) is walked with skipSecrets: this pass never decrypts SOPS files,
+  so deployment.yaml structure must not derive from secrets — secrets resolve
+  only in the stage-3 values-loader.
+
+  .Release is a synthetic placeholder: helmfile's real .Release is only
+  available later inside the values-loader. Hierarchy gotmpl files that
+  reference .Release.* see empty values during this state-build pass; same
+  caveat as helmfile.instance.yaml.gotmpl.
+
+  Shared by helmfile.single.yaml.gotmpl (instance fan-out) and the discovery
+  map mode of helmfile.all.yaml.gotmpl (deployment → templates edges), so both
+  see the identical parsed definition.
+*/ -}}
+{{- define "atlas.deployment.definition" -}}
+{{- if not (isFile .Values.atlas.deployment.deploymentPath) }}
+  {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
+{{- end }}
+{{- $synthRelease := dict "Name" "" "Namespace" "" }}
+{{- $hierarchy := include "atlas.hierarchy.merged" (dict
+    "Values"      .Values
+    "Release"     $synthRelease
+    "redact"      false
+    "skipSecrets" true
+) | fromYaml }}
+{{- /* NOTE on .Values: avoid `set $ctx "Values" $ctx` (self-reference) — a
+     circular map overflows the stack in Go's fmt.printValue when any error
+     or debug path formats the context. Set .Release first, then snapshot
+     .Values via deepCopy — same pattern as helmfile.instance.yaml.gotmpl
+     and _values_loader.tpl. */ -}}
+{{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
+{{- $_ := set $ctx "Release" $synthRelease }}
+{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
+{{- tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx }}
+{{- end -}}
