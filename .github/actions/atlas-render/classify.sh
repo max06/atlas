@@ -9,7 +9,10 @@
 # Rules (per changed path; the selected sets are unioned, any "full" wins):
 #
 #   entry helmfile                          full   (the pipeline itself changed)
-#   <templates>/<t>/**                      pairs instantiating template <t>
+#   <templates>/<t>/**                      pairs instantiating template <t>; <t> is
+#                                           matched against the template names the maps
+#                                           know, so it may span directories
+#                                           (templates/group/app/x → template group/app)
 #   <templates>/<file>                      full   (a file directly in the templates root)
 #   <deployments>/<prefix>/apps/<name>/**   deployment <name> on every leaf cluster
 #                                           under <prefix> ("" = every cluster)
@@ -110,10 +113,18 @@ jq -n -c \
     ($changes | map(.path as $p |
       if $p == $entry then . + full("entry helmfile changed")
       elif ($p | under($T)) then
-        ($p | strip_root($T) | split("/")) as $segs |
+        ($p | strip_root($T)) as $rel | ($rel | split("/")) as $segs |
         if ($segs | length) < 2 then . + full("file directly in the templates root: " + $p)
-        else $segs[0] as $t |
-          . + select_pairs("template"; $t; [$all[] | select(.templates | index($t))])
+        else
+          # Template names may contain "/" (a template in a subdirectory), so the
+          # name is not the first path segment: every known template whose
+          # directory contains the path is selected. Nested templates
+          # (templates/a and templates/a/b) both match a file under a/b — wide on
+          # purpose. A path under no known template selects nothing, shown
+          # under the first segment so the comment still names a directory.
+          ([$all[].templates[]] | unique | map(select(. as $t | $rel | startswith($t + "/")))) as $hits |
+          (if ($hits | length) > 0 then $hits else [$segs[0]] end) as $names |
+          . + select_pairs("template"; ($names | join(", ")); [$all[] | select(.templates | any(. as $t | $names | index($t)))])
         end
       elif ($p | under($D)) then
         ($p | strip_root($D) | split("/")) as $segs |

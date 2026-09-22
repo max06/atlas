@@ -132,6 +132,28 @@ assert_pairs_baseline() { [ "$(sorted_file "$OUT/pairs-baseline.txt")" = "$1" ];
   [ ! -s "$OUT/pairs-pr.txt" ]
 }
 
+@test "classify: template in a subdirectory is matched by its full path, not the first segment" {
+  # templates/<dir>/<app>/ referenced as `template: <dir>/<app>` — the template
+  # name spans directories, so the classifier must not stop at `<dir>`.
+  mkdir -p "$FIXTURE_REPO/templates/nested/app-nested" "$FIXTURE_REPO/deployments/cluster1/apps/deployment-nested"
+  printf 'releases:\n  - name: app-nested\n    chart: ../../../charts/chart1\n    namespace: test\n' \
+    > "$FIXTURE_REPO/templates/nested/app-nested/helmfile.yaml.gotmpl"
+  printf 'apps:\n  - template: nested/app-nested\n' > "$FIXTURE_REPO/deployments/cluster1/apps/deployment-nested/deployment.yaml"
+  fixture_commit "$FIXTURE_REPO" "add nested template + deployment"
+  local mid; mid="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+
+  echo "# touched" >> "$FIXTURE_REPO/templates/nested/app-nested/helmfile.yaml.gotmpl"
+  fixture_commit "$FIXTURE_REPO" "edit nested template"
+  classify_revisions "$FIXTURE_REPO" "$mid" HEAD "$OUT"
+  assert_subset
+  # the map names the template by its full path...
+  [ "$(jq -r '.pairs[] | select(.deploymentName=="deployment-nested") | .templates[]' "$OUT/map-pr.json")" = "nested/app-nested" ]
+  # ...and the classifier selects by that name, not by "nested"
+  assert_pairs_pr "cluster1|deployment-nested"
+  assert_pairs_baseline "cluster1|deployment-nested"
+  [ "$(jq -r '.changes[0].detail' "$OUT/classify.json")" = "nested/app-nested" ]
+}
+
 @test "classify: file directly in the templates root forces a full render" {
   echo "notes" > "$FIXTURE_REPO/templates/README.md"
   run_scenario "templates root file"
