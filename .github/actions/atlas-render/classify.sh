@@ -13,16 +13,31 @@
 #                                           matched against the template names the maps
 #                                           know, so it may span directories
 #                                           (templates/group/app/x → template group/app)
+#   <templates>/<ns>/<file>                 a file under no known template (e.g. a shared
+#                                           helper next to namespaced templates
+#                                           templates/<ns>/<app>/) selects every template
+#                                           under its nearest ancestor directory that holds
+#                                           known templates; under none → nothing renders it
 #   <templates>/<file>                      full   (a file directly in the templates root)
 #   <deployments>/<prefix>/apps/<name>/**   deployment <name> on every leaf cluster
 #                                           under <prefix> ("" = every cluster)
 #   <deployments>/<prefix>/<file>           every deployment of every cluster under
 #                                           <prefix>; <prefix> == "" → full (global values)
-#   anything else                           full   (default-deny: charts/, docs, unknown)
+#   <chart>/**                              pairs whose releases render from local chart
+#                                           <chart> (map v2 "charts": repo-relative chart
+#                                           dirs incl. file:// subcharts, from rendering the
+#                                           app templates) — needs v2 maps on both sides
+#   anything else                           full   (default-deny: unused charts, docs, unknown)
 #
 # plus: pairs that exist on only ONE revision are always selected — a new
 # cluster directory picks up group/global deployments no changed path points
 # at, and a removed deployment must show as removed.
+#
+# Template convention assumed by the template rules: a template reads files
+# from its own directory and from ancestor directories inside the templates
+# root (a shared helper next to its siblings). A template reading another
+# template's directory, or a file outside the templates root, is outside the
+# convention and invisible here.
 #
 # Selection is deliberately over-approximate (a group-level change selects a
 # cluster that shadows it with its own copy). Over-selection costs render
@@ -102,10 +117,16 @@ jq -n -c \
     # roots as configured by the consumer, normalized ("./deployments/" → "deployments")
     def norm_root: ltrimstr("./") | sub("/+$"; "");
     ($pr.deploymentsRoot | norm_root) as $D | ($pr.templatesRoot | norm_root) as $T |
-    # union of both maps, templates merged per pair
+    # union of both maps, templates + charts merged per pair
     ([$base.pairs[], $pr.pairs[]] | group_by(key)
       | map({cluster: .[0].cluster, deploymentName: .[0].deploymentName,
-             templates: ([.[].templates[]] | unique)})) as $all |
+             templates: ([.[].templates[]] | unique),
+             charts: ([.[] | (.charts // [])[]] | unique)})) as $all |
+    # chart edges exist only in v2 maps; with a v1 map on either side a chart
+    # path cannot be attributed and falls through to default-deny
+    ((($base.version // 1) >= 2) and (($pr.version // 1) >= 2)) as $chartAware |
+    ([$all[].charts[]] | unique) as $knownCharts |
+    ([$all[].templates[]] | unique) as $knownTemplates |
     ($base.pairs | map(key)) as $baseKeys | ($pr.pairs | map(key)) as $prKeys |
     (($baseKeys - $prKeys) + ($prKeys - $baseKeys)) as $onlyOneSide |
 
@@ -122,9 +143,25 @@ jq -n -c \
           # (templates/a and templates/a/b) both match a file under a/b — wide on
           # purpose. A path under no known template selects nothing, shown
           # under the first segment so the comment still names a directory.
-          ([$all[].templates[]] | unique | map(select(. as $t | $rel | startswith($t + "/")))) as $hits |
-          (if ($hits | length) > 0 then $hits else [$segs[0]] end) as $names |
-          . + select_pairs("template"; ($names | join(", ")); [$all[] | select(.templates | any(. as $t | $names | index($t)))])
+          ($knownTemplates | map(select(. as $t | $rel | startswith($t + "/")))) as $hits |
+          if ($hits | length) > 0 then
+            . + select_pairs("template"; ($hits | join(", ")); [$all[] | select(.templates | any(. as $t | $hits | index($t)))])
+          else
+            # A file inside no known template: a shared helper of namespaced
+            # templates (templates/<ns>/_glue.yaml.gotmpl read by every
+            # templates/<ns>/<app>), or a file of a template nothing uses. The
+            # nearest ancestor directory holding known templates is the
+            # namespace that may read it — select all of them. No such
+            # ancestor → nothing renders it (unused template).
+            ([range(($segs | length) - 1; 0; -1) as $n | $segs[:$n] | join("/")]
+              | map(. as $ns | {ns: $ns, templates: ($knownTemplates | map(select(startswith($ns + "/"))))})
+              | map(select(.templates | length > 0)) | first) as $namespace |
+            if $namespace != null then
+              . + select_pairs("template-namespace"; ($namespace.ns + "/*"); [$all[] | select(.templates | any(. as $t | $namespace.templates | index($t)))])
+            else
+              . + select_pairs("template"; $segs[0]; [])
+            end
+          end
         end
       elif ($p | under($D)) then
         ($p | strip_root($D) | split("/")) as $segs |
@@ -144,6 +181,9 @@ jq -n -c \
           else . + select_pairs("hierarchy"; $prefix; [$all[] | select(.cluster | cluster_under($prefix))])
           end
         end
+      elif $chartAware and ($knownCharts | any(. as $c | $p | startswith($c + "/"))) then
+        ($knownCharts | map(select(. as $c | $p | startswith($c + "/")))) as $chartHits |
+        . + select_pairs("chart"; ($chartHits | join(", ")); [$all[] | select(.charts | any(. as $c | $chartHits | index($c)))])
       else . + full("outside deployments/templates: " + $p)
       end)) as $classified |
 

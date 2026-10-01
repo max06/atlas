@@ -42,7 +42,7 @@ setup_file() {
 }
 
 @test "discovery map: header fields (version, roots as configured)" {
-  [ "$(jq -r .version "$MAP_JSON")" = "1" ]
+  [ "$(jq -r .version "$MAP_JSON")" = "2" ]
   [ "$(jq -r .deploymentsRoot "$MAP_JSON")" = "deployments" ]
   [ "$(jq -r .templatesRoot "$MAP_JSON")" = "templates" ]
 }
@@ -60,6 +60,39 @@ setup_file() {
   [ "$(jq -c '.pairs[] | select(.cluster=="cluster1" and .deploymentName=="deployment7") | .templates' "$MAP_JSON")" = '["app-novals-b","app1"]' ]
   # deployment9 instantiates the same template twice (named instances) → one edge
   [ "$(jq -c '.pairs[] | select(.cluster=="cluster1" and .deploymentName=="deployment9") | .templates' "$MAP_JSON")" = '["app-named"]' ]
+}
+
+# real_charts prints "cluster|deploymentName<TAB>chart dir" per local-chart
+# release from the real state build (chart paths are absolute there, rewritten
+# template-relative by helmfile.instance), repo-relative and normalized.
+real_charts() {
+  local root
+  root="$(_repo_root)"
+  helmfile -f "$root/tests/helmfile.yaml.gotmpl" build --embed-values=false 2>/dev/null \
+    | yq eval-all -o=json '[.]' - \
+    | jq -r --arg root "$root/tests/" '.[] | select(.releases != null) | .releases[]
+        | select((.chart | type) == "string" and (.chart | startswith($root)))
+        | .labels.cluster + "|" + .labels.deploymentName + "\t" + (.chart | ltrimstr($root))' \
+    | while IFS=$'\t' read -r pair chart; do
+        printf '%s\t%s\n' "$pair" "$(realpath -m --relative-to="$root/tests" "$root/tests/$chart")"
+      done | sort -u
+}
+
+@test "discovery map: local charts per pair are exactly the chart dirs the real build renders from" {
+  local from_map from_real
+  from_map="$(jq -r '.pairs[] | (.cluster + "|" + .deploymentName) as $k | .charts[] | $k + "\t" + .' "$MAP_JSON" | sort -u)"
+  from_real="$(real_charts)"
+  [ -n "$from_real" ]
+  [ "$from_map" = "$from_real" ]
+}
+
+@test "discovery map: chart edges cover template-relative, absolute and template-local charts" {
+  # app-novals-b: chart ../../charts/chart1 (template-relative)
+  [ "$(jq -c '.pairs[] | select(.cluster=="cluster1" and .deploymentName=="deployment7") | .charts' "$MAP_JSON")" = '["charts/chart1"]' ]
+  # app1: chart "{{ .Values.atlas.cwd }}/charts/chart1" (absolute)
+  [ "$(jq -c '.pairs[] | select(.cluster=="cluster1" and .deploymentName=="deployment1") | .charts' "$MAP_JSON")" = '["charts/chart1"]' ]
+  # app-localchart: chart ./manifests (inside the template)
+  [ "$(jq -r '.pairs[] | select(.templates | index("app-localchart")) | .charts[]' "$MAP_JSON" | sort -u)" = "templates/app-localchart/manifests" ]
 }
 
 @test "discovery map: every pair has at least one non-empty template" {
