@@ -40,43 +40,11 @@ Output:
 {{ "" }}
 
 {{- /* ====================== LOAD DEPLOYMENT DEFINITION ====================== */ -}}
-{{- if not (isFile .Values.atlas.deployment.deploymentPath) }}
-  {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
-{{- end }}
-
-{{- /* Walk the hierarchy (global → group → cluster → deployment) once at
-     fan-out time so deployment.yaml authors can use
-     `{{ .Values.<hierarchyKey> }}` in apps[].name (or .template, or any
-     other field that helmfile.single iterates here). Without this,
-     template references resolve to empty strings, which silently
-     malforms the per-instance fan-out (instance.name="" leaks through
-     to helmfile.instance and breaks the auto-munge contract).
-
-     .Release is a synthetic placeholder — helmfile's real .Release is
-     only available later inside the values-loader. Hierarchy gotmpl
-     files that reference .Release.* see empty values during this
-     state-build pass; same caveat as helmfile.instance.yaml.gotmpl.
-
-     skipSecrets: this pass never decrypts SOPS files — deployment.yaml
-     structure (apps[].name etc.) must not derive from secrets. Secrets
-     resolve only in the stage-3 values-loader. */ -}}
-{{- $synthRelease := dict "Name" "" "Namespace" "" }}
-{{- $hierarchy := include "atlas.hierarchy.merged" (dict
-    "Values"      .Values
-    "Release"     $synthRelease
-    "redact"      false
-    "skipSecrets" true
-) | fromYaml }}
-{{- /* NOTE on .Values: we avoid `set $ctx "Values" $ctx` (self-reference)
-     because a circular map causes stack overflow in Go's fmt.printValue
-     when any downstream code path (error formatting, debug logging) tries
-     to format the context. Instead, set .Release first, then snapshot
-     .Values via deepCopy — same pattern as helmfile.instance.yaml.gotmpl
-     and _values_loader.tpl. */ -}}
-{{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Release" $synthRelease }}
-{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
-{{- $deploymentDefinition := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
+{{- /* Hierarchy-templated deployment.yaml (see atlas.deployment.definition in
+     _functions.tpl for the why: `{{ .Values.<hierarchyKey> }}` in apps[]
+     fields, skipSecrets, synthetic .Release). The discovery map mode of
+     helmfile.all.yaml.gotmpl uses the same helper, so both see one parse. */ -}}
+{{- $deploymentDefinition := include "atlas.deployment.definition" (dict "Values" .Values) | fromYaml }}
 
 {{- /* ====================== INSTANCE FAN-OUT ====================== */ -}}
 helmfiles:

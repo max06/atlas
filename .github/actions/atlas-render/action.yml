@@ -2,9 +2,18 @@ name: ATLAS Render
 description: >
   Render one side (PR or baseline) of an ATLAS helmfile deployment.
   Discovers deployments, runs helmfile template, and captures redaction
-  maps for the replay pipeline.
+  maps for the replay pipeline. Two auxiliary modes support changed-file
+  render subsetting: "discover" emits the tree's discovery map, "classify"
+  turns two maps plus the changed-file list into the render subset.
 
 inputs:
+  mode:
+    description: >
+      "render" (default) renders the checked-out tree; "discover" writes the
+      ATLAS discovery map of the checked-out tree; "classify" selects the
+      render subset from two maps and a changed-file list.
+    required: false
+    default: render
   helmfile-path:
     description: Path to the helmfile entry point
     required: false
@@ -12,6 +21,21 @@ inputs:
   snapshot-label:
     description: Label for this render side ("pr" or "baseline")
     required: true
+  pairs-file:
+    description: >
+      Render mode only. Path to a "<cluster>|<deployment>" line file (from
+      classify). When set, only those pairs are rendered (subset mode);
+      when empty, the full tree is discovered and rendered.
+    required: false
+  map-baseline:
+    description: Classify mode — discovery map JSON of the target branch
+    required: false
+  map-pr:
+    description: Classify mode — discovery map JSON of the merge result
+    required: false
+  changes-file:
+    description: Classify mode — `git diff --name-status --no-renames` output
+    required: false
   sops-age-key:
     description: >
       SOPS Age private key for decrypting *.values.sops.yaml files.
@@ -51,6 +75,28 @@ outputs:
     description: Detected ATLAS workflow ref from the caller's workflow file
   merge-fallback:
     description: Set to true when the merge ref was unavailable
+  render-mode:
+    description: Render mode — full or subset
+  rendered-pairs:
+    description: Number of (cluster, deployment) pairs rendered
+  map-file:
+    description: Discover mode — path of the written discovery map (empty when unsupported)
+  map-status:
+    description: Discover mode — ok / unsupported (ATLAS without map mode) / error
+  mode:
+    description: Classify mode — subset / full
+  reason:
+    description: Classify mode — why a full render was chosen
+  classify-dir:
+    description: Classify mode — directory with classify.json, pairs files and the comment fragment
+  pairs-baseline-file:
+    description: Classify mode — pairs file for the baseline render
+  pairs-pr-file:
+    description: Classify mode — pairs file for the PR render
+  selected-pr:
+    description: Classify mode — selected pairs on the PR side
+  total-pr:
+    description: Classify mode — total pairs on the PR side
 
 runs:
   using: docker
@@ -62,3 +108,8 @@ runs:
     INPUT_ENABLE_SIDEDUMP: ${{ inputs.enable-sidedump }}
     INPUT_BLOCKING: ${{ inputs.blocking }}
     INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
+    INPUT_MODE: ${{ inputs.mode }}
+    INPUT_PAIRS_FILE: ${{ inputs.pairs-file }}
+    INPUT_MAP_BASELINE: ${{ inputs.map-baseline }}
+    INPUT_MAP_PR: ${{ inputs.map-pr }}
+    INPUT_CHANGES_FILE: ${{ inputs.changes-file }}

@@ -11,6 +11,13 @@
 #   RENDER_TEMP          — temporary directory for output (defaults to $RUNNER_TEMP)
 #
 # Optional environment:
+#   RENDER_PAIRS_FILE      — subset mode: render ONLY the "<cluster>|<deployment>"
+#                            pairs listed in this file (one per line, produced by
+#                            classify.sh for this side). Discovery and the selector
+#                            probe are skipped — the pairs came from this side's own
+#                            discovery map, so they are known to exist. An empty
+#                            file renders nothing and reports success (this side has
+#                            no selected pair — e.g. every selected deployment is new).
 #   ATLAS_SIDEDUMP_MAP_DIR — if set, enables redaction-map side-dump (PR render only)
 #   MERGE_FALLBACK         — "true" if merge ref was unavailable (PR render only)
 #   SOPS_AGE_KEY           — SOPS age private key (written to a temp file)
@@ -26,6 +33,8 @@
 #   sidedump_dir      — path to captured redaction maps (only when sidedump enabled)
 #   list_json         — path to helmfile list JSON output
 #   filter_supported  — true/false (whether --selector filtering worked)
+#   render_mode       — full / subset
+#   rendered_pairs    — number of (cluster, deployment) pairs this run rendered
 #   merge_fallback    — true (only when MERGE_FALLBACK was set)
 #   workflow_pin      — detected ATLAS workflow ref from caller's workflow file
 
@@ -59,6 +68,64 @@ if [ ! -f "$HELMFILE_PATH" ]; then
   exit 0
 fi
 
+# ── Subset mode ─────────────────────────────────────────────────────────────
+# The pairs file replaces discovery: the review classifier derived it from this
+# side's discovery map (ATLAS_DISCOVERY_MAP, see discover.sh + classify.sh).
+# One invocation per cluster carries that cluster's deployment list through the
+# multi-value stage-1 filter, so an exact pair set renders without per-pair
+# state builds. Both --selector and ATLAS_FILTER_* are passed, as in the full
+# path: the env filter avoids parsing unrelated states, the selector is the
+# release-level safety net.
+if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
+  [ -f "$RENDER_PAIRS_FILE" ] || { echo "::error::RENDER_PAIRS_FILE not found: $RENDER_PAIRS_FILE"; echo "status=error" >> "$GITHUB_OUTPUT"; exit 0; }
+  mkdir -p "$SNAPSHOT_DIR"
+  : > "$STDERR_LOG"
+  PAIR_COUNT=$(grep -c '|' "$RENDER_PAIRS_FILE" || true)
+  echo "Subset render: ${PAIR_COUNT} pair(s) from $RENDER_PAIRS_FILE"
+  RENDER_STATUS=0
+  if [ "$PAIR_COUNT" -gt 0 ]; then
+    export ATLAS_REDACT_SECRETS=true
+    export HELMFILE_PATH STDERR_LOG LEVEL_TAG SIDE_LABEL
+    export RENDER_DIR="$SNAPSHOT_DIR"
+    export OUTPUT_DIR_TEMPLATE='{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}'
+    render_cluster() {
+      # $1 = "<cluster>|<d1>,<d2>,..."
+      local cluster="${1%%|*}" deployments="${1#*|}" selectors=()
+      local d
+      IFS=',' read -r -a ds <<< "$deployments"
+      for d in "${ds[@]}"; do selectors+=(--selector "cluster=$cluster,deploymentName=$d"); done
+      ATLAS_FILTER_CLUSTER="$cluster" \
+      ATLAS_FILTER_DEPLOYMENT_NAME="$deployments" \
+      helmfile -f "$HELMFILE_PATH" \
+        template "${selectors[@]}" \
+        --skip-schema-validation \
+        --output-dir "$RENDER_DIR" \
+        --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
+        2>>"$STDERR_LOG" \
+      || { echo "::${LEVEL_TAG}::Render failed for $cluster [$deployments] on ${SIDE_LABEL}" >&2; return 1; }
+    }
+    export -f render_cluster
+    # group "<cluster>|<deployment>" lines into one "<cluster>|<d1>,<d2>" per cluster
+    sort -u "$RENDER_PAIRS_FILE" | grep '|' \
+      | awk -F'|' '{ if ($1 in acc) acc[$1]=acc[$1] "," $2; else acc[$1]=$2 } END { for (c in acc) print c "|" acc[c] }' \
+      | xargs -r -P4 -I{} bash -c 'render_cluster "{}"' || RENDER_STATUS=$?
+  fi
+  if [ $RENDER_STATUS -ne 0 ]; then
+    echo "::${LEVEL_TAG}::${SIDE_LABEL^} subset render failed"
+    echo "status=error" >> "$GITHUB_OUTPUT"
+  else
+    echo "status=success" >> "$GITHUB_OUTPUT"
+  fi
+  {
+    echo "snapshot_dir=$SNAPSHOT_DIR"
+    echo "filter_supported=true"
+    echo "render_mode=subset"
+    echo "rendered_pairs=$PAIR_COUNT"
+  } >> "$GITHUB_OUTPUT"
+  SKIP_FULL_RENDER=true
+fi
+
+if [ "${SKIP_FULL_RENDER:-}" != "true" ]; then
 # ── Discover deployments ────────────────────────────────────────────────────
 # Discovery deliberately avoids `helmfile list`. Since helmfile v1.2.0 its
 # ListReleases collects per-state results through a channel with a fixed buffer
@@ -171,6 +238,9 @@ else
   echo "status=success" >> "$GITHUB_OUTPUT"
 fi
 echo "snapshot_dir=$SNAPSHOT_DIR" >> "$GITHUB_OUTPUT"
+echo "render_mode=full" >> "$GITHUB_OUTPUT"
+echo "rendered_pairs=$(printf '%s\n' "${PAIRS:-}" | grep -c '|' || true)" >> "$GITHUB_OUTPUT"
+fi  # SKIP_FULL_RENDER
 
 # ── Sidedump directory ──────────────────────────────────────────────────────
 # Backfill empty map files for releases that had no secrets. The redaction

@@ -43,7 +43,7 @@ helmfile build -f tests/helmfile.yaml.gotmpl \
 
 ### Entry Points
 
-- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` (three subdirectories: `values/`, `redaction/`, `integration/`) and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments.
+- **helmfile.yaml.gotmpl** — Single entry point for both consumer GitOps repositories and ATLAS's own tests; includes `templates/helmfile.all.yaml.gotmpl` and passes `atlas` config values from the caller. Tests dogfood this entry point by passing state-values that point at `tests/templates/` and `tests/deployments/` (mocked fixtures) plus a testable Helm chart at `tests/charts/chart1/` that serializes all resolved values into a ConfigMap for inspection. Assertions live in `tests/bats/` (`values/`, `redaction/`, `integration/` run in the helm/helmfile matrix; `workflow/` tests the review-pipeline scripts and needs dyff + git) and run against the rendered ConfigMaps to validate inheritance, SOPS decryption, named instances, and multi-template deployments. `tests/bats/helpers/subset.bash` builds a standalone git fixture repo for the two-revision (classify / equivalence) tests.
 
 ### Core Template Pipeline
 
@@ -96,6 +96,8 @@ Templates receive an `atlas` values object containing:
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
 - `redactSecrets` — Enable type-aware secret redaction
+- `discoveryMap` — Emit the discovery map instead of sub-helmfiles (`ATLAS_DISCOVERY_MAP=1`; see `templates/helmfile.all.yaml.gotmpl`)
+- `filter.cluster` / `filter.deploymentName` — Stage-1 filter lists (from the comma-separated `ATLAS_FILTER_*` env vars; never passed through `.Values`)
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
 
 ## Development Rules

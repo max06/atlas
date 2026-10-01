@@ -32,6 +32,9 @@
 #
 # Output files:
 #   $COMMENT_TEMP/summary.md — job summary markdown
+#
+# Optional input files (inlined when present):
+#   $COMMENT_TEMP/scope.md   — render-scope fragment (changed-file subsetting)
 
 set -euo pipefail
 
@@ -185,6 +188,15 @@ if [ "$BASELINE_STATUS" = "error" ]; then
 elif [ "$BASELINE_STATUS" = "missing" ]; then
   emit '> [!NOTE]'
   emit "> Helmfile not found on the target branch (\`${HELMFILE_PATH}\`). This is expected if the PR introduces ATLAS to the repository."
+  emit ''
+fi
+
+# ── Render scope (changed-file subsetting) ──
+# Written by the action entrypoint from the classifier's output; absent when
+# subsetting is off. States what was rendered (or, in shadow mode, what the
+# classifier would have rendered) so a surprising "no changes" is auditable.
+if [ -f "${COMMENT_TEMP}/scope.md" ]; then
+  BODY="${BODY}$(cat "${COMMENT_TEMP}/scope.md")"$'\n'
   emit ''
 fi
 
