@@ -126,6 +126,18 @@ run_equivalence() {
   grep -q '^cluster1/deployment7/app-novals-b$' "$OUT/diff-full/affected-paths.txt"
 }
 
+@test "equivalence: local chart change (selected through the map's chart edges)" {
+  # chart1 is the shared local chart of most fixture templates; a new data key
+  # changes every ConfigMap it renders, while pairs on template-local charts
+  # (app-localchart & co.) stay untouched and unselected.
+  printf '  equivalenceMarker: chart-changed\n' >> "$FIXTURE_REPO/charts/chart1/templates/configmap.yaml"
+  run_equivalence "chart1 template"
+  grep -q 'status=changes' "$OUT/diff-full/output"
+  grep -q '^cluster1/deployment1/app1$' "$OUT/diff-full/affected-paths.txt"
+  [ "$(jq -r '.changes[0].rule' "$OUT/classify/classify.json")" = "chart" ]
+  ! grep -q '|deployment14$' "$OUT/classify/pairs-pr.txt"
+}
+
 @test "equivalence: group values change" {
   echo "equivalenceMarker: group-changed" >> "$FIXTURE_REPO/deployments/group1/group.values.yaml"
   run_equivalence "group1 values"

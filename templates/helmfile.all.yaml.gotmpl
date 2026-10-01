@@ -201,10 +201,13 @@
          ATLAS_DISCOVERY_MAP=1 helmfile -f <consumer entry> build --allow-no-matching-release
 
      prints the map (as that state's rendered values) after a single
-     discovery pass — no per-instance states, no values loader, no SOPS.
+     discovery pass — no per-instance states, no values loader, no SOPS
+     (app templates are rendered once per instance for their chart: paths,
+     with the same SOPS-free state-build context the real render uses).
      The review pipeline's changed-file subsetting reads it for both
      revisions of a PR: which (cluster, deployment) pairs exist, where each
-     deployment.yaml lives, and which app templates it instantiates.
+     deployment.yaml lives, which app templates it instantiates, and which
+     local chart directories its releases render from.
      Emitting it here — from the same discovery that drives the real render,
      through the same deployment.yaml parse (atlas.deployment.definition) —
      keeps a single source of truth for "what does this repo render".
@@ -232,14 +235,59 @@
               "deploymentPath" $deployment.path }}
         {{- if contains "/" $cluster }}{{- $_ := set $pairDeployment "clusterGroup" ($cluster | dir) }}{{- end }}
         {{- $_ := set $pairAtlas "deployment" $pairDeployment }}
-        {{- $definition := include "atlas.deployment.definition" (dict "Values" (dict "atlas" $pairAtlas)) | fromYaml }}
+        {{- $pairValues := dict "atlas" $pairAtlas }}
+        {{- /* One state-build hierarchy walk per pair (skipSecrets — the
+             discovery step has no SOPS key), shared by the deployment.yaml
+             parse and the template renders below. */ -}}
+        {{- $pairHierarchy := include "atlas.hierarchy.merged" (dict
+              "Values"      $pairValues
+              "Release"     (dict "Name" "" "Namespace" "")
+              "redact"      false
+              "skipSecrets" true
+        ) | fromYaml }}
+        {{- $definition := include "atlas.deployment.definition" (dict "Values" $pairValues "hierarchy" $pairHierarchy) | fromYaml }}
         {{- $templates := list }}
+        {{- $charts := list }}
         {{- range $app := ($definition | get "apps" list) }}
-          {{- $templates = append $templates ($app | get "template" "") }}
+          {{- $templateName := $app | get "template" "" }}
+          {{- $templates = append $templates $templateName }}
+          {{- /* Local charts: render the app template for this instance
+               exactly as helmfile.instance does (atlas.instance.template)
+               and keep every release chart that is a directory inside the
+               repository — template-relative (./, ../) or absolute — plus
+               the file:// subcharts it pulls in. Remote charts (repo/name,
+               oci://) cannot change in a PR and are skipped. A missing
+               template is left to the real render to report. */ -}}
+          {{- $templateDir := printf "%s/%s/%s" $repoRoot $.Values.atlas.appTemplates $templateName }}
+          {{- if and $templateName (isFile (printf "%s/helmfile.yaml.gotmpl" $templateDir)) }}
+            {{- $instanceAtlas := deepCopy $pairAtlas }}
+            {{- $_ := set $instanceAtlas "instance" (dict "template" $templateName "name" ($app | get "name" $templateName)) }}
+            {{- $rendered := include "atlas.instance.template" (dict
+                  "Values"    (dict "atlas" $instanceAtlas)
+                  "hierarchy" $pairHierarchy
+                  "instance"  $app
+            ) | fromYaml }}
+            {{- range $release := ($rendered | get "releases" list) }}
+              {{- $chart := $release | get "chart" "" | toString }}
+              {{- if or (hasPrefix "./" $chart) (hasPrefix "../" $chart) }}
+                {{- $chart = printf "%s/%s" $templateDir $chart }}
+              {{- end }}
+              {{- if isAbs $chart }}
+                {{- $chart = clean $chart }}
+                {{- if and (hasPrefix (printf "%s/" $repoRoot) $chart) (isDir $chart) }}
+                  {{- $chartDirs := prepend ((include "atlas.chart.localDependencies" (dict "dir" $chart "seen" (list $chart)) | fromJson).v) $chart }}
+                  {{- range $chartDir := $chartDirs }}
+                    {{- $charts = append $charts ($chartDir | trimPrefix (printf "%s/" $repoRoot)) }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
         {{- end }}
         {{- $pair := omit $pairDeployment "deploymentPath" }}
         {{- $_ := set $pair "deploymentPath" ($deployment.path | trimPrefix (printf "%s/" $repoRoot)) }}
         {{- $_ := set $pair "templates" ($templates | uniq | sortAlpha) }}
+        {{- $_ := set $pair "charts" ($charts | uniq | sortAlpha) }}
         {{- $pairs = append $pairs $pair }}
       {{- end }}
     {{- end }}
@@ -248,7 +296,9 @@ helmfiles:
   - path: helmfile.discovery-map.yaml
     values:
       - atlasDiscovery:
-          version: 1
+          {{- /* version 2: pairs carry "charts" (repo-relative local
+               chart directories their releases render from). */}}
+          version: 2
           deploymentsRoot: {{ $.Values.atlas.deploymentDefinitions }}
           templatesRoot: {{ $.Values.atlas.appTemplates }}
           pairs:

@@ -222,10 +222,95 @@ assert_pairs_baseline() { [ "$(sorted_file "$OUT/pairs-baseline.txt")" = "$1" ];
   assert_full "outside deployments/templates"
 }
 
-@test "classify: chart change forces a full render (charts are outside the convention)" {
+# ── local charts ──────────────────────────────────────────────────────────
+
+@test "classify: local chart edit selects every pair whose releases render from it" {
   echo "# touched" >> "$FIXTURE_REPO/charts/chart1/Chart.yaml"
   run_scenario "chart edit"
+  assert_subset
+  local expected
+  expected="$(pairs_where "$OUT/map-pr.json" '.charts | index("charts/chart1")')"
+  [ "$(wc -l <<< "$expected")" -ge 10 ]
+  assert_pairs_pr "$expected"
+  assert_pairs_baseline "$expected"
+  [ "$(jq -r '.changes[0].rule' "$OUT/classify.json")" = "chart" ]
+  # a pair rendering only from a template-local chart is not selected
+  ! grep -q "|deployment14$" "$OUT/pairs-pr.txt"
+}
+
+@test "classify: file:// subchart edit selects the pairs of the chart that pulls it in" {
+  mkdir -p "$FIXTURE_REPO/charts/sub"
+  printf 'apiVersion: v2\nname: sub\nversion: 0.1.0\n' > "$FIXTURE_REPO/charts/sub/Chart.yaml"
+  printf 'dependencies:\n  - name: sub\n    version: 0.1.0\n    repository: file://../sub\n' >> "$FIXTURE_REPO/charts/chart1/Chart.yaml"
+  fixture_commit "$FIXTURE_REPO" "chart1 depends on charts/sub"
+  local mid; mid="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+
+  echo "# touched" >> "$FIXTURE_REPO/charts/sub/Chart.yaml"
+  fixture_commit "$FIXTURE_REPO" "edit subchart"
+  classify_revisions "$FIXTURE_REPO" "$mid" HEAD "$OUT"
+  assert_subset
+  [ "$(jq -r '.changes[0].detail' "$OUT/classify.json")" = "charts/sub" ]
+  assert_pairs_pr "$(pairs_where "$OUT/map-pr.json" '.charts | index("charts/chart1")')"
+}
+
+@test "classify: edit of a chart no pair renders from forces a full render" {
+  mkdir -p "$FIXTURE_REPO/charts/unused"
+  printf 'apiVersion: v2\nname: unused\nversion: 0.1.0\n' > "$FIXTURE_REPO/charts/unused/Chart.yaml"
+  run_scenario "unused chart"
   assert_full "outside deployments/templates"
+}
+
+@test "classify: chart edit with a v1 map on one side forces a full render" {
+  echo "# touched" >> "$FIXTURE_REPO/charts/chart1/Chart.yaml"
+  run_scenario "chart edit, old atlas baseline"
+  jq '.version = 1 | .pairs |= map(del(.charts))' "$OUT/map-baseline.json" > "$OUT/v1-map.json"
+  CLASSIFY_OUT="$OUT/again" MAP_BASELINE="$OUT/v1-map.json" MAP_PR="$OUT/map-pr.json" \
+    HELMFILE_PATH=helmfile.yaml.gotmpl CHANGES_FILE="$OUT/changes.txt" GITHUB_OUTPUT="$OUT/again-output" \
+    "$(_actions_dir)/atlas-render/classify.sh" >/dev/null
+  [ "$(grep '^mode=' "$OUT/again-output" | cut -d= -f2)" = "full" ]
+}
+
+# ── namespaced templates ──────────────────────────────────────────────────
+
+# add_namespace — templates/ns/{a,b} both render through a shared helper
+# templates/ns/_shared.yaml.gotmpl (readFile via atlas.cwd, the pattern of
+# one-line templates gluing a common body), plus one deployment each.
+add_namespace() {
+  local app
+  mkdir -p "$FIXTURE_REPO/templates/ns"
+  printf 'releases:\n  - name: {{ .Values.atlas.instance.template | base }}\n    chart: ../../../charts/chart1\n    namespace: test\n' \
+    > "$FIXTURE_REPO/templates/ns/_shared.yaml.gotmpl"
+  for app in a b; do
+    mkdir -p "$FIXTURE_REPO/templates/ns/$app" "$FIXTURE_REPO/deployments/cluster1/apps/ns-$app"
+    printf '{{ tpl (readFile (printf "%%s/templates/ns/_shared.yaml.gotmpl" .Values.atlas.cwd)) . }}\n' \
+      > "$FIXTURE_REPO/templates/ns/$app/helmfile.yaml.gotmpl"
+    printf 'apps:\n  - template: ns/%s\n' "$app" > "$FIXTURE_REPO/deployments/cluster1/apps/ns-$app/deployment.yaml"
+  done
+  fixture_commit "$FIXTURE_REPO" "add namespaced templates ns/a, ns/b"
+}
+
+@test "classify: shared file next to namespaced templates selects every template of the namespace" {
+  add_namespace
+  local mid; mid="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+  echo "# touched" >> "$FIXTURE_REPO/templates/ns/_shared.yaml.gotmpl"
+  fixture_commit "$FIXTURE_REPO" "edit shared helper"
+  classify_revisions "$FIXTURE_REPO" "$mid" HEAD "$OUT"
+  assert_subset
+  assert_pairs_pr "$(printf 'cluster1|ns-a\ncluster1|ns-b')"
+  [ "$(jq -r '.changes[0].rule' "$OUT/classify.json")" = "template-namespace" ]
+  [ "$(jq -r '.changes[0].detail' "$OUT/classify.json")" = "ns/*" ]
+  # the shared helper's chart reference reaches the map through the render
+  [ "$(jq -c '.pairs[] | select(.deploymentName=="ns-a") | .charts' "$OUT/map-pr.json")" = '["charts/chart1"]' ]
+}
+
+@test "classify: a file of one namespaced template selects only that template" {
+  add_namespace
+  local mid; mid="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+  echo "# touched" >> "$FIXTURE_REPO/templates/ns/a/helmfile.yaml.gotmpl"
+  fixture_commit "$FIXTURE_REPO" "edit ns/a"
+  classify_revisions "$FIXTURE_REPO" "$mid" HEAD "$OUT"
+  assert_subset
+  assert_pairs_pr "cluster1|ns-a"
 }
 
 @test "classify: entry helmfile change forces a full render" {

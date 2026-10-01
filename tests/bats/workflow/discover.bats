@@ -19,7 +19,7 @@ setup() {
   run bash -c "cd '$root/tests' && HELMFILE_PATH=helmfile.yaml.gotmpl bash '$(_discover)' '$TEST_TEMP/map.json'"
   [ "$status" -eq 0 ]
   [ -s "$TEST_TEMP/map.json" ]
-  [ "$(jq -r .version "$TEST_TEMP/map.json")" = "1" ]
+  [ "$(jq -r .version "$TEST_TEMP/map.json")" = "2" ]
   [ "$(jq '.pairs | length' "$TEST_TEMP/map.json")" -gt 10 ]
   [[ "$output" == *"pairs →"* ]]
 }

@@ -434,18 +434,20 @@ ATLAS_DISCOVERY_MAP=1 helmfile build --allow-no-matching-release \
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "deploymentsRoot": "deployments",
   "templatesRoot": "templates",
   "pairs": [
     { "cluster": "staging/cluster-a", "clusterName": "cluster-a", "clusterGroup": "staging",
       "deploymentName": "my-app", "deploymentPath": "deployments/staging/apps/my-app/deployment.yaml",
-      "templates": ["my-app"] }
+      "templates": ["my-app"], "charts": ["charts/my-chart"] }
   ]
 }
 ```
 
-One discovery pass, no values loader, no SOPS — well under a second on a repo with a hundred deployments. The review workflow uses it to pick the render subset for a PR (see below); it is also the right input for anything else that needs the repo's dependency graph (e.g. ArgoCD `manifest-generate-paths` annotations).
+`charts` lists the local chart directories (repo-relative) the pair's releases render from, including `file://` subcharts; ATLAS renders each app template once with the SOPS-free state-build context to read its `chart:` fields. Remote charts are not listed.
+
+One discovery pass, no values loader, no SOPS — a few seconds on a repo with a few hundred deployments. The review workflow uses it to pick the render subset for a PR (see below); it is also the right input for anything else that needs the repo's dependency graph (e.g. ArgoCD `manifest-generate-paths` annotations).
 
 ---
 
@@ -502,9 +504,13 @@ The directory convention *is* the dependency graph, so a PR's changed paths sele
 | `deployments/<prefix>/apps/<name>/**` | `<name>` on every cluster under `<prefix>` (global `apps/` → all clusters) |
 | `deployments/<prefix>/<file>` (cluster/group values) | every deployment of every cluster under `<prefix>` |
 | `deployments/<file>` (global values) | **full render** |
-| `templates/<t>/**` | every deployment instantiating template `<t>` |
-| entry helmfile, anything else (`charts/`, docs, …) | **full render** (default-deny) |
+| `templates/<t>/**` | every deployment instantiating template `<t>` (`<t>` may span directories, e.g. `templates/apps/my-app`) |
+| `templates/<ns>/<file>` outside any used template (a helper shared by `templates/<ns>/*`) | every deployment instantiating a template under `<ns>/` |
+| `<chart>/**` for a local chart in the discovery map | every deployment whose releases render from `<chart>` |
+| entry helmfile, anything else (unused charts, docs, …) | **full render** (default-deny) |
 | pairs present on one revision only (new cluster, removed deployment) | always selected |
+
+Templates are expected to read files only from their own directory and from ancestor directories inside the templates root. A template that reads another template's directory, or a file outside the templates root, is invisible to the classifier.
 
 | `render-subset` | Behaviour |
 |---|---|
