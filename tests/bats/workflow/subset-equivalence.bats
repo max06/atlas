@@ -59,6 +59,10 @@ checkout_into() {
 }
 
 setup_file() {
+  # Every test checks out and commits in the ONE shared fixture repo, so tests
+  # of this file must not run concurrently (`bats --jobs N` parallelizes within
+  # files by default → index.lock races and foreign working-tree changes).
+  export BATS_NO_PARALLELIZE_WITHIN_FILE=true
   _setup_helm_plugins
   export FIXTURE_REPO="${BATS_FILE_TMPDIR}/consumer"
   make_fixture_repo "$FIXTURE_REPO"
