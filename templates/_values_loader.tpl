@@ -34,6 +34,9 @@ Inputs (passed via `include "atlas.values.merged" $args`):
             renders accordingly — transitive taint without explicit
             tracking.
 
+  .Values.atlas.skipSecrets (from ATLAS_SKIP_SECRETS) turns decryption off
+  for every SOPS file this resolver reads — see atlas.sops.load.
+
 Returns: merged YAML as a string. Callers either emit directly (loader)
 or `fromYaml` it (stage-3).
 
@@ -47,6 +50,45 @@ Resolution order (later overrides earlier — chart < template < instance < hier
   - instance apps[].values: list (in declaration order)
   - hierarchy (FINAL PASS — wins precedence over template + instance)
 */ -}}
+
+{{- /*
+============================================================
+atlas.sops.load — Load one *.sops.yaml file and emit its value tree as YAML.
+============================================================
+
+Every SOPS file the pipeline reads goes through this template: hierarchy
+files, .sops.yaml entries in template/instance values: lists, and the
+files in release.secrets / apps[].secrets. One place decides whether a
+file is decrypted, redacted, or left encrypted.
+
+Inputs (passed via `include "atlas.sops.load" $args`):
+  .path         Absolute path of the SOPS file. Callers check existence
+                first (hierarchy files are optional, explicit references
+                fail loudly) — this template assumes the file is there.
+  .redact       Bool. When true, the decrypted tree is rewritten through
+                atlas.redact.value before it is returned.
+  .skipSecrets  Bool. When true, the file is parsed WITHOUT decryption:
+                the keys (plaintext in SOPS YAML) come back with their
+                encrypted ENC[...] values, and the sops metadata block is
+                dropped. No SOPS/gpg/age call happens. .redact is ignored
+                in this mode — there is no plaintext secret to redact.
+
+Returns: the value tree as a YAML string. Callers `fromYaml` it.
+*/ -}}
+{{- define "atlas.sops.load" -}}
+{{- $loaded := dict }}
+{{- if .skipSecrets }}
+  {{- /* The sops metadata block is not a value — drop it. */ -}}
+  {{- $loaded = omit (readFile .path | fromYaml) "sops" }}
+{{- else }}
+  {{- $sopsRef := printf "ref+sops://%s?format=yaml" .path }}
+  {{- $loaded = fetchSecretValue $sopsRef | fromYaml }}
+  {{- if .redact }}
+    {{- $loaded = index (include "atlas.redact.value" $loaded | fromJson) "v" }}
+  {{- end }}
+{{- end }}
+{{ $loaded | toYaml }}
+{{- end -}}
 
 {{- /*
 ============================================================
@@ -92,7 +134,9 @@ Inputs (passed via `include "atlas.hierarchy.merged" $args`):
             would leak into it visibly); real values reach releases
             exclusively through the stage-3 values-loader. Without this
             flag every render decrypts every deployment's hierarchy
-            (~N_deployments × sops per render).
+            (~N_deployments × sops per render). State-build callers always
+            pass true; atlas.values.merged passes atlas.skipSecrets
+            (ATLAS_SKIP_SECRETS).
 
 Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 */ -}}
@@ -128,22 +172,15 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
   {{- if isFile $f }}
     {{- if hasSuffix ".sops.yaml" $f }}
       {{- /* tolerant lookup — callers that don't pass skipSecrets
-           (stage-3 loader) must not trip missingkey=error. */ -}}
-      {{- if sprigGet $ "skipSecrets" }}
-        {{- /* No decryption: merge the plaintext key structure with its
-             ENC[...] values so later hierarchy gotmpls can still reference
-             the keys. The sops metadata block is not a value — drop it. */ -}}
-        {{- $parsed := readFile $f | fromYaml }}
-        {{- $encrypted := omit $parsed "sops" }}
-        {{- $hierarchy = mergeOverwrite $hierarchy $encrypted }}
-      {{- else }}
-        {{- $sopsRef := printf "ref+sops://%s?format=yaml" $f }}
-        {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-        {{- if $.redact }}
-          {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-        {{- end }}
-        {{- $hierarchy = mergeOverwrite $hierarchy $decrypted }}
-      {{- end }}
+           must not trip missingkey=error. With skipSecrets the keys still
+           merge (with their ENC[...] values), so later hierarchy gotmpls
+           can still reference them. */ -}}
+      {{- $sopsValues := include "atlas.sops.load" (dict
+          "path"        $f
+          "redact"      $.redact
+          "skipSecrets" (sprigGet $ "skipSecrets")
+      ) | fromYaml }}
+      {{- $hierarchy = mergeOverwrite $hierarchy $sopsValues }}
     {{- else if hasSuffix ".yaml.gotmpl" $f }}
       {{- /* Tpl ctx: atlas object (from .Values) + the accumulating
            hierarchy. Authors of hierarchy gotmpl files routinely reference
@@ -174,11 +211,20 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 {{- $deploymentPath := .Values.atlas.deployment.deploymentPath }}
 {{- $deploymentDir := dir $deploymentPath }}
 
+{{- /* ====================== SECRETS MODE ====================== */ -}}
+{{- /* atlas.skipSecrets mirrors ATLAS_SKIP_SECRETS (set in the top-level
+     helmfile.yaml.gotmpl). When on, no SOPS file is decrypted anywhere in
+     this resolver — every *.sops.yaml contributes its ENC[...] values
+     instead (see atlas.sops.load). Tolerant lookup: the key is absent when
+     the state was built without the top-level entry point. */ -}}
+{{- $skipSecrets := .Values | get "atlas.skipSecrets" false }}
+
 {{- /* ====================== HIERARCHY VALUES (FIRST PASS — BASELINE) ====================== */ -}}
 {{- $hierarchy := include "atlas.hierarchy.merged" (dict
-    "Values"  .Values
-    "Release" .Release
-    "redact"  $.redact
+    "Values"      .Values
+    "Release"     .Release
+    "redact"      $.redact
+    "skipSecrets" $skipSecrets
 ) | fromYaml }}
 
 {{- /* ====================== TPL CONTEXT (atlas + hierarchy + Release) ====================== */ -}}
@@ -263,12 +309,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
     {{- $absPath := printf "%s/%s" $templateDir $entry }}
     {{- if isFile $absPath }}
       {{- if hasSuffix ".sops.yaml" $entry }}
-        {{- $sopsRef := printf "ref+sops://%s?format=yaml" $absPath }}
-        {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-        {{- if $.redact }}
-          {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-        {{- end }}
-        {{- $merged = mergeOverwrite $merged $decrypted }}
+        {{- $sopsValues := include "atlas.sops.load" (dict "path" $absPath "redact" $.redact "skipSecrets" $skipSecrets) | fromYaml }}
+        {{- $merged = mergeOverwrite $merged $sopsValues }}
       {{- else if hasSuffix ".yaml.gotmpl" $entry }}
         {{- $progCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) }}
         {{- $progCtx = mergeOverwrite $progCtx (deepCopy $merged) }}
@@ -306,12 +348,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
     {{- $absPath := printf "%s/%s" $deploymentDir $entry }}
     {{- if isFile $absPath }}
       {{- if hasSuffix ".sops.yaml" $entry }}
-        {{- $sopsRef := printf "ref+sops://%s?format=yaml" $absPath }}
-        {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-        {{- if $.redact }}
-          {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-        {{- end }}
-        {{- $merged = mergeOverwrite $merged $decrypted }}
+        {{- $sopsValues := include "atlas.sops.load" (dict "path" $absPath "redact" $.redact "skipSecrets" $skipSecrets) | fromYaml }}
+        {{- $merged = mergeOverwrite $merged $sopsValues }}
       {{- else if hasSuffix ".yaml.gotmpl" $entry }}
         {{- $progCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) }}
         {{- $progCtx = mergeOverwrite $progCtx (deepCopy $merged) }}
@@ -343,12 +381,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
   {{- if kindIs "string" $entry }}
     {{- $absPath := printf "%s/%s" $templateDir $entry }}
     {{- if isFile $absPath }}
-      {{- $sopsRef := printf "ref+sops://%s?format=yaml" $absPath }}
-      {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-      {{- if $.redact }}
-        {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-      {{- end }}
-      {{- $merged = mergeOverwrite $merged $decrypted }}
+      {{- $sopsValues := include "atlas.sops.load" (dict "path" $absPath "redact" $.redact "skipSecrets" $skipSecrets) | fromYaml }}
+      {{- $merged = mergeOverwrite $merged $sopsValues }}
     {{- else }}
       {{- /* A missing secrets file would deploy without credentials (or
            with chart defaults) — the most dangerous silent skip. */ -}}
@@ -362,12 +396,8 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
   {{- if kindIs "string" $entry }}
     {{- $absPath := printf "%s/%s" $deploymentDir $entry }}
     {{- if isFile $absPath }}
-      {{- $sopsRef := printf "ref+sops://%s?format=yaml" $absPath }}
-      {{- $decrypted := fetchSecretValue $sopsRef | fromYaml }}
-      {{- if $.redact }}
-        {{- $decrypted = index (include "atlas.redact.value" $decrypted | fromJson) "v" }}
-      {{- end }}
-      {{- $merged = mergeOverwrite $merged $decrypted }}
+      {{- $sopsValues := include "atlas.sops.load" (dict "path" $absPath "redact" $.redact "skipSecrets" $skipSecrets) | fromYaml }}
+      {{- $merged = mergeOverwrite $merged $sopsValues }}
     {{- else }}
       {{- /* Same contract as release.secrets: fail loudly. */ -}}
       {{- fail (printf "values-loader: release %q: instance secrets file not found: %s" $.Release.Name $absPath) }}

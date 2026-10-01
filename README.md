@@ -317,6 +317,20 @@ Encrypted files follow the same naming convention as plain files:
 
 All value types are preserved through decryption (strings, numbers, booleans, lists, maps, nested structures).
 
+### Rendering without secrets
+
+Set `ATLAS_SKIP_SECRETS=true` to render without decrypting any SOPS file:
+
+```bash
+ATLAS_SKIP_SECRETS=true helmfile template
+```
+
+Every `*.sops.yaml` file (hierarchy files, `.sops.yaml` entries in `values:` lists, and `secrets:` files) contributes its keys with the encrypted `ENC[...]` strings as values. No SOPS key, gpg agent or age key is needed, and the render makes no decryption calls. Values that templates derive from a secret are derived from the `ENC[...]` string instead.
+
+Use it for renders that do not need the real secrets: structure checks, diffs of non-secret changes, automation that must not see secrets, or machines without key access. The output is **not deployable** — the rendered secrets are ciphertext. Charts that validate secret values (length, format) can fail on the `ENC[...]` strings.
+
+`ATLAS_SKIP_SECRETS` and `ATLAS_REDACT_SECRETS` can be combined: the post-renderer still structurally redacts every `v1/Secret`, and there is nothing to redact from the values.
+
 ---
 
 ## Value Inheritance Logic
