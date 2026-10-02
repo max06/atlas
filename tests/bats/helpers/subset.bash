@@ -89,6 +89,29 @@ classify_revisions() {
   # convenience copies for assertions
   cp "$cache/$base_sha.map.json" "$out/map-baseline.json"
   cp "$cache/$head_sha.map.json" "$out/map-pr.json"
+  # ATLAS_CLI=<atlas binary>: every scenario doubles as an equivalence check
+  # of the Go port (`atlas review classify`) against classify.sh.
+  if [ -n "${ATLAS_CLI:-}" ]; then
+    cli_matches_classify_sh "$out" "$cache/$base_sha.map.json" "$cache/$head_sha.map.json"
+  fi
+}
+
+# cli_matches_classify_sh <out-dir> <map-base> <map-pr> — run the CLI port on
+# classify.sh's inputs and compare every output (JSON key order aside).
+cli_matches_classify_sh() {
+  local out="$1" cli="$1/cli"
+  "$ATLAS_CLI" review classify -f helmfile.yaml.gotmpl \
+    --map-base "$2" --map-head "$3" --changes-file "$out/changes.txt" \
+    --out "$cli" --github-output "$cli/github-output" >/dev/null 2>"$cli.log" \
+    || { echo "atlas review classify failed:"; cat "$cli.log"; return 1; }
+  diff <(jq -S . "$out/classify.json") <(jq -S . "$cli/classify.json") \
+    || { echo "classify.json differs (classify.sh vs CLI)"; return 1; }
+  local f
+  for f in pairs-baseline.txt pairs-pr.txt classify-summary.md; do
+    diff "$out/$f" "$cli/$f" || { echo "$f differs (classify.sh vs CLI)"; return 1; }
+  done
+  diff <(grep -v '_file=' "$out/github-output") <(grep -v '_file=' "$cli/github-output") \
+    || { echo "step outputs differ (classify.sh vs CLI)"; return 1; }
 }
 
 # pairs_where <map.json> <jq-select-expr> — "<cluster>|<deployment>" lines, sorted.

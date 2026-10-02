@@ -39,6 +39,16 @@ helmfile build -f tests/helmfile.yaml.gotmpl \
   --debug --selector cluster=cluster1,deploymentName=deployment1
 ```
 
+## atlas CLI (Go, proof of concept)
+
+`cmd/atlas` + `internal/*`: a driver around the helmfile binary (render, inspect, discover, review classify/diff, doctor). `internal/classify` is a port of `.github/actions/atlas-render/classify.sh`; keep both in step until the action switches to the CLI. With `ATLAS_CLI=<binary>` the bats classify scenarios compare both outputs, and `tests/bats/workflow/cli.bats` drives the binary end to end.
+
+```bash
+go vet ./... && go test ./...
+go build -o /tmp/atlas ./cmd/atlas
+ATLAS_CLI=/tmp/atlas bats --recursive tests/bats/workflow/
+```
+
 ## Architecture
 
 ### Entry Points

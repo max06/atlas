@@ -14,10 +14,18 @@ on:
     paths:
       - .github/actions/**
       - tests/bats/workflow/**
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
   pull_request:
     paths:
       - .github/actions/**
       - tests/bats/workflow/**
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
   workflow_dispatch:
 
 permissions:
@@ -62,6 +70,23 @@ jobs:
           DYFF_VERSION=$(curl -fsSL https://api.github.com/repos/homeport/dyff/releases/latest | jq -r .tag_name)
           curl -fsSL "https://github.com/homeport/dyff/releases/download/${DYFF_VERSION}/dyff_${DYFF_VERSION#v}_linux_amd64.tar.gz" | tar xz
           sudo mv dyff /usr/local/bin/dyff
+
+      # The atlas CLI (cmd/atlas). With ATLAS_CLI set, every classify scenario
+      # also runs the Go port and compares it with classify.sh, and cli.bats
+      # drives the binary end to end.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Go vet + unit tests
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build the atlas CLI
+        run: |
+          go build -o "${RUNNER_TEMP}/atlas" ./cmd/atlas
+          echo "ATLAS_CLI=${RUNNER_TEMP}/atlas" >> "$GITHUB_ENV"
 
       - name: Run workflow script tests
         run: bats --recursive --jobs 4 tests/bats/workflow/
