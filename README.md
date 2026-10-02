@@ -405,6 +405,40 @@ For a **standalone cluster** (no group), steps 10–12 are skipped entirely.
 
 ---
 
+## atlas CLI (proof of concept)
+
+`cmd/atlas` is a command-line driver for ATLAS repositories. It sets the `ATLAS_*` switches from flags, applies the production render flags, and compares revisions for reviews. It runs the `helmfile` binary; the ATLAS templates stay versioned by the repository's entry helmfile, so the CLI and the template version are independent.
+
+```bash
+go install github.com/max06/atlas/cmd/atlas@<ref>
+
+atlas render -c group/cluster -d my-app                 # manifests to stdout
+atlas render -c group/cluster -d my-app --skip-secrets  # no SOPS key needed, secrets stay ENC[...]
+atlas inspect -c group/cluster -d my-app                # the helmfile states ATLAS generates
+atlas discover                                          # the discovery map as JSON
+atlas review classify                                   # which pairs your working tree affects
+atlas review diff --skip-secrets --patch                # render them on both sides and diff
+atlas doctor                                            # helm / helmfile / git versions
+```
+
+`-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`).
+
+**Flags are the interface.** The `ATLAS_*` variables the CLI controls (`ATLAS_FILTER_*`, `ATLAS_SKIP_SECRETS`, `ATLAS_REDACT_SECRETS`, `ATLAS_DISCOVERY_MAP`, `ATLAS_SIDEDUMP_MAP_DIR`) are ignored in the caller's environment, with a warning. A plain `helmfile` call with those variables keeps working.
+
+**Reviews compare the current target with the merge result.** By default:
+
+- the base is `origin/<default branch>`, fetched first (only that ref). A stale local branch would show newer target commits as reverts. `--base` overrides it and `--offline` skips the fetch;
+- the other side is the working tree, including uncommitted and untracked files. It is snapshotted through a temporary index, so your index and `git status` stay untouched. `--head <rev>` reviews a commit instead;
+- the two are merged with `git merge-tree`, without a checkout. A conflict stops the review and names the files.
+
+Both sides are exported into one workspace path in turn, because rendered values embed the checkout path. In CI, the platform already made the merge commit, and a shallow clone has no history to merge in: pass both commits with `--no-merge`.
+
+`atlas review classify` is a port of the review pipeline's `classify.sh`. Its precomputed mode (`--map-base`, `--map-head`, `--changes-file`, `--out`) writes the same output set, and the classify scenarios compare both when `ATLAS_CLI` points at a binary. `atlas review diff` compares rendered files byte for byte; the semantic diff and PR comment of `atlas-diff` are not ported yet.
+
+`atlas render --argocd` runs as the Argo CD config management plugin: the filter comes from `ARGOCD_ENV_ATLAS_FILTER_CLUSTER` / `ARGOCD_ENV_ATLAS_FILTER_DEPLOYMENT_NAME`, and releases render into `ARGOCD_APP_NAMESPACE` unless `ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE` is set.
+
+---
+
 ## How It Works
 
 ATLAS processes your repository in four stages, each implemented in its own helmfile/gotmpl:
