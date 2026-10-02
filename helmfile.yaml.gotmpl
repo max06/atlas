@@ -9,6 +9,8 @@
      arbitrary .Values keys, so env vars are the only knobs that reach
      ATLAS reliably):
        ATLAS_REDACT_SECRETS           enable post-renderer redaction
+       ATLAS_SKIP_SECRETS             never decrypt SOPS files: values keep
+                                      their encrypted ENC[...] form
        ATLAS_FILTER_CLUSTER           stage-1 filter: render only these clusters
        ATLAS_FILTER_DEPLOYMENT_NAME   stage-1 filter: render only these deployments
                                       (both: comma-separated lists, whitespace around
@@ -34,6 +36,13 @@
 
 {{- /* Redaction toggle — env var is always the source of truth. */ -}}
 {{- $_ := set $atlas "redactSecrets" (eq (env "ATLAS_REDACT_SECRETS") "true") }}
+
+{{- /* SOPS skip toggle — env var is always the source of truth. When on,
+     no SOPS file is decrypted at any stage: every *.sops.yaml value
+     reaches the release as its ENC[...] ciphertext. For renders that do
+     not need the real secrets (structure checks, agents, renders without
+     key access); the output is not deployable. */ -}}
+{{- $_ := set $atlas "skipSecrets" (eq (env "ATLAS_SKIP_SECRETS") "true") }}
 
 {{- /* Stage-1 filter. Always overwritten from env vars — an atlas.filter key
      a caller tried to pass through .Values is discarded so there's exactly
