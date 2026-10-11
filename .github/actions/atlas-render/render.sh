@@ -98,7 +98,7 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
       ATLAS_FILTER_DEPLOYMENT_NAME="$deployments" \
       helmfile -f "$HELMFILE_PATH" \
         template "${selectors[@]}" \
-        --skip-schema-validation \
+        --skip-schema-validation --include-crds \
         --output-dir "$RENDER_DIR" \
         --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
         2>>"$STDERR_LOG" \
@@ -213,7 +213,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
     helmfile -f "$HELMFILE_PATH" \
       template \
       --selector "cluster=$cluster,deploymentName=$deployment" \
-      --skip-schema-validation \
+      --skip-schema-validation --include-crds \
       --output-dir "$RENDER_DIR" \
       --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
       2>>"$STDERR_LOG" \
@@ -225,7 +225,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
 else
   # Bulk path: single helmfile template invocation.
   ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-    --skip-schema-validation \
+    --skip-schema-validation --include-crds \
     --output-dir "$SNAPSHOT_DIR" \
     --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
     2>>"$STDERR_LOG" || RENDER_STATUS=$?

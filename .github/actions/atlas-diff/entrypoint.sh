@@ -45,7 +45,13 @@ rm -f "${DIFF_TEMP}/scope.md"
 if [ "$SUBSET_MODE" != "off" ] && [ -n "$CLASSIFY_DIR" ] && [ -f "$CLASSIFY_DIR/classify.json" ]; then
   SHADOW_OUTPUT="${DIFF_TEMP}/shadow-github-output"
   : > "$SHADOW_OUTPUT"
-  if [ "$RENDER_MODE" = "full" ] && [ -f "${DIFF_TEMP}/affected-paths.txt" ]; then
+  # A side that failed to render leaves a partial tree: the difference of two
+  # partial trees says nothing about the classifier. Judge only complete renders.
+  if [ "${INPUT_PR_STATUS:-success}" != "success" ] || [ "${INPUT_BASELINE_STATUS:-success}" != "success" ]; then
+    echo "shadow_result=inconclusive" >> "$SHADOW_OUTPUT"
+    echo "shadow_missed=0" >> "$SHADOW_OUTPUT"
+    echo "_Shadow check skipped: a side did not render completely, so the full diff cannot judge the selection._" > "${DIFF_TEMP}/shadow-check.md"
+  elif [ "$RENDER_MODE" = "full" ] && [ -f "${DIFF_TEMP}/affected-paths.txt" ]; then
     AFFECTED_PATHS_FILE="${DIFF_TEMP}/affected-paths.txt" CLASSIFY_JSON="$CLASSIFY_DIR/classify.json" \
       SHADOW_OUT="$DIFF_TEMP" GITHUB_OUTPUT="$SHADOW_OUTPUT" /shadow-check.sh || true
   else
@@ -70,7 +76,7 @@ if [ "$SUBSET_MODE" != "off" ] && [ -n "$CLASSIFY_DIR" ] && [ -f "$CLASSIFY_DIR/
     else
       cat "$CLASSIFY_DIR/classify-summary.md"
     fi
-    if [ -f "${DIFF_TEMP}/shadow-check.md" ] && grep -q 'FAILED' "${DIFF_TEMP}/shadow-check.md"; then
+    if [ -f "${DIFF_TEMP}/shadow-check.md" ] && grep -q 'FAILED\|skipped' "${DIFF_TEMP}/shadow-check.md"; then
       echo
       cat "${DIFF_TEMP}/shadow-check.md"
     fi

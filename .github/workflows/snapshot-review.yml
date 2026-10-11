@@ -110,11 +110,16 @@ jobs:
       # ── Render merge result (PR side) ──────────────────────────────────────
       # Order matters: PR render runs first to capture sidedump maps that the
       # replay step uses to scrub the (potentially leaky) baseline.
+      # fetch-depth 2: the merge commit's first parent IS the target commit the
+      # merge was made against — the baseline. A separately fetched target tip
+      # can be newer (main moved since GitHub built the merge ref) and would
+      # show those newer commits as reverted by the PR.
       - name: Checkout merge result
         id: merge-checkout
         uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 2
         continue-on-error: true
 
       - name: Fallback to PR branch
@@ -122,6 +127,34 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+
+      # Baseline commit: merge^1 normally. Without a merge ref (conflicts) the
+      # PR branch is compared with its merge-base, so the diff shows the PR's
+      # own changes, not everything the target gained since the branch point.
+      - name: Resolve baseline
+        id: baseline-rev
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FALLBACK: ${{ steps.merge-checkout.outcome == 'failure' }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          SHA=""
+          if [ "$FALLBACK" != "true" ] && git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+            SHA="$(git rev-parse 'HEAD^1')"
+            echo "Baseline: merge^1 = $SHA"
+          else
+            SHA="$(gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha' 2>/dev/null || true)"
+            if [ -n "$SHA" ] && git fetch -q --depth=1 origin "$SHA"; then
+              echo "Baseline: merge-base of the PR = $SHA"
+            else
+              echo "::warning::Could not resolve the merge-base — comparing with the target branch tip"
+              git fetch -q --depth=1 origin "refs/heads/${BASE_REF}" && SHA="$(git rev-parse FETCH_HEAD)"
+            fi
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       # ── Classification inputs ──────────────────────────────────────────────
       # The target branch tip is fetched into a worktree so its discovery map
@@ -132,11 +165,11 @@ jobs:
         id: prep
         if: steps.subset.outputs.mode != 'off'
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASELINE_SHA: ${{ steps.baseline-rev.outputs.sha }}
         run: |
-          if git fetch --depth=1 origin "refs/heads/${BASE_REF}" \
-             && git worktree add --detach "${RUNNER_TEMP}/base-tree" FETCH_HEAD \
-             && git diff --name-status --no-renames FETCH_HEAD HEAD > "${RUNNER_TEMP}/changes.txt"; then
+          if [ -n "$BASELINE_SHA" ] \
+             && git worktree add --detach "${RUNNER_TEMP}/base-tree" "$BASELINE_SHA" \
+             && git diff --name-status --no-renames "$BASELINE_SHA" HEAD > "${RUNNER_TEMP}/changes.txt"; then
             echo "base_tree=${RUNNER_TEMP}/base-tree" >> "$GITHUB_OUTPUT"
             echo "changes_file=${RUNNER_TEMP}/changes.txt" >> "$GITHUB_OUTPUT"
             echo "Changed paths: $(wc -l < "${RUNNER_TEMP}/changes.txt")"
@@ -189,11 +222,20 @@ jobs:
           pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_pr_file || '' }}
 
       # ── Render baseline (target branch) ────────────────────────────────────
-      - name: Checkout target branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          clean: false
+      # Same workspace path as the PR render (rendered values embed absolute
+      # paths), switched to the resolved baseline commit.
+      - name: Checkout baseline
+        env:
+          BASELINE_SHA: ${{ steps.baseline-rev.outputs.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [ -z "$BASELINE_SHA" ]; then
+            git fetch -q --depth=1 origin "refs/heads/${BASE_REF}"
+            BASELINE_SHA="$(git rev-parse FETCH_HEAD)"
+          fi
+          git checkout -q -f --detach "$BASELINE_SHA"
+          git clean -fdq
+          echo "Baseline render from $(git rev-parse --short HEAD)"
 
       - name: Render baseline
         uses: max06/atlas/.github/actions/atlas-render@main
