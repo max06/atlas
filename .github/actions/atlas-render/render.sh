@@ -61,6 +61,34 @@ if [ -z "${SOPS_AGE_KEY_FILE:-}" ] && [ -n "${SOPS_AGE_KEY:-}" ]; then
   echo "SOPS key file: $(wc -c < "$KEY_FILE") bytes"
 fi
 
+# ── Progress and time limits ────────────────────────────────────────────────
+# A render runs for minutes without output (helmfile writes to files, stderr
+# goes to the log). The heartbeat prints the phase and the files written once
+# a minute, so a slow render and a hanging one look different in the step log.
+# Every helmfile call has a time limit: a hang becomes an error with the end
+# of the stderr log instead of waiting for the job timeout.
+export HELMFILE_TIMEOUT="${HELMFILE_TIMEOUT:-900}"
+PHASE_FILE="${RENDER_TEMP}/${SNAPSHOT_LABEL}-phase"
+phase() {
+  echo "$1" > "$PHASE_FILE"
+  echo "[$(date -u +%H:%M:%S)] ${SIDE_LABEL}: $1"
+}
+phase "start"
+(
+  started=$(date +%s)
+  while sleep 60; do
+    echo "[heartbeat] ${SIDE_LABEL}: $(( $(date +%s) - started ))s, phase: $(cat "$PHASE_FILE" 2>/dev/null), $(find "$SNAPSHOT_DIR" -type f 2>/dev/null | wc -l) files written"
+  done
+) &
+HEARTBEAT_PID=$!
+stderr_tail() {
+  # helmfile errors name files and keys, not values; still keep it short
+  echo "::group::Last lines of the helmfile log (${SIDE_LABEL})"
+  tail -n 25 "$STDERR_LOG" 2>/dev/null | cut -c1-400
+  echo "::endgroup::"
+}
+trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
 # ── Helmfile not found (baseline may not have it yet) ───────────────────────
 if [ ! -f "$HELMFILE_PATH" ]; then
   echo "Helmfile not found at $HELMFILE_PATH"
@@ -96,7 +124,7 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
       for d in "${ds[@]}"; do selectors+=(--selector "cluster=$cluster,deploymentName=$d"); done
       ATLAS_FILTER_CLUSTER="$cluster" \
       ATLAS_FILTER_DEPLOYMENT_NAME="$deployments" \
-      helmfile -f "$HELMFILE_PATH" \
+      timeout "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
         template "${selectors[@]}" \
         --skip-schema-validation --include-crds \
         --output-dir "$RENDER_DIR" \
@@ -105,13 +133,15 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
       || { echo "::${LEVEL_TAG}::Render failed for $cluster [$deployments] on ${SIDE_LABEL}" >&2; return 1; }
     }
     export -f render_cluster
+    phase "subset render of ${PAIR_COUNT} pair(s)"
     # group "<cluster>|<deployment>" lines into one "<cluster>|<d1>,<d2>" per cluster
     sort -u "$RENDER_PAIRS_FILE" | grep '|' \
       | awk -F'|' '{ if ($1 in acc) acc[$1]=acc[$1] "," $2; else acc[$1]=$2 } END { for (c in acc) print c "|" acc[c] }' \
       | xargs -r -P4 -I{} bash -c 'render_cluster "{}"' || RENDER_STATUS=$?
   fi
   if [ $RENDER_STATUS -ne 0 ]; then
-    echo "::${LEVEL_TAG}::${SIDE_LABEL^} subset render failed"
+    echo "::${LEVEL_TAG}::${SIDE_LABEL^} subset render failed (phase: $(cat "$PHASE_FILE"))"
+    stderr_tail
     echo "status=error" >> "$GITHUB_OUTPUT"
   else
     echo "status=success" >> "$GITHUB_OUTPUT"
@@ -150,7 +180,8 @@ DISCOVERY_QUERY='map(
       labels: ($state.commonLabels | to_entries | sort_by(.key)
                | map("\(.key):\(.value)") | join(","))
     })'
-if ! helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
+phase "discovery (helmfile build)"
+if ! timeout "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
   | yq eval-all -o=json '[.]' - \
   | jq "$DISCOVERY_QUERY" > "$LIST_JSON"; then
   echo "::${LEVEL_TAG}::Failed to discover deployments on ${SIDE_LABEL}"
@@ -166,8 +197,9 @@ TOTAL=$(jq length "$LIST_JSON")
 # Tests whether CLI --selector reaches release-level commonLabels. On current
 # ATLAS this always passes; consumers pinned to older ATLAS refs with hardcoded
 # sub-helmfile selectors will fail the probe and fall back to bulk rendering.
+phase "selector probe (helmfile list)"
 PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
-  helmfile $HELMFILE_ARGS \
+  timeout 300 helmfile $HELMFILE_ARGS \
   list --selector cluster=__atlas_probe_nonexistent__ \
   --output json --allow-no-matching-release 2>/dev/null || true)
 if [ -z "$PROBE_OUT" ]; then
@@ -210,7 +242,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
     deployment="${pair#*|}"
     ATLAS_FILTER_CLUSTER="$cluster" \
     ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
-    helmfile -f "$HELMFILE_PATH" \
+    timeout "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
       template \
       --selector "cluster=$cluster,deploymentName=$deployment" \
       --skip-schema-validation --include-crds \
@@ -221,10 +253,12 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
   }
   export -f render_one
   export LEVEL_TAG SIDE_LABEL OUTPUT_DIR_TEMPLATE
+  phase "render of $(printf '%s\n' "$PAIRS" | grep -c '|') pair(s)"
   printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
 else
   # Bulk path: single helmfile template invocation.
-  ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
+  phase "bulk render"
+  ATLAS_REDACT_SECRETS=true timeout "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS template \
     --skip-schema-validation --include-crds \
     --output-dir "$SNAPSHOT_DIR" \
     --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
@@ -232,7 +266,8 @@ else
 fi
 
 if [ $RENDER_STATUS -ne 0 ]; then
-  echo "::${LEVEL_TAG}::${SIDE_LABEL^} render failed"
+  echo "::${LEVEL_TAG}::${SIDE_LABEL^} render failed (phase: $(cat "$PHASE_FILE"))"
+  stderr_tail
   echo "status=error" >> "$GITHUB_OUTPUT"
 else
   echo "status=success" >> "$GITHUB_OUTPUT"
