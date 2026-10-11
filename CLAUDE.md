@@ -95,7 +95,8 @@ Templates receive an `atlas` values object containing:
 - `cwd` — Absolute working directory path
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
-- `redactSecrets` — Enable type-aware secret redaction
+- `redactSecrets` — Enable type-aware secret redaction (`ATLAS_REDACT_SECRETS=true`)
+- `skipSecrets` — Never decrypt SOPS files; values keep their `ENC[...]` form (`ATLAS_SKIP_SECRETS=true`)
 - `deployment.cluster` / `deployment.deploymentName` / `deployment.deploymentPath` — Current deployment context (set by the pipeline)
 
 ## Development Rules
