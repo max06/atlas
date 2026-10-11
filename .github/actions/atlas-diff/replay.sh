@@ -36,8 +36,12 @@ if [ ! -d "$BASELINE_DIR" ]; then
   exit 0
 fi
 
-if [ ! -d "$SIDEDUMP_MAP_DIR" ]; then
+if [ -z "${SIDEDUMP_MAP_DIR:-}" ] || [ ! -d "$SIDEDUMP_MAP_DIR" ]; then
   echo "::warning::No PR-side redaction maps captured — baseline diffs will be suppressed to prevent leaks from older ATLAS versions."
+  # The PR side may have failed before it reported a map directory at all
+  # (empty input): replay against an empty one, so every baseline release
+  # counts as no-map and the comment still reports the failed render.
+  SIDEDUMP_MAP_DIR="${SIDEDUMP_MAP_DIR:-${REPLAY_TEMP}/sidedump-maps-empty}"
   mkdir -p "$SIDEDUMP_MAP_DIR"
 fi
 
