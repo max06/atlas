@@ -412,16 +412,18 @@ For a **standalone cluster** (no group), steps 10–12 are skipped entirely.
 ```bash
 go install github.com/max06/atlas/cmd/atlas@<ref>
 
-atlas render -c group/cluster -d my-app                 # manifests to stdout
-atlas render -c group/cluster -d my-app --skip-secrets  # no SOPS key needed, secrets stay ENC[...]
-atlas inspect -c group/cluster -d my-app                # the helmfile states ATLAS generates
-atlas discover                                          # the discovery map as JSON
-atlas review classify                                   # which pairs your working tree affects
-atlas review diff --skip-secrets --patch                # render them on both sides and diff
-atlas doctor                                            # helm / helmfile / git versions
+atlas render -c cluster -d my-app            # manifests to stdout, secrets stay ENC[...], no key needed
+atlas render -c group/cluster -d my-app --decrypt   # with decrypted SOPS values (needs the key)
+atlas inspect -c cluster -d my-app           # the helmfile states ATLAS generates
+atlas discover                               # the discovery map as JSON
+atlas review classify                        # which pairs your working tree affects
+atlas review diff --patch                    # render them on both sides and diff
+atlas doctor                                 # helm / helmfile / git versions
 ```
 
-`-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`).
+`-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`). `-c` takes the full cluster path or the leaf name; an unknown cluster or deployment fails with the nearest known names.
+
+**Keyless by default.** `render`, `inspect --values` and `review diff` decrypt nothing unless you pass `--decrypt` (or `--redact`, which decrypts and then redacts): SOPS values stay `ENC[...]`, no key is needed, no secret reaches the terminal. That needs an ATLAS version that honors `ATLAS_SKIP_SECRETS` — an older one ignores the variable and decrypts. The CLI therefore reads the `capabilities` of the discovery map first (a probe of well under a second) and stops with a hint when the pinned ATLAS cannot render keyless. `--argocd` always decrypts (the production path).
 
 **Flags are the interface.** The `ATLAS_*` variables the CLI controls (`ATLAS_FILTER_*`, `ATLAS_SKIP_SECRETS`, `ATLAS_REDACT_SECRETS`, `ATLAS_DISCOVERY_MAP`, `ATLAS_SIDEDUMP_MAP_DIR`) are ignored in the caller's environment, with a warning. A plain `helmfile` call with those variables keeps working.
 
@@ -432,6 +434,8 @@ atlas doctor                                            # helm / helmfile / git 
 - the two are merged with `git merge-tree`, without a checkout. A conflict stops the review and names the files.
 
 Both sides are exported into one workspace path in turn, because rendered values embed the checkout path. In CI, the platform already made the merge commit, and a shallow clone has no history to merge in: pass both commits with `--no-merge`.
+
+**A target side that does not render stops the review.** A diff against it would show every selected release as added. `--allow-base-error` compares anyway (the change may be the fix).
 
 `atlas review classify` is a port of the review pipeline's `classify.sh`. Its precomputed mode (`--map-base`, `--map-head`, `--changes-file`, `--out`) writes the same output set, and the classify scenarios compare both when `ATLAS_CLI` points at a binary. `atlas review diff` compares rendered files byte for byte; the semantic diff and PR comment of `atlas-diff` are not ported yet.
 

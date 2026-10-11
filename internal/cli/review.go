@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -57,7 +58,12 @@ func openSession(cmd *cobra.Command, g *globalFlags, f revFlags) (*review.Sessio
 	if repo.Shallow(cmd.Context()) && !f.spec.NoMerge {
 		fmt.Fprintln(os.Stderr, "atlas: shallow clone — a local merge needs history; CI should pass both commits with --no-merge")
 	}
-	return review.Open(cmd.Context(), repo, entry, f.spec, os.Stderr)
+	s, err := review.Open(cmd.Context(), repo, entry, f.spec, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	s.Binary = g.helmfile
+	return s, nil
 }
 
 func newReviewClassifyCmd(g *globalFlags) *cobra.Command {
@@ -114,8 +120,18 @@ or helmfile (drop-in for .github/actions/atlas-render/classify.sh).`,
 	fl.StringVar(&githubOutput, "github-output", os.Getenv("GITHUB_OUTPUT"), "append step outputs here (with --out)")
 	fl.StringVar(&mapBase, "map-base", "", "precomputed: discovery map JSON of the target side (empty file = none)")
 	fl.StringVar(&mapHead, "map-head", "", "precomputed: discovery map JSON of the merge result (empty file = none)")
-	fl.StringVar(&changesFile, "changes-file", "", "precomputed: `git diff --name-status --no-renames` output")
+	fl.StringVar(&changesFile, "changes-file", "", "precomputed: output of git diff --name-status --no-renames")
 	return cmd
+}
+
+func keylessWord(m *discovery.Map) string {
+	if m == nil {
+		return "no discovery map (older ATLAS)"
+	}
+	if m.Has(discovery.CapabilitySkipSecrets) {
+		return "keyless ok"
+	}
+	return "decrypts"
 }
 
 func parenIf(s string) string {
@@ -159,13 +175,14 @@ func readMap(path string) (*discovery.Map, error) {
 
 func newReviewDiffCmd(g *globalFlags) *cobra.Command {
 	var (
-		f        revFlags
-		sel      selection
-		outDir   string
-		full     bool
-		patch    bool
-		asJSON   bool
-		parallel int
+		f              revFlags
+		sel            selection
+		outDir         string
+		full           bool
+		patch          bool
+		asJSON         bool
+		parallel       int
+		allowBaseError bool
 	)
 	cmd := &cobra.Command{
 		Use:   "diff",
@@ -198,9 +215,34 @@ diff and PR comment of the review pipeline (atlas-diff) are not ported yet.`,
 				defer os.RemoveAll(tmp)
 				outDir = tmp
 			}
-			opts := review.RenderOptions{SkipSecrets: sel.skipSecrets, Redact: sel.redact, Parallel: parallel}
-			if err := s.Render(cmd.Context(), c, outDir, opts); err != nil {
+			if sel.decrypt && sel.skipSecrets {
+				return fmt.Errorf("--decrypt and --skip-secrets exclude each other")
+			}
+			keyless := sel.keyless(false)
+			var baseErr error
+			if c.BaseBroken() {
+				baseErr = c.BaseErr
+			}
+			if keyless {
+				// each side renders with the ATLAS its own entry pins; a side
+				// without keyless support would decrypt, and the diff would put
+				// its plaintext next to the other side's ENC[...] values
+				baseOK := c.BaseMap.Has(discovery.CapabilitySkipSecrets) || baseErr != nil || errors.Is(c.BaseErr, review.ErrNoEntry)
+				if !baseOK || !c.HeadMap.Has(discovery.CapabilitySkipSecrets) {
+					return fmt.Errorf("the ATLAS version a side pins cannot render without decrypting SOPS files (target: %s, reviewed: %s) — pass --decrypt (needs the key) or update the pin",
+						keylessWord(c.BaseMap), keylessWord(c.HeadMap))
+				}
+			}
+			opts := review.RenderOptions{SkipSecrets: keyless, Redact: sel.redact, Parallel: parallel, BaseErr: baseErr}
+			res, err := s.Render(cmd.Context(), c, outDir, opts)
+			if err != nil {
 				return err
+			}
+			if res.Base == review.StatusError {
+				if !allowBaseError {
+					return fmt.Errorf("the target side does not render, so every release of the selection would show as added; fix the target branch or pass --allow-base-error:\n%v", res.BaseErr)
+				}
+				fmt.Fprintf(os.Stderr, "atlas: target side does not render (--allow-base-error): releases that exist on both sides show as added\n%v\n", res.BaseErr)
 			}
 			var pairs []string
 			for _, m := range []*discovery.Map{c.BaseMap, c.HeadMap} {
@@ -237,7 +279,7 @@ diff and PR comment of the review pipeline (atlas-diff) are not ported yet.`,
 		},
 	}
 	f.register(cmd)
-	sel.register(cmd)
+	sel.register(cmd, "render", true)
 	_ = cmd.Flags().MarkHidden("cluster")
 	_ = cmd.Flags().MarkHidden("deployment")
 	fl := cmd.Flags()
@@ -246,5 +288,6 @@ diff and PR comment of the review pipeline (atlas-diff) are not ported yet.`,
 	fl.BoolVar(&patch, "patch", false, "print file diffs of the changed releases")
 	fl.BoolVar(&asJSON, "json", false, "print the changed releases as JSON")
 	fl.IntVar(&parallel, "parallel", 4, "concurrent helmfile invocations")
+	fl.BoolVar(&allowBaseError, "allow-base-error", false, "compare even when the target side does not render (the change may be the fix)")
 	return cmd
 }
