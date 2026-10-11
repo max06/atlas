@@ -23,7 +23,12 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 FROM alpine:3.24
 
-RUN apk add --no-cache bash ca-certificates curl git gnupg jq
+# No gnupg, on purpose: SOPS decrypts with age in every use of this image
+# (wrapper, CI, Argo CD plugin). With a gpg binary present, sops tries the PGP
+# recipients first; in CI, gpg state in the shared /github/home of one step
+# made gpg -d hang forever in the next step. Without gpg the PGP attempt fails
+# at once and age decrypts.
+RUN apk add --no-cache bash ca-certificates curl git jq
 
 # renovate: datasource=github-releases depName=helm/helm
 ARG HELM_VERSION=v4.2.3
