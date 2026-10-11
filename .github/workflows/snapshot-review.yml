@@ -233,8 +233,14 @@ jobs:
         run: |
           nohup bash -c 'while true; do
             echo "=== $(date -u +%H:%M:%S)"; free -m | head -2; df -h / | tail -1
-            docker ps --format "{{.Names}} {{.Status}} {{.Image}}" 2>/dev/null
-            ps -eo pid,ppid,stat,etime,pcpu,rss,args --sort=-pcpu | head -15 | cut -c1-200
+            for c in $(docker ps -q 2>/dev/null); do
+              echo "--- container $(docker inspect -f "{{.Name}}" "$c")"
+              docker top "$c" -eo pid,ppid,stat,etime,pcpu,rss,wchan:24,args 2>/dev/null | cut -c1-220
+              pid=$(docker inspect -f "{{.State.Pid}}" "$c")
+              echo "--- connections"
+              sudo nsenter -t "$pid" -n ss -tnp 2>/dev/null | cut -c1-200 | head -20
+            done
+            for f in "$RUNNER_TEMP"/*-stderr.log; do [ -f "$f" ] && { echo "--- tail $f"; tail -n 3 "$f" | cut -c1-200; }; done
             sleep 15; done' > "$RUNNER_TEMP/host-monitor.log" 2>&1 &
           echo "host monitor started"
 
