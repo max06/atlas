@@ -100,7 +100,11 @@ outputs:
 
 runs:
   using: docker
-  image: Dockerfile
+  # Prebuilt atlas image (Dockerfile at the repo root, workflow image.yml):
+  # no image build per run. The tag must match this ref — a release sets the
+  # version, a test branch uses its branch tag.
+  image: docker://ghcr.io/max06/atlas:main
+  entrypoint: /atlas-render-entrypoint.sh
   env:
     INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
     INPUT_SNAPSHOT_LABEL: ${{ inputs.snapshot-label }}

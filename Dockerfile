@@ -1,8 +1,9 @@
 # atlas: the CLI plus the toolchain it drives, as one image.
 #
 # One image serves three uses: the developer wrapper (contrib/atlas-wrapper.sh,
-# copied into consumer repos as bin/atlas), CI review steps, and the Argo CD
-# config management plugin sidecar. The toolchain versions are the ones the CLI
+# copied into consumer repos as bin/atlas), the review actions (atlas-render,
+# atlas-diff: their action.yml runs this image with an own entrypoint), and the
+# Argo CD config management plugin sidecar. The toolchain versions are the ones the CLI
 # is tested with (internal/toolchain), so `atlas doctor` reports "ok".
 #
 # Writable state lives under /cache (mode 1777): the wrapper mounts a named
@@ -22,7 +23,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 FROM alpine:3.24
 
-RUN apk add --no-cache bash ca-certificates curl git gnupg
+RUN apk add --no-cache bash ca-certificates curl git gnupg jq
 
 # renovate: datasource=github-releases depName=helm/helm
 ARG HELM_VERSION=v4.2.3
@@ -32,19 +33,40 @@ ARG HELMFILE_VERSION=v1.7.3
 ARG SOPS_VERSION=v3.12.2
 # renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
 ARG KUSTOMIZE_VERSION=v5.6.0
+# renovate: datasource=github-releases depName=mikefarah/yq
+ARG YQ_VERSION=v4.53.2
+# renovate: datasource=github-releases depName=homeport/dyff
+ARG DYFF_VERSION=v1.12.0
 
 COPY .github/actions/atlas-render/install-tools.sh /install-tools.sh
+COPY .github/actions/atlas-diff/install-tools.sh /install-tools-diff.sh
 RUN sh /install-tools.sh \
       helm=${HELM_VERSION} \
       helmfile=${HELMFILE_VERSION} \
       sops=${SOPS_VERSION} \
+      yq=${YQ_VERSION} \
       kustomize=${KUSTOMIZE_VERSION} && \
-    rm /install-tools.sh
+    sh /install-tools-diff.sh dyff=${DYFF_VERSION} && \
+    rm /install-tools.sh /install-tools-diff.sh
 
 # Redaction post-renderer (atlas render --redact). Plugins are read-only data;
 # HELM_PLUGINS points at them, so they work for any uid.
 COPY .github/actions/atlas-render/atlas-redact/ /opt/helm-plugins/atlas-redact/
 RUN chmod +x /opt/helm-plugins/atlas-redact/atlas-redact.sh
+
+# Review actions: the scripts at the paths the two former action images used
+# (/render.sh, /diff.sh, ... and the redaction plugin under /atlas-plugins), so
+# they run unchanged; each action.yml picks its entrypoint.
+COPY .github/actions/atlas-render/entrypoint.sh /atlas-render-entrypoint.sh
+COPY .github/actions/atlas-render/render.sh .github/actions/atlas-render/discover.sh \
+     .github/actions/atlas-render/classify.sh /
+COPY .github/actions/atlas-diff/entrypoint.sh /atlas-diff-entrypoint.sh
+COPY .github/actions/atlas-diff/scrub-baseline.sh .github/actions/atlas-diff/replay.sh \
+     .github/actions/atlas-diff/diff.sh .github/actions/atlas-diff/comment.sh \
+     .github/actions/atlas-diff/shadow-check.sh /
+RUN chmod +x /atlas-render-entrypoint.sh /atlas-diff-entrypoint.sh /render.sh /discover.sh \
+      /classify.sh /scrub-baseline.sh /replay.sh /diff.sh /comment.sh /shadow-check.sh && \
+    ln -s /opt/helm-plugins /atlas-plugins
 
 # Every writable path under /cache: helm repositories and chart cache,
 # helmfile remote states, git config. HOME too, for tools that insist on it.

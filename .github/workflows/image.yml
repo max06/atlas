@@ -16,8 +16,7 @@ on:
       - go.sum
       - cmd/**
       - internal/**
-      - .github/actions/atlas-render/install-tools.sh
-      - .github/actions/atlas-render/atlas-redact/**
+      - .github/actions/**
       - contrib/argocd-cmp/**
       - .github/workflows/image.yml
   push:
@@ -29,8 +28,7 @@ on:
       - go.sum
       - cmd/**
       - internal/**
-      - .github/actions/atlas-render/install-tools.sh
-      - .github/actions/atlas-render/atlas-redact/**
+      - .github/actions/**
       - contrib/argocd-cmp/**
       - .github/workflows/image.yml
   workflow_dispatch:
