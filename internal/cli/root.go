@@ -2,10 +2,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,9 +84,10 @@ func (s *selection) prepare(ctx context.Context, r helmfile.Runner, argocd bool)
 	if !s.keyless(false) && !multi && !short {
 		return nil
 	}
-	probe, err := discovery.Probe(ctx, quiet(r))
+	qr, log := quiet(r)
+	probe, err := discovery.Probe(ctx, qr)
 	if err != nil && !errors.Is(err, discovery.ErrUnsupported) {
-		return err
+		return withLog(err, log)
 	}
 	if s.keyless(false) && !probe.Has(discovery.CapabilitySkipSecrets) {
 		if s.lenient {
@@ -101,9 +102,10 @@ func (s *selection) prepare(ctx context.Context, r helmfile.Runner, argocd bool)
 	if !short {
 		return nil
 	}
-	m, err := discovery.Discover(ctx, quiet(r))
+	qr, log = quiet(r)
+	m, err := discovery.Discover(ctx, qr)
 	if err != nil {
-		return fmt.Errorf("resolve cluster names: %w", err)
+		return withLog(fmt.Errorf("resolve cluster names: %w", err), log)
 	}
 	for i, c := range s.clusters {
 		if s.clusters[i], err = m.ResolveCluster(c); err != nil {
@@ -119,7 +121,8 @@ func (s selection) explain(ctx context.Context, r helmfile.Runner, renderErr err
 	if len(s.clusters) == 0 && len(s.deployments) == 0 {
 		return renderErr
 	}
-	m, err := discovery.Discover(ctx, quiet(r))
+	qr, _ := quiet(r)
+	m, err := discovery.Discover(ctx, qr)
 	if err != nil {
 		return renderErr
 	}
@@ -136,10 +139,30 @@ func (s selection) explain(ctx context.Context, r helmfile.Runner, renderErr err
 	return renderErr
 }
 
-// quiet drops helmfile's stderr (the expected empty-probe notice).
-func quiet(r helmfile.Runner) helmfile.Runner {
-	r.Stderr = io.Discard
-	return r
+// quiet captures helmfile's stderr instead of printing it: the probe's
+// expected "no releases found" notice is noise, but on a failure the log is
+// the only place that says why (withLog).
+func quiet(r helmfile.Runner) (helmfile.Runner, *bytes.Buffer) {
+	var buf bytes.Buffer
+	r.Stderr = &buf
+	return r, &buf
+}
+
+// withLog appends the last lines of a captured helmfile log to err.
+func withLog(err error, log *bytes.Buffer) error {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(log.String()), "\n") {
+		if l != "" && !strings.Contains(l, "no releases found that matches specified selector") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return err
+	}
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	return fmt.Errorf("%w\n  %s", err, strings.Join(lines, "\n  "))
 }
 
 // selectors mirrors the stage-1 filter as helmfile release selectors — the
