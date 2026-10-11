@@ -1,8 +1,10 @@
 # atlas image: the CLI plus its toolchain (Dockerfile at the repo root).
 #
 # Pull requests build the image without pushing it. Tags v* push the release
-# (semver tags: 1.2.3, 1.2, 1); a manual dispatch pushes a test build tagged
-# with the branch name and the short commit, for the wrapper's ATLAS_IMAGE.
+# (semver tags: 1.2.3, 1.2, 1). A push to a branch that changes the image
+# inputs (and a manual dispatch) pushes a test build tagged with the branch
+# name and the short commit — for the wrapper's ATLAS_IMAGE, e.g.
+# ATLAS_IMAGE=ghcr.io/max06/atlas:cli-poc.
 
 name: Image
 
@@ -19,6 +21,16 @@ on:
       - .github/workflows/image.yml
   push:
     tags: ["v*"]
+    branches-ignore: ["renovate/**", "dependabot/**"]
+    paths:
+      - Dockerfile
+      - go.mod
+      - go.sum
+      - cmd/**
+      - internal/**
+      - .github/actions/atlas-render/install-tools.sh
+      - .github/actions/atlas-render/atlas-redact/**
+      - .github/workflows/image.yml
   workflow_dispatch:
 
 permissions:
@@ -43,8 +55,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' }}
-            type=sha,prefix=sha-,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=ref,event=branch
+            type=sha,prefix=sha-,enable=${{ github.ref_type == 'branch' && github.event_name != 'pull_request' }}
             type=ref,event=pr
 
       - if: github.event_name != 'pull_request'
