@@ -31,7 +31,8 @@ setup() {
 
 @test "cli: render equals plain helmfile with the production flags and the same filter" {
   local root; root="$(_repo_root)"
-  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c cluster1 -d deployment1
+  # --decrypt: plain helmfile decrypts; the CLI's default is keyless (next test)
+  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c cluster1 -d deployment1 --decrypt
   [ "$status" -eq 0 ]
   local cli="$output"
   run --separate-stderr env ATLAS_FILTER_CLUSTER=cluster1 ATLAS_FILTER_DEPLOYMENT_NAME=deployment1 \
@@ -40,6 +41,47 @@ setup() {
   [ "$status" -eq 0 ]
   [ -n "$cli" ]
   [ "$cli" = "$output" ]
+}
+
+@test "cli: render is keyless by default (ATLAS_SKIP_SECRETS, ENC values, no key needed)" {
+  local root; root="$(_repo_root)"
+  run --separate-stderr env -u SOPS_AGE_KEY_FILE "$ATLAS_CLI" -C "$root/tests" render -c cluster1 -d deployment1
+  [ "$status" -eq 0 ]
+  local cli="$output"
+  [[ "$cli" == *"ENC["* ]]
+  run --separate-stderr env ATLAS_SKIP_SECRETS=true ATLAS_FILTER_CLUSTER=cluster1 ATLAS_FILTER_DEPLOYMENT_NAME=deployment1 \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" template --skip-schema-validation --include-crds \
+    --args "--skip-schema-validation --include-crds" --selector cluster=cluster1,deploymentName=deployment1
+  [ "$status" -eq 0 ]
+  [ "$cli" = "$output" ]
+}
+
+@test "cli: --decrypt and --skip-secrets exclude each other" {
+  local root; root="$(_repo_root)"
+  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c cluster1 -d deployment1 --decrypt --skip-secrets
+  [ "$status" -ne 0 ]
+  [[ "$stderr" == *"exclude each other"* ]]
+}
+
+@test "cli: a leaf cluster name resolves to its full path" {
+  local root; root="$(_repo_root)"
+  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c cluster2 -d deployment2
+  [ "$status" -eq 0 ]
+  local short="$output"
+  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c group1/cluster2 -d deployment2
+  [ "$status" -eq 0 ]
+  [ -n "$short" ]
+  [ "$short" = "$output" ]
+}
+
+@test "cli: unknown cluster and deployment names fail with suggestions" {
+  local root; root="$(_repo_root)"
+  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c cluster9 -d deployment1
+  [ "$status" -ne 0 ]
+  [[ "$stderr" == *'unknown cluster "cluster9"'* ]]
+  run --separate-stderr "$ATLAS_CLI" -C "$root/tests" render -c cluster1 -d deploymentX
+  [ "$status" -ne 0 ]
+  [[ "$stderr" == *'unknown deployment "deploymentX"'* ]]
 }
 
 @test "cli: ATLAS_* in the caller's environment is ignored (flags are the interface)" {
@@ -70,6 +112,22 @@ setup() {
   [ "$output" = "changed  cluster1/deployment1/app1" ]
   # the working tree snapshot did not touch the index or the status
   [ "$(git -C "$FIXTURE_REPO" status --porcelain)" = "$before" ]
+}
+
+@test "cli: review diff fails when the target side does not render, unless --allow-base-error" {
+  local dep="$FIXTURE_REPO/deployments/cluster1/apps/deployment1"
+  git -C "$FIXTURE_REPO" checkout -q -B broken-target "$BASE_SHA"
+  printf '{{ fail "broken target" }}\n' > "$dep/values.yaml.gotmpl"
+  fixture_commit "$FIXTURE_REPO" "break the target side"
+  git -C "$FIXTURE_REPO" checkout -q "$BASE_SHA" -- deployments/cluster1/apps/deployment1/values.yaml.gotmpl
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base broken-target --offline
+  [ "$status" -ne 0 ]
+  [[ "$stderr" == *"target side does not render"* ]]
+  [[ "$stderr" == *"--allow-base-error"* ]]
+  [ -z "$output" ]
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base broken-target --offline --allow-base-error
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"added    cluster1/deployment1/app1"* ]]
 }
 
 @test "cli: review classify merges onto the current base (newer base commits are not reported)" {

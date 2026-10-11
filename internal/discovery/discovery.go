@@ -24,10 +24,13 @@ const MinVersion = 2
 
 // Map is the discovery result of one tree.
 type Map struct {
-	Version         int    `json:"version" yaml:"version"`
-	DeploymentsRoot string `json:"deploymentsRoot" yaml:"deploymentsRoot"`
-	TemplatesRoot   string `json:"templatesRoot" yaml:"templatesRoot"`
-	Pairs           []Pair `json:"pairs" yaml:"pairs"`
+	Version int `json:"version" yaml:"version"`
+	// Capabilities are the runtime switches the tree's ATLAS honors (map
+	// header, see Capability*). Absent on older ATLAS versions.
+	Capabilities    []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	DeploymentsRoot string   `json:"deploymentsRoot" yaml:"deploymentsRoot"`
+	TemplatesRoot   string   `json:"templatesRoot" yaml:"templatesRoot"`
+	Pairs           []Pair   `json:"pairs" yaml:"pairs"`
 }
 
 // Pair is one (cluster, deployment) the tree renders.
@@ -39,6 +42,28 @@ type Pair struct {
 	DeploymentPath string   `json:"deploymentPath" yaml:"deploymentPath"`
 	Templates      []string `json:"templates" yaml:"templates"`
 	Charts         []string `json:"charts,omitempty" yaml:"charts,omitempty"`
+}
+
+// Runtime switches an ATLAS version can list in the map header. An ATLAS
+// that does not know a switch ignores its variable silently.
+const (
+	CapabilitySkipSecrets      = "skipSecrets"      // ATLAS_SKIP_SECRETS
+	CapabilityMultiValueFilter = "multiValueFilter" // comma lists in ATLAS_FILTER_*
+	CapabilityRedactSecrets    = "redactSecrets"    // ATLAS_REDACT_SECRETS
+)
+
+// Has reports whether the tree's ATLAS lists capability c. A nil map (ATLAS
+// without map mode) has none.
+func (m *Map) Has(c string) bool {
+	if m == nil {
+		return false
+	}
+	for _, have := range m.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
 }
 
 // Key is the "<cluster>|<deployment>" form the review pipeline uses.
@@ -57,12 +82,8 @@ const probeCluster = "__atlas_discovery_probe__"
 // build — slow, and it needs SOPS keys. A cheap probe with a cluster filter
 // that matches nothing tells the two apart first.
 func Discover(ctx context.Context, r helmfile.Runner) (*Map, error) {
-	probe, err := build(ctx, r, helmfile.Options{DiscoveryMap: true, Clusters: []string{probeCluster}})
-	if err != nil {
-		return nil, fmt.Errorf("discovery probe: %w", err)
-	}
-	if probe == nil {
-		return nil, ErrUnsupported
+	if _, err := Probe(ctx, r); err != nil {
+		return nil, err
 	}
 	m, err := build(ctx, r, helmfile.Options{DiscoveryMap: true})
 	if err != nil {
@@ -70,6 +91,20 @@ func Discover(ctx context.Context, r helmfile.Runner) (*Map, error) {
 	}
 	if m == nil {
 		return nil, fmt.Errorf("discovery: probe found a map, the unfiltered build did not")
+	}
+	return m, nil
+}
+
+// Probe returns the map header (version, roots, capabilities) with zero
+// pairs — well under a second, no SOPS. ErrUnsupported when the tree's ATLAS
+// has no map mode.
+func Probe(ctx context.Context, r helmfile.Runner) (*Map, error) {
+	m, err := build(ctx, r, helmfile.Options{DiscoveryMap: true, Clusters: []string{probeCluster}})
+	if err != nil {
+		return nil, fmt.Errorf("discovery probe: %w", err)
+	}
+	if m == nil {
+		return nil, ErrUnsupported
 	}
 	return m, nil
 }

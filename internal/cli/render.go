@@ -41,6 +41,11 @@ ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE is set.`,
 				if err := sel.fromArgoCD(); err != nil {
 					return err
 				}
+			}
+			if err := sel.prepare(cmd.Context(), r, argocd); err != nil {
+				return err
+			}
+			if argocd {
 				if os.Getenv("ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE") == "" {
 					if ns := os.Getenv("ARGOCD_APP_NAMESPACE"); ns != "" {
 						args = append([]string{"--namespace", ns}, args...)
@@ -51,10 +56,13 @@ ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE is set.`,
 			if outputDir != "" {
 				args = append(args, "--output-dir", outputDir, "--output-dir-template", helmfile.OutputDirTemplate)
 			}
-			return r.Run(cmd.Context(), sel.options(), os.Stdout, append(args, extra...)...)
+			if err := r.Run(cmd.Context(), sel.options(argocd), os.Stdout, append(args, extra...)...); err != nil {
+				return sel.explain(cmd.Context(), r, err)
+			}
+			return nil
 		},
 	}
-	sel.register(cmd)
+	sel.register(cmd, "render", true)
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "o", "", "write one directory per release instead of stdout")
 	cmd.Flags().BoolVar(&argocd, "argocd", false, "Argo CD plugin mode (filter + namespace from the plugin environment)")
 	return cmd
@@ -96,16 +104,22 @@ func newInspectCmd(g *globalFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			sel.lenient = !withValues
+			if err := sel.prepare(cmd.Context(), r, false); err != nil {
+				return err
+			}
 			args := append([]string{"build"}, sel.selectors()...)
 			if !withValues {
-				// embedded values may carry decrypted secrets; opt in explicitly
 				args = append(args, "--embed-values=false")
 			}
-			return r.Run(cmd.Context(), sel.options(), os.Stdout, append(args, extra...)...)
+			if err := r.Run(cmd.Context(), sel.options(false), os.Stdout, append(args, extra...)...); err != nil {
+				return sel.explain(cmd.Context(), r, err)
+			}
+			return nil
 		},
 	}
-	sel.register(cmd)
-	cmd.Flags().BoolVar(&withValues, "values", false, "embed rendered values (may contain decrypted secrets unless --skip-secrets)")
+	sel.register(cmd, "inspect", false)
+	cmd.Flags().BoolVar(&withValues, "values", false, "embed rendered values (secret values stay ENC[...] unless --decrypt)")
 	return cmd
 }
 

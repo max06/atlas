@@ -3,13 +3,16 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/helmfile"
 )
 
@@ -23,23 +26,120 @@ type globalFlags struct {
 }
 
 // selection are the filter/secret flags shared by render-like commands.
+//
+// Secrets: without --decrypt or --redact nothing is decrypted — SOPS values
+// stay ENC[...], no key is needed, nothing secret reaches the terminal. That
+// needs an ATLAS that honors ATLAS_SKIP_SECRETS (an older one ignores the
+// variable and decrypts anyway), so prepare checks the map capabilities first.
 type selection struct {
 	clusters    []string
 	deployments []string
-	skipSecrets bool
+	decrypt     bool
+	skipSecrets bool // the default; kept so scripts that pass it keep working
 	redact      bool
+	// lenient: output never shows values (inspect without --values) — an
+	// ATLAS without keyless support may decrypt, nothing reaches the output.
+	lenient bool
 }
 
-func (s *selection) register(cmd *cobra.Command) {
+// register adds the flags; verb names the command in the help texts
+// ("render", "inspect"). withRedact adds --redact (post-renderer: render only).
+func (s *selection) register(cmd *cobra.Command, verb string, withRedact bool) {
 	f := cmd.Flags()
-	f.StringSliceVarP(&s.clusters, "cluster", "c", nil, "render only these clusters (full path, e.g. group/cluster; repeat or comma-separate)")
-	f.StringSliceVarP(&s.deployments, "deployment", "d", nil, "render only these deployments (repeat or comma-separate)")
-	f.BoolVar(&s.skipSecrets, "skip-secrets", false, "never decrypt SOPS files: secret values render as their ENC[...] ciphertext (output not deployable, no key needed)")
-	f.BoolVar(&s.redact, "redact", false, "redact secret values in the output (atlas-redact post-renderer; needs the helm plugin)")
+	f.StringSliceVarP(&s.clusters, "cluster", "c", nil, verb+" only these clusters: full path (group/cluster) or the leaf name; repeat or comma-separate")
+	f.StringSliceVarP(&s.deployments, "deployment", "d", nil, verb+" only these deployments; repeat or comma-separate")
+	f.BoolVar(&s.decrypt, "decrypt", false, "decrypt SOPS files (needs the key); default: secret values stay ENC[...], no key needed")
+	f.BoolVar(&s.skipSecrets, "skip-secrets", false, "never decrypt SOPS files (the default)")
+	_ = f.MarkHidden("skip-secrets")
+	if withRedact {
+		f.BoolVar(&s.redact, "redact", false, "decrypt, then redact secret values in the output (needs the atlas-redact helm plugin)")
+	}
 }
 
-func (s selection) options() helmfile.Options {
-	return helmfile.Options{Clusters: s.clusters, Deployments: s.deployments, SkipSecrets: s.skipSecrets, Redact: s.redact}
+// keyless reports whether this run must not decrypt.
+func (s selection) keyless(argocd bool) bool {
+	return !(s.decrypt || s.redact || argocd)
+}
+
+func (s selection) options(argocd bool) helmfile.Options {
+	return helmfile.Options{Clusters: s.clusters, Deployments: s.deployments, SkipSecrets: s.keyless(argocd), Redact: s.redact}
+}
+
+// prepare validates the flags against the tree's ATLAS before a render:
+// keyless rendering and multi-value filters need the matching capability,
+// leaf cluster names are resolved to full paths. Argo CD mode skips all of it
+// (one cluster, one deployment, full path, decrypting — the production path).
+func (s *selection) prepare(ctx context.Context, r helmfile.Runner, argocd bool) error {
+	if s.decrypt && s.skipSecrets {
+		return fmt.Errorf("--decrypt and --skip-secrets exclude each other")
+	}
+	if argocd {
+		return nil
+	}
+	multi := len(s.clusters) > 1 || len(s.deployments) > 1
+	short := false
+	for _, c := range s.clusters {
+		short = short || !strings.Contains(c, "/")
+	}
+	if !s.keyless(false) && !multi && !short {
+		return nil
+	}
+	probe, err := discovery.Probe(ctx, quiet(r))
+	if err != nil && !errors.Is(err, discovery.ErrUnsupported) {
+		return err
+	}
+	if s.keyless(false) && !probe.Has(discovery.CapabilitySkipSecrets) {
+		if s.lenient {
+			s.decrypt = true
+			return s.prepare(ctx, r, argocd)
+		}
+		return fmt.Errorf("the ATLAS version this repository pins (%s) cannot render without decrypting SOPS files — pass --decrypt (needs the key) or update the pin", r.File)
+	}
+	if multi && !probe.Has(discovery.CapabilityMultiValueFilter) {
+		return fmt.Errorf("the ATLAS version this repository pins (%s) renders one cluster and one deployment per filter — pass a single -c/-d or update the pin", r.File)
+	}
+	if !short {
+		return nil
+	}
+	m, err := discovery.Discover(ctx, quiet(r))
+	if err != nil {
+		return fmt.Errorf("resolve cluster names: %w", err)
+	}
+	for i, c := range s.clusters {
+		if s.clusters[i], err = m.ResolveCluster(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// explain turns a failed filtered render into a name error when a cluster or
+// deployment does not exist (helmfile only says "no releases found").
+func (s selection) explain(ctx context.Context, r helmfile.Runner, renderErr error) error {
+	if len(s.clusters) == 0 && len(s.deployments) == 0 {
+		return renderErr
+	}
+	m, err := discovery.Discover(ctx, quiet(r))
+	if err != nil {
+		return renderErr
+	}
+	for _, c := range s.clusters {
+		if _, err := m.ResolveCluster(c); err != nil {
+			return err
+		}
+	}
+	for _, d := range s.deployments {
+		if err := m.CheckDeployment(d); err != nil {
+			return err
+		}
+	}
+	return renderErr
+}
+
+// quiet drops helmfile's stderr (the expected empty-probe notice).
+func quiet(r helmfile.Runner) helmfile.Runner {
+	r.Stderr = io.Discard
+	return r
 }
 
 // selectors mirrors the stage-1 filter as helmfile release selectors — the

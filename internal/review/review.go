@@ -32,9 +32,10 @@ type Spec struct {
 
 // Session holds the resolved revisions and the shared workspace.
 type Session struct {
-	Repo  *gitrev.Repo
-	Entry string // entry helmfile, repo-relative
-	Log   io.Writer
+	Repo   *gitrev.Repo
+	Entry  string // entry helmfile, repo-relative
+	Binary string // helmfile binary ("" = helmfile)
+	Log    io.Writer
 
 	BaseRev, HeadRev string // commit ids as given/resolved
 	HeadTree         string // tree reviewed as "after": merge result, or HeadRev with NoMerge
@@ -123,7 +124,7 @@ func (s *Session) checkout(ctx context.Context, side Side) error {
 // chatter of helm/helmfile) is captured; withLog attaches its tail to errors.
 func (s *Session) runner() (helmfile.Runner, *bytes.Buffer) {
 	var buf bytes.Buffer
-	return helmfile.Runner{File: s.Entry, Dir: s.Workspace, Stderr: &buf}, &buf
+	return helmfile.Runner{Binary: s.Binary, File: s.Entry, Dir: s.Workspace, Stderr: &buf}, &buf
 }
 
 func withLog(err error, log *bytes.Buffer) error {
@@ -137,10 +138,23 @@ func withLog(err error, log *bytes.Buffer) error {
 	return fmt.Errorf("%w\n  %s", err, strings.Join(lines, "\n  "))
 }
 
+// ErrNoEntry means a side has no entry helmfile (the repo predates ATLAS there).
+var ErrNoEntry = errors.New("entry helmfile missing")
+
 // Classification is a classify result plus both maps (nil = side has none).
 type Classification struct {
 	classify.Result
 	BaseMap, HeadMap *discovery.Map
+	// BaseErr says why BaseMap is nil: ErrNoEntry, discovery.ErrUnsupported
+	// (ATLAS without map mode), or a discovery failure (the side is broken).
+	BaseErr error
+}
+
+// BaseBroken reports whether the target side failed discovery for another
+// reason than "no entry" or "no map mode" — its render fails the same way.
+func (c *Classification) BaseBroken() bool {
+	return c.BaseMap == nil && c.BaseErr != nil &&
+		!errors.Is(c.BaseErr, ErrNoEntry) && !errors.Is(c.BaseErr, discovery.ErrUnsupported)
 }
 
 // Classify discovers both sides and classifies the changed paths.
@@ -160,7 +174,7 @@ func (s *Session) Classify(ctx context.Context) (*Classification, error) {
 			fmt.Fprintf(s.Log, "review: no discovery map on the %s side: %v\n", side, err)
 		}
 		if side == Base {
-			out.BaseMap = m
+			out.BaseMap, out.BaseErr = m, err
 		} else {
 			out.HeadMap = m
 		}
@@ -174,7 +188,7 @@ func (s *Session) discover(ctx context.Context, side Side) (*discovery.Map, erro
 		return nil, err
 	}
 	if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil {
-		return nil, fmt.Errorf("entry helmfile %s missing", s.Entry)
+		return nil, fmt.Errorf("%s: %w", s.Entry, ErrNoEntry)
 	}
 	r, log := s.runner()
 	m, err := discovery.Discover(ctx, r)
@@ -190,26 +204,50 @@ func (s *Session) discover(ctx context.Context, side Side) (*discovery.Map, erro
 // RenderOptions control the renders of a review.
 type RenderOptions struct {
 	SkipSecrets, Redact bool
-	Parallel            int // concurrent helmfile invocations (one per cluster)
+	// BaseErr: the target side is known broken (failed discovery) — it is not
+	// rendered, Render reports it as a base error.
+	BaseErr  error
+	Parallel int // concurrent helmfile invocations (one per cluster)
+}
+
+// Render status of one side (the render.sh outputs of the review pipeline).
+const (
+	StatusSuccess = "success"
+	StatusError   = "error"   // render failed — the side's tree is incomplete
+	StatusMissing = "missing" // no entry helmfile on that side (repo predates ATLAS)
+)
+
+// RenderResult says how each side rendered. A base error is not fatal for
+// Render (the change may be the fix); the caller decides, because a diff
+// against a failed base shows every release of the selection as added.
+type RenderResult struct {
+	Base, Head string
+	BaseErr    error
 }
 
 // Render renders both sides into outDir/base and outDir/head. With a subset
 // classification only the selected pairs render; otherwise everything.
-func (s *Session) Render(ctx context.Context, c *Classification, outDir string, opts RenderOptions) error {
+func (s *Session) Render(ctx context.Context, c *Classification, outDir string, opts RenderOptions) (RenderResult, error) {
+	res := RenderResult{Base: StatusSuccess, Head: StatusSuccess}
 	for _, side := range []Side{Base, Head} {
 		dir := filepath.Join(outDir, string(side))
 		if err := os.RemoveAll(dir); err != nil {
-			return err
+			return res, err
+		}
+		if side == Base && opts.BaseErr != nil {
+			res.Base, res.BaseErr = StatusError, opts.BaseErr
+			continue
 		}
 		if err := s.checkout(ctx, side); err != nil {
-			return err
+			return res, err
 		}
 		if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil {
 			if side == Base {
 				fmt.Fprintf(s.Log, "review: %s side has no %s, nothing to render\n", side, s.Entry)
+				res.Base = StatusMissing
 				continue
 			}
-			return fmt.Errorf("%s side: entry helmfile %s missing", side, s.Entry)
+			return res, fmt.Errorf("%s side: entry helmfile %s missing", side, s.Entry)
 		}
 		var pairs *[]string
 		if c != nil && c.Mode == "subset" {
@@ -220,14 +258,15 @@ func (s *Session) Render(ctx context.Context, c *Classification, outDir string, 
 		}
 		err := s.renderSide(ctx, dir, pairs, opts)
 		if err != nil && side == Base {
-			fmt.Fprintf(s.Log, "review: %s render failed (the change may be the fix): %v\n", side, err)
+			res.Base, res.BaseErr = StatusError, err
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("%s render: %w", side, err)
+			res.Head = StatusError
+			return res, fmt.Errorf("%s render: %w", side, err)
 		}
 	}
-	return nil
+	return res, nil
 }
 
 // renderSide renders the workspace into dir: everything when pairs is nil,
