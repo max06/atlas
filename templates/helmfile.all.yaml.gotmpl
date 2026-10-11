@@ -299,6 +299,16 @@ helmfiles:
           {{- /* version 2: pairs carry "charts" (repo-relative local
                chart directories their releases render from). */}}
           version: 2
+          {{- /* capabilities: runtime switches this ATLAS version honors.
+               Callers (the atlas CLI) read them from the cheap probe build
+               before they rely on a switch: an older ATLAS ignores unknown
+               ATLAS_* variables silently, e.g. it would decrypt SOPS files
+               although ATLAS_SKIP_SECRETS is set. Additive list — a new
+               switch appends its name, no version bump. */}}
+          capabilities:
+            - skipSecrets       # ATLAS_SKIP_SECRETS
+            - multiValueFilter  # comma lists in ATLAS_FILTER_*
+            - redactSecrets     # ATLAS_REDACT_SECRETS
           deploymentsRoot: {{ $.Values.atlas.deploymentDefinitions }}
           templatesRoot: {{ $.Values.atlas.appTemplates }}
           pairs:

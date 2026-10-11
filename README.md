@@ -449,6 +449,7 @@ ATLAS_DISCOVERY_MAP=1 helmfile build --allow-no-matching-release \
 ```json
 {
   "version": 2,
+  "capabilities": ["skipSecrets", "multiValueFilter", "redactSecrets"],
   "deploymentsRoot": "deployments",
   "templatesRoot": "templates",
   "pairs": [
@@ -458,6 +459,8 @@ ATLAS_DISCOVERY_MAP=1 helmfile build --allow-no-matching-release \
   ]
 }
 ```
+
+`capabilities` lists the runtime switches this ATLAS version honors (`ATLAS_SKIP_SECRETS`, comma lists in `ATLAS_FILTER_*`, `ATLAS_REDACT_SECRETS`). An older ATLAS ignores an unknown `ATLAS_*` variable silently — it would, for example, decrypt SOPS files although `ATLAS_SKIP_SECRETS` is set — so callers read this list before they rely on a switch. A build filtered to a cluster that does not exist (the probe) returns the header with zero pairs in well under a second. New switches append their name; the version stays.
 
 `charts` lists the local chart directories (repo-relative) the pair's releases render from, including `file://` subcharts; ATLAS renders each app template once with the SOPS-free state-build context to read its `chart:` fields. Remote charts are not listed.
 
