@@ -65,6 +65,10 @@ on:
         description: "PR label that forces a full render (subsetting off) for that PR"
         type: string
         default: "atlas-full-render"
+      runs-on:
+        description: 'Runner for the review job: a label ("ubuntu-latest", "linux-amd-8") or a JSON object, e.g. {"group":"Default larger runners","labels":["linux-amd-8"]}. Full renders of large repositories need more than a standard runner.'
+        type: string
+        default: "ubuntu-latest"
     secrets:
       sops-age-key:
         required: false
@@ -77,7 +81,7 @@ permissions:
 jobs:
   review:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ startsWith(inputs.runs-on, '{') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     steps:
       - name: Check for latest ATLAS release
         id: latest-release
