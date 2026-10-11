@@ -47,6 +47,19 @@ setup_file() {
   [ "$(jq -r .templatesRoot "$MAP_JSON")" = "templates" ]
 }
 
+@test "discovery map: header lists the runtime capabilities" {
+  [ "$(jq -c '.capabilities | sort' "$MAP_JSON")" = '["multiValueFilter","redactSecrets","skipSecrets"]' ]
+}
+
+@test "discovery map: the no-match probe carries the capabilities too" {
+  local root
+  root="$(_repo_root)"
+  ATLAS_DISCOVERY_MAP=1 ATLAS_FILTER_CLUSTER=__atlas_discovery_probe__ \
+    helmfile -f "$root/tests/helmfile.yaml.gotmpl" build --allow-no-matching-release 2>/dev/null \
+    | yq eval-all -o=json '[.]' - \
+    | jq -e '[.[] | .renderedvalues.atlasDiscovery? // empty] | .[0] | (.pairs | length) == 0 and (.capabilities | index("skipSecrets") != null)'
+}
+
 @test "discovery map: pair set is identical to the real discovery" {
   local from_map from_real
   from_map="$(jq -r '.pairs[] | .cluster + " " + .deploymentName' "$MAP_JSON" | sort)"
