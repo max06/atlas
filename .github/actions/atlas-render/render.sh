@@ -76,8 +76,18 @@ phase() {
 phase "start"
 (
   started=$(date +%s)
+  last_files=-1
+  stalled=0
   while sleep 60; do
-    echo "[heartbeat] ${SIDE_LABEL}: $(( $(date +%s) - started ))s, phase: $(cat "$PHASE_FILE" 2>/dev/null), $(find "$SNAPSHOT_DIR" -type f 2>/dev/null | wc -l) files written"
+    files=$(find "$SNAPSHOT_DIR" -type f 2>/dev/null | wc -l)
+    echo "[heartbeat] ${SIDE_LABEL}: $(( $(date +%s) - started ))s, phase: $(cat "$PHASE_FILE" 2>/dev/null), ${files} files written"
+    # No new file for two beats: show what runs (git clone? sops? helm?).
+    if [ "$files" = "$last_files" ]; then stalled=$((stalled + 1)); else stalled=0; fi
+    last_files=$files
+    if [ "$stalled" -ge 2 ]; then
+      echo "[heartbeat] no progress for ${stalled} min — processes:"
+      ps -o pid,ppid,etime,args 2>/dev/null | grep -v ' ps -o\| grep ' | cut -c1-220 | sed 's/^/[heartbeat]   /'
+    fi
   done
 ) &
 HEARTBEAT_PID=$!
