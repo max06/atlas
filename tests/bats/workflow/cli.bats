@@ -84,6 +84,13 @@ setup() {
   [[ "$stderr" == *'unknown deployment "deploymentX"'* ]]
 }
 
+@test "cli: a failing discovery shows helmfile's reason, not only the exit status" {
+  printf '{{ fail "broken on purpose" }}\n' > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/values.yaml.gotmpl"
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" render -c cluster1 -d deployment1
+  [ "$status" -ne 0 ]
+  [[ "$stderr" == *"broken on purpose"* ]]
+}
+
 @test "cli: ATLAS_* in the caller's environment is ignored (flags are the interface)" {
   local root; root="$(_repo_root)"
   run --separate-stderr env ATLAS_FILTER_DEPLOYMENT_NAME=deployment1 "$ATLAS_CLI" -C "$root/tests" discover
