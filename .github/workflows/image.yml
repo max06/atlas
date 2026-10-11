@@ -18,6 +18,7 @@ on:
       - internal/**
       - .github/actions/atlas-render/install-tools.sh
       - .github/actions/atlas-render/atlas-redact/**
+      - contrib/argocd-cmp/**
       - .github/workflows/image.yml
   push:
     tags: ["v*"]
@@ -30,6 +31,7 @@ on:
       - internal/**
       - .github/actions/atlas-render/install-tools.sh
       - .github/actions/atlas-render/atlas-redact/**
+      - contrib/argocd-cmp/**
       - .github/workflows/image.yml
   workflow_dispatch:
 

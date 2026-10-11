@@ -59,6 +59,10 @@ ENV HOME=/cache/home \
     HELMFILE_UPGRADE_NOTICE_DISABLED=1
 VOLUME /cache
 
+# Argo CD plugin mode: the sidecar runs /var/run/argocd/argocd-cmp-server (from
+# the argocd image's shared volume), which reads this fixed config path.
+COPY contrib/argocd-cmp/plugin.yaml /home/argocd/cmp-server/config/plugin.yaml
+
 COPY --from=build /out/atlas /usr/local/bin/atlas
 
 ENTRYPOINT ["atlas"]
