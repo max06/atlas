@@ -66,7 +66,8 @@ fi
 # goes to the log). The heartbeat prints the phase and the files written once
 # a minute, so a slow render and a hanging one look different in the step log.
 # Every helmfile call has a time limit: a hang becomes an error with the end
-# of the stderr log instead of waiting for the job timeout.
+# of the stderr log instead of waiting for the job timeout. -k: a deadlocked
+# helmfile ignores SIGTERM (seen with helmfile#2261), so KILL follows after 30 s.
 export HELMFILE_TIMEOUT="${HELMFILE_TIMEOUT:-900}"
 PHASE_FILE="${RENDER_TEMP}/${SNAPSHOT_LABEL}-phase"
 phase() {
@@ -134,7 +135,7 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
       for d in "${ds[@]}"; do selectors+=(--selector "cluster=$cluster,deploymentName=$d"); done
       ATLAS_FILTER_CLUSTER="$cluster" \
       ATLAS_FILTER_DEPLOYMENT_NAME="$deployments" \
-      timeout "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
+      timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
         template "${selectors[@]}" \
         --skip-schema-validation --include-crds \
         --output-dir "$RENDER_DIR" \
@@ -191,7 +192,7 @@ DISCOVERY_QUERY='map(
                | map("\(.key):\(.value)") | join(","))
     })'
 phase "discovery (helmfile build)"
-if ! timeout "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
+if ! timeout -k 30 "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
   | yq eval-all -o=json '[.]' - \
   | jq "$DISCOVERY_QUERY" > "$LIST_JSON"; then
   echo "::${LEVEL_TAG}::Failed to discover deployments on ${SIDE_LABEL}"
@@ -209,7 +210,7 @@ TOTAL=$(jq length "$LIST_JSON")
 # sub-helmfile selectors will fail the probe and fall back to bulk rendering.
 phase "selector probe (helmfile list)"
 PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
-  timeout 300 helmfile $HELMFILE_ARGS \
+  timeout -k 30 300 helmfile $HELMFILE_ARGS \
   list --selector cluster=__atlas_probe_nonexistent__ \
   --output json --allow-no-matching-release 2>/dev/null || true)
 if [ -z "$PROBE_OUT" ]; then
@@ -252,7 +253,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
     deployment="${pair#*|}"
     ATLAS_FILTER_CLUSTER="$cluster" \
     ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
-    timeout "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
+    timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
       template \
       --selector "cluster=$cluster,deploymentName=$deployment" \
       --skip-schema-validation --include-crds \
@@ -268,7 +269,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
 else
   # Bulk path: single helmfile template invocation.
   phase "bulk render"
-  ATLAS_REDACT_SECRETS=true timeout "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS template \
+  ATLAS_REDACT_SECRETS=true timeout -k 30 "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS template \
     --skip-schema-validation --include-crds \
     --output-dir "$SNAPSHOT_DIR" \
     --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
