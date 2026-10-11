@@ -225,6 +225,19 @@ jobs:
           merge-fallback: ${{ steps.merge-checkout.outcome == 'failure' }}
           pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_pr_file || '' }}
 
+      # ── Diagnostics (debug logging only) ───────────────────────────────────
+      # A host-side monitor, outside the action containers: if a render step
+      # stalls, the log still shows the containers, processes, memory and disk.
+      - name: Start host monitor (debug)
+        if: runner.debug == '1'
+        run: |
+          nohup bash -c 'while true; do
+            echo "=== $(date -u +%H:%M:%S)"; free -m | head -2; df -h / | tail -1
+            docker ps --format "{{.Names}} {{.Status}} {{.Image}}" 2>/dev/null
+            ps -eo pid,ppid,stat,etime,pcpu,rss,args --sort=-pcpu | head -15 | cut -c1-200
+            sleep 15; done' > "$RUNNER_TEMP/host-monitor.log" 2>&1 &
+          echo "host monitor started"
+
       # ── Render baseline (target branch) ────────────────────────────────────
       # Same workspace path as the PR render (rendered values embed absolute
       # paths), switched to the resolved baseline commit.
@@ -290,6 +303,10 @@ jobs:
           if [ -f "$RUNNER_TEMP/summary.md" ]; then
             cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Host monitor log (debug)
+        if: always() && runner.debug == '1'
+        run: tail -n 400 "$RUNNER_TEMP/host-monitor.log" 2>/dev/null || echo "no monitor log"
 
       - name: Gate on PR render status
         if: always() && steps.pr.outputs.status == 'error'
