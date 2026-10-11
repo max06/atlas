@@ -69,12 +69,15 @@ fi
 # of the stderr log instead of waiting for the job timeout. -k: a deadlocked
 # helmfile ignores SIGTERM (seen with helmfile#2261), so KILL follows after 30 s.
 export HELMFILE_TIMEOUT="${HELMFILE_TIMEOUT:-900}"
+# Parallel helmfile calls: one per CPU (RENDER_PARALLEL overrides). A fixed 4
+# overloaded 2-CPU runners and left larger ones idle.
+RENDER_JOBS="${RENDER_PARALLEL:-$(nproc 2>/dev/null || echo 2)}"
 PHASE_FILE="${RENDER_TEMP}/${SNAPSHOT_LABEL}-phase"
 phase() {
   echo "$1" > "$PHASE_FILE"
   echo "[$(date -u +%H:%M:%S)] ${SIDE_LABEL}: $1"
 }
-phase "start"
+phase "start (${RENDER_JOBS} parallel helmfile calls)"
 (
   started=$(date +%s)
   last_files=-1
@@ -148,7 +151,7 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
     # group "<cluster>|<deployment>" lines into one "<cluster>|<d1>,<d2>" per cluster
     sort -u "$RENDER_PAIRS_FILE" | grep '|' \
       | awk -F'|' '{ if ($1 in acc) acc[$1]=acc[$1] "," $2; else acc[$1]=$2 } END { for (c in acc) print c "|" acc[c] }' \
-      | xargs -r -P4 -I{} bash -c 'render_cluster "{}"' || RENDER_STATUS=$?
+      | xargs -r -P"$RENDER_JOBS" -I{} bash -c 'render_cluster "{}"' || RENDER_STATUS=$?
   fi
   if [ $RENDER_STATUS -ne 0 ]; then
     echo "::${LEVEL_TAG}::${SIDE_LABEL^} subset render failed (phase: $(cat "$PHASE_FILE"))"
@@ -265,7 +268,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
   export -f render_one
   export LEVEL_TAG SIDE_LABEL OUTPUT_DIR_TEMPLATE
   phase "render of $(printf '%s\n' "$PAIRS" | grep -c '|') pair(s)"
-  printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+  printf '%s\n' "$PAIRS" | xargs -r -P"$RENDER_JOBS" -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
 else
   # Bulk path: single helmfile template invocation.
   phase "bulk render"
