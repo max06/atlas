@@ -35,6 +35,12 @@ type ReviewConfig struct {
 	Timeout                    time.Duration
 	Parallel                   int
 
+	// InPlace renders in the checkout itself, switching it between the two
+	// commits (and back to Head at the end) — the CI checkout, as the
+	// step-wise workflow did. Otherwise both commits are exported into a
+	// workspace under Temp and the checkout is never touched.
+	InPlace bool
+
 	Temp    string // work directory (RUNNER_TEMP)
 	Outputs gha.Outputs
 	Log     io.Writer
@@ -78,6 +84,11 @@ func Review(ctx context.Context, c ReviewConfig) error {
 
 	ws := filepath.Join(temp, "atlas-review", "tree")
 	export := func(rev string) error { return repo.Export(ctx, rev, ws) }
+	if c.InPlace {
+		ws = repo.Dir
+		export = func(rev string) error { return repo.Checkout(ctx, rev) }
+		defer func() { _ = repo.Checkout(context.WithoutCancel(ctx), head) }()
+	}
 
 	// ── discovery maps ──────────────────────────────────────────────────────
 	maps := map[string]string{}
@@ -181,6 +192,9 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	if err := Compare(ctx, in, c.Outputs, c.Log); err != nil {
 		return err
 	}
+	if c.InPlace {
+		return nil
+	}
 	return os.RemoveAll(filepath.Dir(ws))
 }
 
@@ -213,6 +227,7 @@ func ReviewAction(ctx context.Context, binary string, log io.Writer) error {
 		SopsAgeKey:     input("SOPS_AGE_KEY"),
 		SopsAgeKeyFile: os.Getenv("SOPS_AGE_KEY_FILE"),
 		Helmfile:       binary,
+		InPlace:        os.Getenv("GITHUB_ACTIONS") != "" && input("IN_PLACE") != "false",
 		Timeout:        timeout,
 		Parallel:       parallel,
 		Temp:           firstNonEmpty(os.Getenv("RUNNER_TEMP"), "/tmp"),

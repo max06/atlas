@@ -217,3 +217,13 @@ func (r *Repo) Export(ctx context.Context, rev, dir string) error {
 	_, err = r.git(ctx, env, "checkout-index", "--all", "--prefix="+abs+"/")
 	return err
 }
+
+// Checkout switches the working tree to rev (detached) and removes untracked
+// files: the CI checkout is a throwaway copy, a developer's never is.
+func (r *Repo) Checkout(ctx context.Context, rev string) error {
+	if _, err := r.git(ctx, nil, "checkout", "-q", "-f", "--detach", rev); err != nil {
+		return err
+	}
+	_, err := r.git(ctx, nil, "clean", "-fdq")
+	return err
+}
