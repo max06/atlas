@@ -14,7 +14,9 @@ import (
 	"github.com/max06/atlas/internal/classify"
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/gitrev"
+	"github.com/max06/atlas/internal/report"
 	"github.com/max06/atlas/internal/review"
+	"github.com/max06/atlas/internal/snapshot"
 )
 
 type revFlags struct {
@@ -152,6 +154,7 @@ func newReviewDiffCmd(g *globalFlags) *cobra.Command {
 		asJSON         bool
 		parallel       int
 		allowBaseError bool
+		format         string
 	)
 	cmd := &cobra.Command{
 		Use:   "diff",
@@ -160,9 +163,13 @@ func newReviewDiffCmd(g *globalFlags) *cobra.Command {
 --full or when the classifier asks for it) from ONE workspace path, and lists
 releases that differ. --patch prints the file diffs as well.
 
-This proof of concept compares rendered files byte for byte; the semantic
-diff and PR comment of the review pipeline (atlas-diff) are not ported yet.`,
+--format text (default) lists the releases whose rendered files differ;
+--format markdown prints the PR comment the review workflow would post
+(semantic per-resource diffs, render scope) — the same code as the CI review.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if format != "text" && format != "markdown" {
+				return fmt.Errorf("--format %q: text or markdown", format)
+			}
 			s, err := openSession(cmd, g, f)
 			if err != nil {
 				return err
@@ -225,6 +232,9 @@ diff and PR comment of the review pipeline (atlas-diff) are not ported yet.`,
 			if err != nil {
 				return err
 			}
+			if format == "markdown" {
+				return printComment(cmd, c, outDir, pairs, res, g.file, full)
+			}
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -258,5 +268,43 @@ diff and PR comment of the review pipeline (atlas-diff) are not ported yet.`,
 	fl.BoolVar(&asJSON, "json", false, "print the changed releases as JSON")
 	fl.IntVar(&parallel, "parallel", 4, "concurrent helmfile invocations")
 	fl.BoolVar(&allowBaseError, "allow-base-error", false, "compare even when the target side does not render (the change may be the fix)")
+	fl.StringVar(&format, "format", "text", "text: changed releases; markdown: the PR comment of the review workflow")
 	return cmd
+}
+
+// printComment prints the review comment for two local render trees: the
+// semantic diff of internal/snapshot and the markdown of internal/report, as
+// the CI review builds it. Nothing to replay: a local review renders keyless
+// (or decrypts on request) on both sides with the same ATLAS.
+func printComment(cmd *cobra.Command, c *review.Classification, outDir string, pairs []string, res review.RenderResult, entry string, full bool) error {
+	d, err := snapshot.Diff(cmd.Context(), snapshot.DiffOptions{
+		BaselineDir: filepath.Join(outDir, "base"), PRDir: filepath.Join(outDir, "head"), Pairs: pairs,
+	})
+	if err != nil {
+		return err
+	}
+	blocks := report.Blocks(d)
+	subsetMode, renderMode := "on", c.Mode
+	if full {
+		subsetMode, renderMode = "off", "full"
+	}
+	if renderMode != "subset" {
+		renderMode = "full"
+	}
+	scope, _ := report.Scope(report.ScopeInput{
+		SubsetMode: subsetMode, RenderMode: renderMode,
+		PRStatus: res.Head, BaselineStatus: res.Base, Classify: &c.Result,
+	})
+	in := report.CommentInput{
+		BaselineStatus: res.Base, PRStatus: res.Head, DiffStatus: d.Status,
+		BaselineFilter: true, PRFilter: true,
+		DiffTotal: d.Resources(), DiffReleases: len(d.Releases),
+		// locally nothing limits the size: the complete blocks
+		DiffBlocks: blocks.Summary, Scope: scope, HelmfilePath: entry,
+	}
+	if res.BaseErr != nil {
+		in.BaselineErrors = res.BaseErr.Error()
+	}
+	fmt.Print(report.Comment(in))
+	return nil
 }

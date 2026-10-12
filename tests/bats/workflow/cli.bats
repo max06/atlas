@@ -166,3 +166,16 @@ setup() {
   [ "$status" -ne 0 ]
   [[ "$stderr" == *"conflicts in: deployments/cluster1/apps/deployment1/deployment.yaml"* ]]
 }
+
+@test "cli: review diff --format markdown prints the review comment of the change" {
+  printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - cliMarker: markdown\n' \
+    > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --offline --format markdown
+  [ "$status" -eq 0 ]
+  [[ "$output" == "## ATLAS Review"* ]]
+  [[ "$output" == *"**Render scope:** 1 of "* ]]
+  [[ "$output" == *"<summary>cluster1 / deployment1 / app1 (1 resources)</summary>"* ]]
+  [[ "$output" == *"+ cliMarker: markdown"* ]]
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --offline --format yaml
+  [ "$status" -ne 0 ]
+}

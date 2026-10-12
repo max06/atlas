@@ -418,6 +418,7 @@ atlas inspect -c cluster -d my-app           # the helmfile states ATLAS generat
 atlas discover                               # the discovery map as JSON
 atlas review classify                        # which pairs your working tree affects
 atlas review diff --patch                    # render them on both sides and diff
+atlas review diff --format markdown          # the PR comment the review workflow would post
 atlas doctor                                 # helm / helmfile / git versions
 ```
 
