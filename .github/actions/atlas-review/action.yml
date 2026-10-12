@@ -40,6 +40,14 @@ inputs:
   run-url:
     description: Run URL for the comment's links
     required: false
+  in-place:
+    description: >
+      "true" (default): render in the checkout, switching it between the two
+      commits and back to HEAD (renders from RUNNER_TEMP were about 45 %
+      slower on GitHub runners). "false": export both commits into a
+      workspace under RUNNER_TEMP and leave the checkout alone.
+    required: false
+    default: "true"
 
 outputs:
   body:
@@ -82,3 +90,4 @@ runs:
     INPUT_LATEST_ATLAS_TAG: ${{ inputs.latest-atlas-tag }}
     INPUT_LATEST_MAIN_SHA: ${{ inputs.latest-main-sha }}
     INPUT_RUN_URL: ${{ inputs.run-url }}
+    INPUT_IN_PLACE: ${{ inputs.in-place }}

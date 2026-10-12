@@ -439,7 +439,9 @@ Both sides are exported into one workspace path in turn, because rendered values
 
 **A target side that does not render stops the review.** A diff against it would show every selected release as added. `--allow-base-error` compares anyway (the change may be the fix).
 
-`atlas review classify` is a port of the review pipeline's `classify.sh`. Its precomputed mode (`--map-base`, `--map-head`, `--changes-file`, `--out`) writes the same output set, and the classify scenarios compare both when `ATLAS_CLI` points at a binary. `atlas review diff` compares rendered files byte for byte; the semantic diff and PR comment of `atlas-diff` are not ported yet.
+`atlas review classify` is a port of the review pipeline's `classify.sh`. Its precomputed mode (`--map-base`, `--map-head`, `--changes-file`, `--out`) writes the same output set, and the classify scenarios compare both when `ATLAS_CLI` points at a binary. `atlas review diff` compares rendered files byte for byte.
+
+**The CI review is the CLI.** The review workflow runs `atlas review ci action review` in the atlas image (action `atlas-review`). The steps of the former bash pipeline are subcommands of `atlas review ci` (`render`, `discover`, `scrub`, `replay`, `diff`, `shadow`, `comment`) with the same environment contract as the scripts; the scripts under `.github/actions/*/` remain as the reference implementation of the workflow tests.
 
 `atlas render --argocd` runs as the Argo CD config management plugin: the filter comes from `ARGOCD_ENV_ATLAS_FILTER_CLUSTER` / `ARGOCD_ENV_ATLAS_FILTER_DEPLOYMENT_NAME`, and releases render into `ARGOCD_APP_NAMESPACE` unless `ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE` is set.
 
@@ -546,9 +548,9 @@ ATLAS provides a reusable GitHub Actions workflow that compares rendered Kuberne
 
 ### How it works
 
-1. Checks out the **target branch HEAD**, renders all manifests as a baseline
-2. Checks out the **merge result** (what will be deployed after merging), renders manifests
-3. Generates per-resource diffs grouped by release, posts a sticky PR comment
+1. Checks out the **merge result** (GitHub's trial merge, what will be deployed after merging) with its first parent, the **target commit** it was made against
+2. Runs ONE container step (action `atlas-review`, the atlas CLI): discovery maps of both commits, classification of the changed paths, the render of the merge result (with its redaction maps), the render of the target commit from the same checkout path, the redaction replay over the target render, per-resource semantic diffs (dyff)
+3. Posts a sticky PR comment and a job summary with the complete diff
 
 This "merge-result" strategy ensures the diff answers *"what changes if I hit merge right now?"* — it accounts for changes that landed on main since the PR was created.
 
@@ -617,6 +619,9 @@ jobs:
 |-------|---------|-------------|
 | `helmfile-path` | `helmfile.yaml.gotmpl` | Path to the helmfile entry point |
 | `diff-mode` | `dyff` | Diff engine: `dyff` for YAML-aware semantic diffs, `classic` for standard unified diffs |
+| `render-subset` | `off` | Changed-file render subsetting: `off`, `shadow` or `on` (see above) |
+| `full-render-label` | `atlas-full-render` | PR label that forces a full render for that PR |
+| `runs-on` | `ubuntu-latest` | Runner label, or a JSON object such as `{"group":"…","labels":["…"]}` — full renders of large repositories need more than a standard runner |
 
 ### Secrets
 
