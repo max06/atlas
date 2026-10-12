@@ -11,7 +11,7 @@
 load '../helpers/render'
 
 _render_script() {
-  echo "$(_repo_root)/.github/actions/atlas-render/render.sh"
+  echo "$(_actions_dir)/atlas-render/render.sh"
 }
 
 _setup_helm_plugins() {
@@ -173,7 +173,7 @@ _map_render() {
 
 _fixture_map() {
   ( cd "$(_repo_root)/tests" && HELMFILE_PATH=helmfile.yaml.gotmpl \
-      "$(_repo_root)/.github/actions/atlas-render/discover.sh" "$1" >/dev/null )
+      "$(_actions_dir)/atlas-render/discover.sh" "$1" >/dev/null )
 }
 
 @test "render.sh: pairs from a discovery map render the same files as the discovery build" {

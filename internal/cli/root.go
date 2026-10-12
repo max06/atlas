@@ -228,6 +228,9 @@ func (g *globalFlags) runner() (helmfile.Runner, error) {
 // Execute runs the CLI.
 func Execute(ctx context.Context) int {
 	if err := NewRoot().ExecuteContext(ctx); err != nil {
+		if code, ok := exitCode(err); ok {
+			return code
+		}
 		fmt.Fprintln(os.Stderr, "atlas:", err)
 		return 1
 	}

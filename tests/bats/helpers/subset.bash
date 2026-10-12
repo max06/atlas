@@ -16,8 +16,6 @@
 # sibling explicitly.
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/render.bash"
 
-_actions_dir() { echo "$(_repo_root)/.github/actions"; }
-
 # make_fixture_repo <dir> — create the repo with one commit ("base").
 make_fixture_repo() {
   local dir="$1" root

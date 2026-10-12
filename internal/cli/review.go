@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/max06/atlas/internal/ci"
 	"github.com/max06/atlas/internal/classify"
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/gitrev"
@@ -38,7 +39,7 @@ tip of the target branch (by default the remote-tracking ref, fetched first —
 a stale local branch would show newer target commits as reverts), the other
 side is the merge result, built locally with git merge-tree.`,
 	}
-	cmd.AddCommand(newReviewClassifyCmd(g), newReviewDiffCmd(g))
+	cmd.AddCommand(newReviewClassifyCmd(g), newReviewDiffCmd(g), newReviewCICmd(g))
 	return cmd
 }
 
@@ -86,7 +87,7 @@ or helmfile (drop-in for .github/actions/atlas-render/classify.sh).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var result classify.Result
 			if mapBase != "" || mapHead != "" || changesFile != "" {
-				in, err := precomputedInput(mapBase, mapHead, changesFile, g.file)
+				in, err := ci.ClassifyInput(mapBase, mapHead, changesFile, g.file)
 				if err != nil {
 					return err
 				}
@@ -139,38 +140,6 @@ func parenIf(s string) string {
 		return ""
 	}
 	return " (" + s + ")"
-}
-
-func precomputedInput(mapBase, mapHead, changesFile, entry string) (classify.Input, error) {
-	in := classify.Input{Entry: entry}
-	var err error
-	if in.Base, err = readMap(mapBase); err != nil {
-		return in, err
-	}
-	if in.PR, err = readMap(mapHead); err != nil {
-		return in, err
-	}
-	data, err := os.ReadFile(changesFile)
-	if err != nil {
-		return in, err
-	}
-	in.Changes = gitrev.ParseNameStatus(string(data))
-	return in, nil
-}
-
-func readMap(path string) (*discovery.Map, error) {
-	if path == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
-		return nil, nil // missing/empty = this side has no map → full render
-	}
-	var m discovery.Map
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return &m, nil
 }
 
 func newReviewDiffCmd(g *globalFlags) *cobra.Command {
