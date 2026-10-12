@@ -224,6 +224,7 @@ jobs:
           blocking: "true"
           merge-fallback: ${{ steps.merge-checkout.outcome == 'failure' }}
           pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_pr_file || '' }}
+          map-file: ${{ steps.map-pr.outputs.map_file }}
 
       # ── Diagnostics (debug logging only) ───────────────────────────────────
       # A host-side monitor, outside the action containers: if a render step
@@ -270,6 +271,7 @@ jobs:
           enable-sidedump: "false"
           blocking: "false"
           pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_baseline_file || '' }}
+          map-file: ${{ steps.map-baseline.outputs.map_file }}
 
       # ── Diff, replay, and comment ──────────────────────────────────────────
       - name: Diff and build comment

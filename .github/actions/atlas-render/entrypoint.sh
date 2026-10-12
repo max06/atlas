@@ -8,6 +8,17 @@ set -euo pipefail
 DEFAULT_PLUGINS=$(helm env HELM_PLUGINS 2>/dev/null || echo "")
 export HELM_PLUGINS="${DEFAULT_PLUGINS:+${DEFAULT_PLUGINS}:}/atlas-plugins"
 
+# Charts, repositories and remote helmfile states survive the steps of a job:
+# GitHub mounts the same /github/home into every docker step. The discovery
+# steps fetch the remote states once, the baseline render reuses the charts
+# the PR render downloaded. (The image defaults point into /cache, a volume
+# per container.)
+if [ -n "${GITHUB_ACTIONS:-}" ] && [ -d /github/home ]; then
+  export XDG_CACHE_HOME=/github/home/.cache
+  export HELM_CACHE_HOME=/github/home/.cache/helm
+  export HELM_CONFIG_HOME=/github/home/.config/helm
+fi
+
 export HELMFILE_PATH="${INPUT_HELMFILE_PATH:?helmfile-path input is required}"
 export SNAPSHOT_LABEL="${INPUT_SNAPSHOT_LABEL:?snapshot-label input is required}"
 export RENDER_TEMP="${RUNNER_TEMP:-/tmp}"
@@ -57,6 +68,10 @@ esac
 
 if [ -n "${INPUT_PAIRS_FILE:-}" ]; then
   export RENDER_PAIRS_FILE="${INPUT_PAIRS_FILE}"
+fi
+
+if [ -n "${INPUT_MAP_FILE:-}" ]; then
+  export RENDER_MAP_FILE="${INPUT_MAP_FILE}"
 fi
 
 if [ -n "${INPUT_SOPS_AGE_KEY:-}" ]; then

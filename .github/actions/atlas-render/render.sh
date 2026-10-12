@@ -18,6 +18,9 @@
 #                            discovery map, so they are known to exist. An empty
 #                            file renders nothing and reports success (this side has
 #                            no selected pair — e.g. every selected deployment is new).
+#   RENDER_MAP_FILE        — full render: discovery map of this side (discover.sh). When
+#                            set and valid, the pairs come from the map; the slow
+#                            discovery build and the selector probe are skipped.
 #   ATLAS_SIDEDUMP_MAP_DIR — if set, enables redaction-map side-dump (PR render only)
 #   MERGE_FALLBACK         — "true" if merge ref was unavailable (PR render only)
 #   SOPS_AGE_KEY           — SOPS age private key (written to a temp file)
@@ -110,6 +113,38 @@ if [ ! -f "$HELMFILE_PATH" ]; then
   exit 0
 fi
 
+# ── Template flags and repository warm-up ───────────────────────────────────
+# Parallel helmfile calls must not run "helm repo add" themselves: every call
+# rewrote the shared repositories.yaml, and a concurrent call then failed with
+# "repo <name> not found". `helmfile repos` adds every repository once (in the
+# background while discovery runs); the renders then use --skip-refresh and
+# add nothing. --allow-failed-releases (helmfile >= 1.8) lets the other
+# releases of a call continue when one release fails; the call still fails.
+# TEMPLATE_EXTRA is a plain string: the xargs subshells cannot see arrays.
+TEMPLATE_EXTRA=""
+if helmfile --help 2>/dev/null | grep -q -- '--allow-failed-releases'; then
+  TEMPLATE_EXTRA="--allow-failed-releases"
+fi
+export TEMPLATE_EXTRA
+REPOS_LOG="${RENDER_TEMP}/${SNAPSHOT_LABEL}-repos.log"
+WARMUP_PID=""
+start_repo_warmup() {
+  # args: optional VAR=value filter assignments for the warm-up build
+  ( env "$@" timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" repos >"$REPOS_LOG" 2>&1 ) &
+  WARMUP_PID=$!
+}
+finish_repo_warmup() {
+  [ -n "$WARMUP_PID" ] || return 0
+  if wait "$WARMUP_PID"; then
+    TEMPLATE_EXTRA="$TEMPLATE_EXTRA --skip-refresh"
+    echo "Repositories added once ($(grep -c 'has been added' "$REPOS_LOG" 2>/dev/null || echo 0) new)"
+  else
+    echo "::warning::Repository warm-up failed on ${SIDE_LABEL} — every render adds its repositories itself"
+    tail -n 10 "$REPOS_LOG" 2>/dev/null | cut -c1-300
+  fi
+  export TEMPLATE_EXTRA
+}
+
 # ── Subset mode ─────────────────────────────────────────────────────────────
 # The pairs file replaces discovery: the review classifier derived it from this
 # side's discovery map (ATLAS_DISCOVERY_MAP, see discover.sh + classify.sh).
@@ -140,13 +175,18 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
       ATLAS_FILTER_DEPLOYMENT_NAME="$deployments" \
       timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
         template "${selectors[@]}" \
-        --skip-schema-validation --include-crds \
+        --skip-schema-validation --include-crds $TEMPLATE_EXTRA \
         --output-dir "$RENDER_DIR" \
         --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
         2>>"$STDERR_LOG" \
       || { echo "::${LEVEL_TAG}::Render failed for $cluster [$deployments] on ${SIDE_LABEL}" >&2; return 1; }
     }
     export -f render_cluster
+    phase "add repositories of the selection (helmfile repos)"
+    start_repo_warmup \
+      ATLAS_FILTER_CLUSTER="$(cut -d'|' -f1 "$RENDER_PAIRS_FILE" | sort -u | paste -sd,)" \
+      ATLAS_FILTER_DEPLOYMENT_NAME="$(cut -d'|' -f2 "$RENDER_PAIRS_FILE" | sort -u | paste -sd,)"
+    finish_repo_warmup
     phase "subset render of ${PAIR_COUNT} pair(s)"
     # group "<cluster>|<deployment>" lines into one "<cluster>|<d1>,<d2>" per cluster
     sort -u "$RENDER_PAIRS_FILE" | grep '|' \
@@ -170,6 +210,26 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
 fi
 
 if [ "${SKIP_FULL_RENDER:-}" != "true" ]; then
+
+# ── Pairs from the discovery map ────────────────────────────────────────────
+# The workflow already built this side's discovery map (seconds). Its pairs
+# are the same as the discovery build below (tested in discovery-map.bats);
+# a map also proves that the stage-1 filter and the selectors work.
+if [ -n "${RENDER_MAP_FILE:-}" ] && [ -s "$RENDER_MAP_FILE" ] \
+   && jq -e '.pairs | type == "array"' "$RENDER_MAP_FILE" >/dev/null 2>&1; then
+  phase "pairs from the discovery map"
+  start_repo_warmup
+  jq '[.pairs[] | {name: .deploymentName, namespace: "",
+        labels: ("cluster:" + .cluster + ",deploymentName:" + .deploymentName)}]' \
+    "$RENDER_MAP_FILE" > "$LIST_JSON"
+  echo "list_json=$LIST_JSON" >> "$GITHUB_OUTPUT"
+  TOTAL=$(jq length "$LIST_JSON")
+  FILTER_SUPPORTED=true
+  echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+  PAIRS_FROM_MAP=true
+fi
+
+if [ "${PAIRS_FROM_MAP:-}" != "true" ]; then
 # ── Discover deployments ────────────────────────────────────────────────────
 # Discovery deliberately avoids `helmfile list`. Since helmfile v1.2.0 its
 # ListReleases collects per-state results through a channel with a fixed buffer
@@ -207,6 +267,10 @@ echo "list_json=$LIST_JSON" >> "$GITHUB_OUTPUT"
 
 TOTAL=$(jq length "$LIST_JSON")
 
+# The discovery build cached the remote states: the repository warm-up can
+# run now, in parallel with the selector probe, without a concurrent fetch.
+start_repo_warmup
+
 # ── Selector-support probe ──────────────────────────────────────────────────
 # Tests whether CLI --selector reaches release-level commonLabels. On current
 # ATLAS this always passes; consumers pinned to older ATLAS refs with hardcoded
@@ -233,6 +297,9 @@ else
   echo "::endgroup::"
 fi
 echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+fi # discovery build + probe (no map)
+
+finish_repo_warmup
 
 # ── Render ──────────────────────────────────────────────────────────────────
 OUTPUT_DIR_TEMPLATE='{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}'
@@ -259,7 +326,7 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
     timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
       template \
       --selector "cluster=$cluster,deploymentName=$deployment" \
-      --skip-schema-validation --include-crds \
+      --skip-schema-validation --include-crds $TEMPLATE_EXTRA \
       --output-dir "$RENDER_DIR" \
       --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
       2>>"$STDERR_LOG" \

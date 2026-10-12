@@ -27,6 +27,12 @@ inputs:
       classify). When set, only those pairs are rendered (subset mode);
       when empty, the full tree is discovered and rendered.
     required: false
+  map-file:
+    description: >
+      Render mode only. Discovery map of this side (mode discover). A full
+      render takes its pairs from the map instead of a discovery build and
+      the selector probe.
+    required: false
   map-baseline:
     description: Classify mode — discovery map JSON of the target branch
     required: false
@@ -114,6 +120,7 @@ runs:
     INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
     INPUT_MODE: ${{ inputs.mode }}
     INPUT_PAIRS_FILE: ${{ inputs.pairs-file }}
+    INPUT_MAP_FILE: ${{ inputs.map-file }}
     INPUT_MAP_BASELINE: ${{ inputs.map-baseline }}
     INPUT_MAP_PR: ${{ inputs.map-pr }}
     INPUT_CHANGES_FILE: ${{ inputs.changes-file }}
