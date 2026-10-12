@@ -240,12 +240,49 @@ func (d differ) release(ctx context.Context, baseDir, prDir string) ([]ResourceD
 		return nil, err
 	}
 	var res []ResourceDiff
-	for _, r := range out {
+	var resFiles []string
+	for i, r := range out {
 		if r != nil && r.Text != "" {
 			res = append(res, *r)
+			resFiles = append(resFiles, files[i])
+		}
+	}
+	// Two resources of one kind and name (in different namespaces) carry the
+	// same label: name the namespace so a reader can tell them apart.
+	count := map[string]int{}
+	for _, r := range res {
+		count[r.Label]++
+	}
+	for i := range res {
+		if count[res[i].Label] < 2 {
+			continue
+		}
+		file := filepath.Join(prDir, filepath.FromSlash(resFiles[i]))
+		if !inPR[resFiles[i]] {
+			file = filepath.Join(baseDir, filepath.FromSlash(resFiles[i]))
+		}
+		if ns := namespace(file); ns != "" {
+			res[i].Label += " in " + ns
 		}
 	}
 	return res, nil
+}
+
+// namespace is metadata.namespace of the first resource in a file.
+func namespace(file string) string {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	var n struct {
+		Metadata struct {
+			Namespace string `yaml:"namespace"`
+		} `yaml:"metadata"`
+	}
+	if docs, err := documents(data); err == nil && len(docs) > 0 && yaml.Unmarshal(docs[0].text, &n) == nil {
+		return n.Metadata.Namespace
+	}
+	return ""
 }
 
 // pair diffs one resource present on both sides; "" = no difference.

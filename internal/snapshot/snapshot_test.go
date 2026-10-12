@@ -42,12 +42,16 @@ func TestReleases(t *testing.T) {
 	write(t, root, "c1/d3/crds-only/chart/crds/crd.yaml", "kind: CustomResourceDefinition\n")
 	// CRDs under templates/crds
 	write(t, root, "c1/d4/r4/chart/templates/crds/crd.yaml", "kind: CustomResourceDefinition\n")
+	// a chart NAMED "crds" (cert-manager's CRD chart) and one named "templates"
+	write(t, root, "c1/d5/cm/cert-manager/templates/a.yaml", "kind: A\n")
+	write(t, root, "c1/d5/cm-crds/crds/templates/crd.yaml", "kind: CustomResourceDefinition\n")
+	write(t, root, "c1/d6/odd/templates/templates/a.yaml", "kind: A\n")
 
 	got, err := Releases(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"c1/d1/r1", "c1/d3/crds-only", "c1/d4/r4", "g/c2/d2/r2"}
+	want := []string{"c1/d1/r1", "c1/d3/crds-only", "c1/d4/r4", "c1/d5/cm", "c1/d5/cm-crds", "c1/d6/odd", "g/c2/d2/r2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Releases = %v, want %v", got, want)
 	}
@@ -207,6 +211,9 @@ func TestDiff(t *testing.T) {
 	write(t, base, "c/d/format/chart/templates/a.yaml", cm("x"))
 	write(t, pr, "c/d/format/chart/templates/a.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: cm}\ndata:\n  k: x\n")
 
+	// two resources with one kind and name, in two namespaces (one file)
+	write(t, pr, "c/d/twins/chart/templates/roles.yaml", "kind: Role\nmetadata:\n  name: r\n  namespace: a\n---\nkind: Role\nmetadata:\n  name: r\n  namespace: b\n")
+
 	res, err := Diff(context.Background(), DiffOptions{
 		BaselineDir: base, PRDir: pr,
 		NoMap: map[string]bool{"c/d/nomap": true, "c/d/nomap-same": true},
@@ -221,7 +228,7 @@ func TestDiff(t *testing.T) {
 	for _, r := range res.Releases {
 		got = append(got, r.Path+":"+r.Change+":"+r.Suppressed)
 	}
-	want := []string{"c/d/changed::", "c/d/gone:removed:removed", "c/d/new:new:", "c/d/nomap::no-map"}
+	want := []string{"c/d/changed::", "c/d/gone:removed:removed", "c/d/new:new:", "c/d/nomap::no-map", "c/d/twins:new:"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("releases = %v, want %v", got, want)
 	}
@@ -231,7 +238,12 @@ func TestDiff(t *testing.T) {
 	if !strings.HasPrefix(res.Releases[2].Resources[0].Text, "! + entire resource added:\n+ apiVersion: v1") {
 		t.Errorf("new resource text:\n%s", res.Releases[2].Resources[0].Text)
 	}
-	if res.Resources() != 2 || res.Suppressed("removed") != 1 || res.Suppressed("no-map") != 1 {
+	l := []string{res.Releases[4].Resources[0].Label, res.Releases[4].Resources[1].Label}
+	sort.Strings(l)
+	if l[0] != "Role/r in a" || l[1] != "Role/r in b" {
+		t.Errorf("colliding labels: %v", l)
+	}
+	if res.Resources() != 4 || res.Suppressed("removed") != 1 || res.Suppressed("no-map") != 1 {
 		t.Errorf("counts: resources %d removed %d nomap %d", res.Resources(), res.Suppressed("removed"), res.Suppressed("no-map"))
 	}
 

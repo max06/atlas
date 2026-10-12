@@ -21,9 +21,11 @@ import (
 //
 // A release directory holds one directory per chart, and helm writes a chart's
 // manifests into <chart>/templates and its CRDs into <chart>/crds. So every
-// "templates" or "crds" directory names a release two levels up. Subcharts
-// sit deeper (<release>/<chart>/charts/<sub>/templates): a candidate below
-// another candidate is part of that release, not a release of its own.
+// "templates" or "crds" directory names a release two levels up — unless it
+// has a "templates" directory of its own: then it is a chart that happens to
+// be called that (cert-manager's CRD chart is named "crds"). Subcharts sit
+// deeper (<release>/<chart>/charts/<sub>/templates): a candidate below another
+// candidate is part of that release, not a release of its own.
 // (The bash pipeline matched "templates" only, so it listed every subchart as
 // an extra release and missed charts that render CRDs only.)
 func Releases(root string) ([]string, error) {
@@ -41,6 +43,9 @@ func Releases(root string) ([]string, error) {
 		if !d.IsDir() || (d.Name() != "templates" && d.Name() != "crds") {
 			return nil
 		}
+		if st, err := os.Stat(filepath.Join(path, "templates")); err == nil && st.IsDir() {
+			return nil // a chart named "templates" or "crds"
+		}
 		release := filepath.Dir(filepath.Dir(path))
 		rel, err := filepath.Rel(root, release)
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
@@ -57,9 +62,7 @@ func Releases(root string) ([]string, error) {
 		all = append(all, r)
 	}
 	sort.Strings(all)
-	// drop candidates nested in another candidate (sorted: an ancestor comes
-	// first, but not necessarily directly before — compare with every kept one
-	// on the same prefix path)
+	// drop candidates nested in another candidate (subcharts, templates/crds)
 	var out []string
 	for _, r := range all {
 		nested := false
