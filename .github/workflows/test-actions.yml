@@ -37,14 +37,14 @@ jobs:
 
       - name: Install helm
         run: |
-          VERSION=$(curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -r .tag_name)
+          VERSION=$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" https://api.github.com/repos/helm/helm/releases/latest | jq -r .tag_name)
           curl -fsSL "https://get.helm.sh/helm-${VERSION}-linux-amd64.tar.gz" | tar xz
           sudo mv linux-amd64/helm /usr/local/bin/helm
           rm -rf linux-amd64
 
       - name: Install helmfile
         run: |
-          VERSION=$(curl -fsSL https://api.github.com/repos/helmfile/helmfile/releases/latest | jq -r .tag_name)
+          VERSION=$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" https://api.github.com/repos/helmfile/helmfile/releases/latest | jq -r .tag_name)
           CLEAN_VERSION="${VERSION#v}"
           curl -fsSL "https://github.com/helmfile/helmfile/releases/download/${VERSION}/helmfile_${CLEAN_VERSION}_linux_amd64.tar.gz" | tar xz
           sudo mv helmfile /usr/local/bin/helmfile
@@ -59,7 +59,7 @@ jobs:
           sudo wget -qO /usr/local/bin/yq \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
-          DYFF_VERSION=$(curl -fsSL https://api.github.com/repos/homeport/dyff/releases/latest | jq -r .tag_name)
+          DYFF_VERSION=$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" https://api.github.com/repos/homeport/dyff/releases/latest | jq -r .tag_name)
           curl -fsSL "https://github.com/homeport/dyff/releases/download/${DYFF_VERSION}/dyff_${DYFF_VERSION#v}_linux_amd64.tar.gz" | tar xz
           sudo mv dyff /usr/local/bin/dyff
 

@@ -7,7 +7,7 @@ FROM alpine:3.24
 RUN apk add --no-cache bash curl jq
 
 # renovate: datasource=github-releases depName=mikefarah/yq
-ARG YQ_VERSION=v4.53.2
+ARG YQ_VERSION=v4.54.1
 # renovate: datasource=github-releases depName=homeport/dyff
 ARG DYFF_VERSION=v1.12.0
 

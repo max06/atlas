@@ -7,15 +7,15 @@ FROM alpine:3.24
 RUN apk add --no-cache bash curl git jq
 
 # renovate: datasource=github-releases depName=helm/helm
-ARG HELM_VERSION=v4.2.3
+ARG HELM_VERSION=v4.3.0
 # renovate: datasource=github-releases depName=helmfile/helmfile
-ARG HELMFILE_VERSION=v1.7.3
+ARG HELMFILE_VERSION=v1.8.1
 # renovate: datasource=github-releases depName=getsops/sops
-ARG SOPS_VERSION=v3.12.2
+ARG SOPS_VERSION=v3.13.3
 # renovate: datasource=github-releases depName=mikefarah/yq
-ARG YQ_VERSION=v4.53.2
+ARG YQ_VERSION=v4.54.1
 # renovate: datasource=github-releases depName=kubernetes-sigs/kustomize extractVersion=^kustomize/(?<version>.+)$
-ARG KUSTOMIZE_VERSION=v5.6.0
+ARG KUSTOMIZE_VERSION=v5.8.3
 
 COPY install-tools.sh /install-tools.sh
 RUN chmod +x /install-tools.sh && \
