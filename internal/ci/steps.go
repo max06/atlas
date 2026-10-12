@@ -101,7 +101,7 @@ func rawMap(stream []byte) ([]byte, error) {
 // Scrub runs the redaction replay over a baseline tree and prints one status
 // line per release (scrub-baseline.sh).
 func Scrub(baselineRoot, mapDir string, stdout, stderr io.Writer) ([]snapshot.ScrubStatus, error) {
-	statuses, err := snapshot.Scrub(baselineRoot, mapDir, stderr)
+	statuses, err := snapshot.Scrub(baselineRoot, mapDir, nil, stderr)
 	if err != nil {
 		return nil, &ExitError{2, err.Error()}
 	}
@@ -114,6 +114,7 @@ func Scrub(baselineRoot, mapDir string, stdout, stderr io.Writer) ([]snapshot.Sc
 // ReplayConfig is the replay.sh contract.
 type ReplayConfig struct {
 	BaselineDir, SidedumpDir, Temp string
+	Pairs                          []string // exact release paths (nil: guessed)
 	Outputs                        gha.Outputs
 	Log                            io.Writer
 }
@@ -142,7 +143,7 @@ func Replay(c ReplayConfig) ([]snapshot.ScrubStatus, error) {
 			return nil, err
 		}
 	}
-	statuses, err := snapshot.Scrub(c.BaselineDir, mapDir, c.Log)
+	statuses, err := snapshot.Scrub(c.BaselineDir, mapDir, c.Pairs, c.Log)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +154,7 @@ func Replay(c ReplayConfig) ([]snapshot.ScrubStatus, error) {
 		switch s.Status {
 		case "scrubbed":
 			scrubbed++
-		case "no-map":
+		case "no-map", "unscrubbed":
 			noMap++
 		}
 	}
@@ -165,21 +166,26 @@ func Replay(c ReplayConfig) ([]snapshot.ScrubStatus, error) {
 	return statuses, c.Outputs.Setf("no_map_count", "%d", noMap)
 }
 
-// ReadReplayStatus reads replay-status.txt: the releases reported no-map.
-func ReadReplayStatus(path string) map[string]bool {
-	noMap := map[string]bool{}
+// ReadReplayStatus reads replay-status.txt: the releases reported no-map,
+// and those reported unscrubbed.
+func ReadReplayStatus(path string) (noMap, unscrubbed map[string]bool) {
+	noMap, unscrubbed = map[string]bool{}, map[string]bool{}
 	f, err := os.Open(path)
 	if err != nil {
-		return noMap
+		return noMap, unscrubbed
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		if status, rel, ok := strings.Cut(sc.Text(), " "); ok && status == "no-map" {
+		status, rel, ok := strings.Cut(sc.Text(), " ")
+		switch {
+		case ok && status == "no-map":
 			noMap[rel] = true
+		case ok && status == "unscrubbed":
+			unscrubbed[rel] = true
 		}
 	}
-	return noMap
+	return noMap, unscrubbed
 }
 
 // ── diff ────────────────────────────────────────────────────────────────────
@@ -190,6 +196,7 @@ type DiffConfig struct {
 	Mode                     string
 	SidedumpDir              string
 	ReplayStatusFile         string
+	Pairs                    []string // exact release paths (nil: guessed)
 	Outputs                  gha.Outputs
 }
 
@@ -212,9 +219,10 @@ func Diff(ctx context.Context, c DiffConfig) (DiffOutcome, error) {
 	if statusFile == "" {
 		statusFile = filepath.Join(c.Temp, "replay-status.txt")
 	}
+	noMap, unscrubbed := ReadReplayStatus(statusFile)
 	res, err := snapshot.Diff(ctx, snapshot.DiffOptions{
 		BaselineDir: c.BaselineDir, PRDir: c.PRDir, Mode: c.Mode,
-		SidedumpDir: c.SidedumpDir, NoMap: ReadReplayStatus(statusFile),
+		SidedumpDir: c.SidedumpDir, NoMap: noMap, Unscrubbed: unscrubbed, Pairs: c.Pairs,
 	})
 	if err != nil {
 		return DiffOutcome{}, err

@@ -181,6 +181,7 @@ func DiffAction(ctx context.Context, log io.Writer) error {
 		RunURL:         input("RUN_URL"),
 		Temp:           temp,
 	}
+	in.Pairs = renderedPairs(filepath.Join(temp, "pr-pairs.txt"), filepath.Join(temp, "baseline-pairs.txt"))
 	if dir := input("CLASSIFY_DIR"); in.SubsetMode != "off" && dir != "" {
 		if c, err := readClassify(filepath.Join(dir, "classify.json")); err == nil {
 			in.Classify = &c
@@ -203,10 +204,13 @@ type CompareInput struct {
 	DiffMode                        string // dyff / classic
 	SubsetMode                      string // off / shadow / on
 	RenderMode                      string // full / subset (what the renders did)
-	Classify                        *classify.Result
-	ClassifySummary                 string
-	HelmfilePath, RunURL            string
-	Temp                            string
+	// Pairs of both renders ("<cluster>|<deployment>"): exact release paths
+	// for the replay and the diff. nil = guessed from the trees.
+	Pairs                []string
+	Classify             *classify.Result
+	ClassifySummary      string
+	HelmfilePath, RunURL string
+	Temp                 string
 }
 
 // Compare replays the redaction maps over the baseline, diffs the trees,
@@ -218,7 +222,7 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 	scratch := gha.Outputs{} // stage outputs that are not step outputs
 
 	// 1. replay the PR side's redaction maps over the baseline
-	statuses, err := Replay(ReplayConfig{BaselineDir: in.BaselineDir, SidedumpDir: in.SidedumpDir, Temp: in.Temp, Outputs: scratch, Log: log})
+	statuses, err := Replay(ReplayConfig{BaselineDir: in.BaselineDir, SidedumpDir: in.SidedumpDir, Temp: in.Temp, Pairs: in.Pairs, Outputs: scratch, Log: log})
 	if err != nil {
 		return err
 	}
@@ -227,7 +231,7 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 	d, err := Diff(ctx, DiffConfig{
 		BaselineDir: in.BaselineDir, PRDir: in.PRDir, Temp: in.Temp,
 		Mode: in.DiffMode, SidedumpDir: in.SidedumpDir,
-		ReplayStatusFile: filepath.Join(in.Temp, "replay-status.txt"), Outputs: scratch,
+		ReplayStatusFile: filepath.Join(in.Temp, "replay-status.txt"), Pairs: in.Pairs, Outputs: scratch,
 	})
 	if err != nil {
 		return err
@@ -327,4 +331,28 @@ func ReadMap(path string) (*discovery.Map, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &m, nil
+}
+
+// renderedPairs is the union of the pairs both render steps wrote, nil
+// unless both files exist (a side that stopped before rendering has none —
+// then the release paths are guessed).
+func renderedPairs(files ...string) []string {
+	out := []string{}
+	for _, f := range files {
+		lines, err := readLines(f)
+		if err != nil {
+			return nil
+		}
+		out = append(out, lines...)
+	}
+	return out
+}
+
+// unionPairs joins the pairs of both renders; nil when a side has none
+// (it stopped before rendering: guess the release paths instead).
+func unionPairs(a, b []string) []string {
+	if a == nil || b == nil {
+		return nil
+	}
+	return append(append([]string{}, a...), b...)
 }

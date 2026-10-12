@@ -47,16 +47,33 @@ func TestReleases(t *testing.T) {
 	write(t, root, "c1/d5/cm-crds/crds/templates/crd.yaml", "kind: CustomResourceDefinition\n")
 	write(t, root, "c1/d6/odd/templates/templates/a.yaml", "kind: A\n")
 
-	got, err := Releases(root)
+	// a release and a deployment NAMED crds / templates (too shallow to be
+	// markers), and a chart named crds with CRDs only
+	write(t, root, "c1/d7/crds/chart/templates/a.yaml", "kind: A\n")
+	write(t, root, "c1/d7/other/chart/templates/a.yaml", "kind: A\n")
+	write(t, root, "g/c2/templates/rel/chart/templates/a.yaml", "kind: A\n")
+	write(t, root, "c1/d8/r8/crds/crds/crd.yaml", "kind: CustomResourceDefinition\n")
+
+	got, err := Guess(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"c1/d1/r1", "c1/d3/crds-only", "c1/d4/r4", "c1/d5/cm", "c1/d5/cm-crds", "c1/d6/odd", "g/c2/d2/r2"}
+	want := []string{"c1/d1/r1", "c1/d3/crds-only", "c1/d4/r4", "c1/d5/cm", "c1/d5/cm-crds", "c1/d6/odd",
+		"c1/d7/crds", "c1/d7/other", "c1/d8/r8", "g/c2/d2/r2", "g/c2/templates/rel"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Releases = %v, want %v", got, want)
+		t.Fatalf("Guess = %v, want %v", got, want)
 	}
-	if got, _ := Releases(filepath.Join(root, "missing")); got != nil {
+	if got, _ := Guess(filepath.Join(root, "missing")); got != nil {
 		t.Fatalf("missing root: %v", got)
+	}
+
+	// with pairs: exactly the directories below <cluster>/<deployment>
+	exact, err := Releases(root, []string{"c1|d1", "g/c2|templates", "c1|absent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"c1/d1/r1", "g/c2/templates/rel"}; !reflect.DeepEqual(exact, want) {
+		t.Fatalf("Releases(pairs) = %v, want %v", exact, want)
 	}
 }
 
@@ -156,7 +173,14 @@ data:
 	write(t, maps, "c/d/r.json", `{"s3cretvalue":"REDACTED","8080":"REDACTED"}`)
 	write(t, maps, "c/d/plain.json", `{}`)
 
-	st, err := Scrub(root, maps, os.Stderr)
+	// maps that contradict the release paths: "c/d/umbrella/chart/charts"
+	// (an umbrella chart without own templates, guessed as a release) lies
+	// below the mapped release c/d/umbrella → unscrubbed, never "{}"-unlocked
+	write(t, root, "c/d/umbrella/chart/charts/sub/templates/s.yaml", "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  k: plain\n")
+	write(t, maps, "c/d/umbrella.json", `{"plain":"REDACTED"}`)
+	write(t, maps, "c/d/umbrella/chart/charts.json", `{}`)
+
+	st, err := Scrub(root, maps, nil, os.Stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +189,7 @@ data:
 		lines = append(lines, s.String())
 	}
 	sort.Strings(lines)
-	want := []string{"no-map c/d/orphan", "scrubbed c/d/plain", "scrubbed c/d/r"}
+	want := []string{"no-map c/d/orphan", "scrubbed c/d/plain", "scrubbed c/d/r", "unscrubbed c/d/umbrella/chart/charts"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Fatalf("statuses = %v, want %v", lines, want)
 	}

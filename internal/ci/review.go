@@ -191,6 +191,7 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		LatestTag: c.LatestTag, LatestMainSHA: c.LatestMainSHA,
 		DiffMode: firstNonEmpty(c.DiffMode, "dyff"), SubsetMode: c.SubsetMode, RenderMode: firstNonEmpty(pr.Mode, "full"),
 		Classify: cls, HelmfilePath: c.Entry, RunURL: c.RunURL, Temp: temp,
+		Pairs: unionPairs(pr.Pairs, baseline.Pairs),
 	}
 	if cls != nil {
 		in.ClassifySummary = readFile(filepath.Join(classifyDir, "classify-summary.md"))

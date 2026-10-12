@@ -30,8 +30,14 @@ type DiffOptions struct {
 	SidedumpDir string
 	// NoMap lists the releases the replay found no map for (Scrub "no-map").
 	NoMap map[string]bool
+	// Unscrubbed lists releases the replay could not be trusted for (Scrub
+	// "unscrubbed"): suppressed like no-map, without the "{}" exception.
+	Unscrubbed map[string]bool
 	// Parallel bounds the concurrent dyff/diff processes (default 4).
 	Parallel int
+	// Pairs ("<cluster>|<deployment>" of both sides) make the release paths
+	// exact; nil guesses them (Releases).
+	Pairs []string
 }
 
 // Diff results.
@@ -118,11 +124,14 @@ func Diff(ctx context.Context, o DiffOptions) (DiffResult, error) {
 		}
 		noMap[rel] = true
 	}
-	baseReleases, err := Releases(o.BaselineDir)
+	for rel := range o.Unscrubbed {
+		noMap[rel] = true
+	}
+	baseReleases, err := Releases(o.BaselineDir, o.Pairs)
 	if err != nil {
 		return DiffResult{}, err
 	}
-	prReleases, err := Releases(o.PRDir)
+	prReleases, err := Releases(o.PRDir, o.Pairs)
 	if err != nil {
 		return DiffResult{}, err
 	}
@@ -196,13 +205,18 @@ func (d differ) release(ctx context.Context, baseDir, prDir string) ([]ResourceD
 	out := make([]*ResourceDiff, len(files))
 	errs := make([]error, len(files))
 	var wg sync.WaitGroup
+	var stop error // first error of the loop itself; running dyffs are still awaited
 	for i, f := range files {
+		if stop != nil {
+			break
+		}
 		b, p := filepath.Join(baseDir, filepath.FromSlash(f)), filepath.Join(prDir, filepath.FromSlash(f))
 		switch {
 		case inBase[f] && inPR[f]:
 			same, err := sameFile(b, p)
 			if err != nil {
-				return nil, err
+				stop = err
+				continue
 			}
 			if same {
 				continue
@@ -224,19 +238,21 @@ func (d differ) release(ctx context.Context, baseDir, prDir string) ([]ResourceD
 		case inPR[f]:
 			text, err := d.whole(p, "added")
 			if err != nil {
-				return nil, err
+				stop = err
+				continue
 			}
 			out[i] = &ResourceDiff{Label: Label(p), Change: "new", Text: text}
 		default:
 			text, err := d.whole(b, "removed")
 			if err != nil {
-				return nil, err
+				stop = err
+				continue
 			}
 			out[i] = &ResourceDiff{Label: Label(b), Change: "removed", Text: text}
 		}
 	}
 	wg.Wait()
-	if err := errors.Join(errs...); err != nil {
+	if err := errors.Join(append(errs, stop)...); err != nil {
 		return nil, err
 	}
 	var res []ResourceDiff

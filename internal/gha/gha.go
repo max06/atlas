@@ -5,6 +5,8 @@
 package gha
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -23,7 +25,8 @@ func FromEnv() Outputs { return Outputs{Path: os.Getenv("GITHUB_OUTPUT")} }
 // (key<<ATLAS_EOF … ATLAS_EOF), as comment.sh did for the body.
 func (o Outputs) Set(key, value string) error {
 	if strings.Contains(value, "\n") {
-		return o.append(key + "<<ATLAS_EOF\n" + value + "\nATLAS_EOF\n")
+		d := delimiter(value)
+		return o.append(key + "<<" + d + "\n" + value + "\n" + d + "\n")
 	}
 	return o.append(key + "=" + value + "\n")
 }
@@ -31,7 +34,33 @@ func (o Outputs) Set(key, value string) error {
 // SetRaw appends key<<ATLAS_EOF, value as is (no newline added), ATLAS_EOF.
 // comment.sh wrote the body this way: its last line ends with a newline.
 func (o Outputs) SetRaw(key, value string) error {
-	return o.append(key + "<<ATLAS_EOF\n" + value + "ATLAS_EOF\n")
+	if !strings.HasSuffix(value, "\n") {
+		value += "\n" // the delimiter must start a line of its own
+	}
+	d := delimiter(value)
+	return o.append(key + "<<" + d + "\n" + value + d + "\n")
+}
+
+// delimiter is ATLAS_EOF, unless the value has a line of that text (render
+// logs end up in the comment body): then a random one, so the value cannot
+// end the output early and set other outputs.
+func delimiter(value string) string {
+	d := "ATLAS_EOF"
+	for containsLine(value, d) {
+		var b [8]byte
+		_, _ = rand.Read(b[:])
+		d = "ATLAS_EOF_" + hex.EncodeToString(b[:])
+	}
+	return d
+}
+
+func containsLine(s, line string) bool {
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimRight(l, "\r") == line {
+			return true
+		}
+	}
+	return false
 }
 
 // Setf is Set with a formatted value.

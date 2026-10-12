@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,7 +19,10 @@ import (
 
 // ScrubStatus is the replay result of one baseline release.
 type ScrubStatus struct {
-	Status  string // scrubbed, no-map, no-yaml
+	// scrubbed; no-map (the PR side has no map for it); no-yaml; unscrubbed
+	// (a map exists, but the replay could not be trusted: the release path
+	// contradicts the maps, or a file failed — the diff suppresses it)
+	Status  string
 	Release string // <cluster…>/<deployment>/<release>
 }
 
@@ -52,18 +56,31 @@ func Marker(value string) string {
 // would otherwise be hashed twice and every Secret would show as changed).
 //
 // A release without a map is reported "no-map" and left untouched; the diff
-// suppresses it (nothing is known about what it might leak). A file that
-// does not parse is left untouched.
-func Scrub(baselineRoot, mapDir string, warn io.Writer) ([]ScrubStatus, error) {
+// suppresses it (nothing is known about what it might leak).
+//
+// It fails closed: a release whose map directory also holds maps below it, or
+// whose ancestor path has a map, is not a release the PR side knows (the
+// release paths of the tree were guessed wrong) — "unscrubbed". So is a
+// release with a file that could not be scrubbed (bash failed the whole step
+// on a write error; an unparsable file it left as it was).
+//
+// pairs ("<cluster>|<deployment>") make the release paths exact (Releases);
+// nil guesses them.
+func Scrub(baselineRoot, mapDir string, pairs []string, warn io.Writer) ([]ScrubStatus, error) {
 	if st, err := os.Stat(baselineRoot); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("scrub: baseline root not a directory: %s", baselineRoot)
 	}
-	releases, err := Releases(baselineRoot)
+	releases, err := Releases(baselineRoot, pairs)
 	if err != nil {
 		return nil, err
 	}
 	var out []ScrubStatus
 	for _, rel := range releases {
+		if MapAmbiguous(mapDir, rel) {
+			fmt.Fprintf(warn, "scrub: %s has redaction maps above or below it — not a release of the PR side, left unchanged\n", rel)
+			out = append(out, ScrubStatus{"unscrubbed", rel})
+			continue
+		}
 		mapFile := filepath.Join(mapDir, filepath.FromSlash(rel)+".json")
 		data, err := os.ReadFile(mapFile)
 		if err != nil {
@@ -85,12 +102,16 @@ func Scrub(baselineRoot, mapDir string, warn io.Writer) ([]ScrubStatus, error) {
 			out = append(out, ScrubStatus{"no-yaml", rel})
 			continue
 		}
+		status := "scrubbed"
 		for _, f := range files {
 			if err := scrubFile(filepath.Join(dir, filepath.FromSlash(f)), repl); err != nil {
-				fmt.Fprintf(warn, "scrub: %s/%s left unchanged: %v\n", rel, f, err)
+				// an unscrubbed file may hold what the replay is there to
+				// remove: the diff must suppress the release
+				fmt.Fprintf(warn, "scrub: %s/%s could not be scrubbed (%v) — release suppressed\n", rel, f, err)
+				status = "unscrubbed"
 			}
 		}
-		out = append(out, ScrubStatus{"scrubbed", rel})
+		out = append(out, ScrubStatus{status, rel})
 	}
 	return out, nil
 }
@@ -255,4 +276,22 @@ func setAny(n *yaml.Node, v any) {
 		out, _ := json.Marshal(x)
 		setString(n, string(out))
 	}
+}
+
+// MapAmbiguous reports whether the redaction maps under mapDir contradict
+// rel being a release: maps below it (<mapDir>/<rel>/…) or a map for one of
+// its ancestors (<mapDir>/<ancestor>.json).
+func MapAmbiguous(mapDir, rel string) bool {
+	if mapDir == "" {
+		return false
+	}
+	if st, err := os.Stat(filepath.Join(mapDir, filepath.FromSlash(rel))); err == nil && st.IsDir() {
+		return true
+	}
+	for p := path.Dir(rel); p != "." && p != "/"; p = path.Dir(p) {
+		if _, err := os.Stat(filepath.Join(mapDir, filepath.FromSlash(p)+".json")); err == nil {
+			return true
+		}
+	}
+	return false
 }

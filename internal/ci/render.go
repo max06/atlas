@@ -128,12 +128,15 @@ type renderSide struct {
 	extraEnv  []string
 	extraArgs []string // --allow-failed-releases, --skip-refresh
 
-	stderr *lockedFile
+	stderr *os.File // the render log, O_APPEND: parallel calls append like bash's 2>>
 	// filterSupported: release selectors work (selector probe); false only
 	// for an ATLAS with hardcoded sub-helmfile selectors
 	filterSupported bool
-	phaseMu         sync.Mutex
-	phaseTxt        string
+	// pairs: the "<cluster>|<deployment>" pairs this render covers — they make
+	// the release paths of the tree exact (snapshot.Releases)
+	pairs    []string
+	phaseMu  sync.Mutex
+	phaseTxt string
 }
 
 // Render renders one side of a review into <Temp>/<Label>-snapshot and writes
@@ -159,6 +162,7 @@ type RenderResult struct {
 	FilterSupported bool
 	SidedumpDir     string // "" unless redaction maps were captured
 	WorkflowPin     string
+	Pairs           []string // "<cluster>|<deployment>" pairs rendered (also in <Temp>/<Label>-pairs.txt)
 	StderrLog       string
 }
 
@@ -188,6 +192,7 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		log:          gha.Log{W: c.Log},
 
 		filterSupported: true,
+		pairs:           []string{},
 	}
 	if c.Label == "pr" {
 		s.sideName = "merge result"
@@ -221,7 +226,7 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 
 	if _, err := os.Stat(inDir(c.Dir, c.HelmfilePath)); err != nil {
 		s.log.Printf("Helmfile not found at %s", c.HelmfilePath)
-		res.Status = "missing"
+		res.Status, res.Pairs = "missing", []string{} // nothing rendered, nothing to guess
 		return res, c.Outputs.Set("status", "missing")
 	}
 
@@ -230,7 +235,7 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	if err := os.RemoveAll(s.snapshot); err != nil {
 		return res, err
 	}
-	f, err := openLocked(s.stderrLog)
+	f, err := os.OpenFile(s.stderrLog, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return res, err
 	}
@@ -273,6 +278,10 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		s.stderrTail()
 	}
 	res.Status, res.SnapshotDir, res.Mode, res.RenderedPairs = status, s.snapshot, mode, rendered
+	res.Pairs = s.pairs
+	if err := os.WriteFile(filepath.Join(c.Temp, c.Label+"-pairs.txt"), []byte(strings.Join(s.pairs, "\n")+"\n"), 0o644); err != nil {
+		return res, err
+	}
 	out := c.Outputs
 	if err := out.Set("status", status); err != nil {
 		return res, err
@@ -286,13 +295,18 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	// ATLAS — suppress the diff", so an empty map ({}) marks them safe.
 	if c.SidedumpDir != "" {
 		if _, err := os.Stat(s.snapshot); err == nil {
-			releases, err := snapshot.Releases(s.snapshot)
+			releases, err := snapshot.Releases(s.snapshot, s.pairs)
 			if err != nil {
 				return res, err
 			}
 			for _, r := range releases {
 				mapFile := filepath.Join(c.SidedumpDir, filepath.FromSlash(r)+".json")
 				if _, err := os.Stat(mapFile); err == nil {
+					continue
+				}
+				if snapshot.MapAmbiguous(c.SidedumpDir, r) {
+					// maps above or below: not a release of this render — an
+					// empty map would unlock its baseline for the diff
 					continue
 				}
 				if err := os.MkdirAll(filepath.Dir(mapFile), 0o755); err != nil {
@@ -340,13 +354,28 @@ func (s *renderSide) runner(w io.Writer) helmfile.Runner {
 	return helmfile.Runner{Binary: s.Helmfile, File: s.HelmfilePath, Dir: s.Dir, Stderr: w, ExtraEnv: s.extraEnv}
 }
 
-// run runs one helmfile call with the time limit: SIGTERM to its process
-// group at the limit, SIGKILL 30 s later (a deadlocked helmfile ignores
-// SIGTERM — seen with helmfile#2261).
+// run runs one helmfile call with the time limit, stderr into the render log.
 func (s *renderSide) run(timeout time.Duration, opts helmfile.Options, stdout io.Writer, args ...string) error {
+	return s.exec(timeout, opts, stdout, s.stderr, args...)
+}
+
+// exec runs one helmfile call in its own process group: SIGTERM to the group
+// at the time limit, SIGKILL 30 s later (a deadlocked helmfile ignores
+// SIGTERM — seen with helmfile#2261; helm children die with it). A nil stdout
+// or stderr is the null device; files are passed as they are (no pipe, so a
+// child that outlives helmfile cannot hold the call open).
+func (s *renderSide) exec(timeout time.Duration, opts helmfile.Options, stdout, stderr io.Writer, args ...string) error {
 	ctx, cancel := context.WithTimeout(s.ctx, timeout)
 	defer cancel()
-	cmd := s.runner(s.stderr).Command(ctx, opts, args...)
+	if stderr == nil {
+		devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer devnull.Close()
+		stderr = devnull
+	}
+	cmd := s.runner(stderr).Command(ctx, opts, args...)
 	cmd.Stdout = stdout
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
@@ -357,6 +386,11 @@ func (s *renderSide) run(timeout time.Duration, opts helmfile.Options, stdout io
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 		return fmt.Errorf("helmfile %s: no result after %s", args[0], timeout)
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// helmfile succeeded; a leftover child kept a pipe open
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err = nil
 	}
 	if err != nil {
 		return fmt.Errorf("helmfile %s: %w", args[0], err)
@@ -391,11 +425,7 @@ func (s *renderSide) startWarmup(opts helmfile.Options) *warmup {
 			return
 		}
 		defer f.Close()
-		ctx, cancel := context.WithTimeout(s.ctx, s.Timeout)
-		defer cancel()
-		cmd := s.runner(f).Command(ctx, opts, "repos")
-		cmd.Stdout = f
-		w.done <- cmd.Run()
+		w.done <- s.exec(s.Timeout, opts, f, f, "repos")
 	}()
 	return w
 }
@@ -452,6 +482,7 @@ func (s *renderSide) subset() (int, error, error) {
 			continue
 		}
 		seenPair[line] = true
+		s.pairs = append(s.pairs, line)
 		cluster, dep, _ := strings.Cut(line, "|")
 		if _, ok := byCluster[cluster]; !ok {
 			clusters = append(clusters, cluster)
@@ -482,7 +513,7 @@ func (s *renderSide) subset() (int, error, error) {
 				sel = append(sel, "--selector", "cluster="+cluster+",deploymentName="+d)
 			}
 			opts := helmfile.Options{Clusters: []string{cluster}, Deployments: deps, Redact: true, SidedumpDir: s.SidedumpDir}
-			if err := s.run(s.Timeout, opts, io.Discard, s.templateArgs(sel)...); err != nil {
+			if err := s.run(s.Timeout, opts, nil, s.templateArgs(sel)...); err != nil {
 				s.log.Annotate(s.level, "Render failed for %s [%s] on %s", cluster, strings.Join(deps, ","), s.sideName)
 				return err
 			}
@@ -520,6 +551,7 @@ func (s *renderSide) full() (int, error, error) {
 		_ = out.Set("list_json", s.listJSON)
 		_ = out.Set("filter_supported", "true")
 		pairs = pairsOf(entries)
+		s.pairs = pairs
 	} else {
 		s.phase("discovery (helmfile build)")
 		var stream bytes.Buffer
@@ -544,12 +576,13 @@ func (s *renderSide) full() (int, error, error) {
 		s.filterSupported = filterSupported
 		_ = out.Setf("filter_supported", "%t", filterSupported)
 		pairs = pairsOf(entries)
+		s.pairs = pairs
 	}
 	s.finishWarmup(w)
 
 	if !filterSupported {
 		s.phase("bulk render")
-		return len(pairs), s.run(s.Timeout, helmfile.Options{Redact: true, SidedumpDir: s.SidedumpDir}, io.Discard, s.templateArgs(nil)...), nil
+		return len(pairs), s.run(s.Timeout, helmfile.Options{Redact: true, SidedumpDir: s.SidedumpDir}, nil, s.templateArgs(nil)...), nil
 	}
 	s.phase(fmt.Sprintf("render of %d pair(s)", len(pairs)))
 	jobs := make([]func() error, 0, len(pairs))
@@ -558,7 +591,7 @@ func (s *renderSide) full() (int, error, error) {
 		jobs = append(jobs, func() error {
 			opts := helmfile.Options{Clusters: []string{cluster}, Deployments: []string{dep}, Redact: true, SidedumpDir: s.SidedumpDir}
 			sel := []string{"--selector", "cluster=" + cluster + ",deploymentName=" + dep}
-			if err := s.run(s.Timeout, opts, io.Discard, s.templateArgs(sel)...); err != nil {
+			if err := s.run(s.Timeout, opts, nil, s.templateArgs(sel)...); err != nil {
 				s.log.Annotate(s.level, "Render failed for %s/%s on %s", cluster, dep, s.sideName)
 				return err
 			}
@@ -675,12 +708,8 @@ func pairsOf(entries []listEntry) []string {
 // ATLAS with hardcoded sub-helmfile selectors fail it.
 func (s *renderSide) probe(total int) bool {
 	var stdout bytes.Buffer
-	ctx, cancel := context.WithTimeout(s.ctx, 300*time.Second)
-	defer cancel()
-	cmd := s.runner(io.Discard).Command(ctx, helmfile.Options{Redact: true}, "list",
+	_ = s.exec(300*time.Second, helmfile.Options{Redact: true}, &stdout, nil, "list",
 		"--selector", "cluster=__atlas_probe_nonexistent__", "--output", "json", "--allow-no-matching-release")
-	cmd.Stdout = &stdout
-	_ = cmd.Run()
 	count := 0
 	if out := bytes.TrimSpace(stdout.Bytes()); len(out) > 0 {
 		var list []any
@@ -831,28 +860,6 @@ func WorkflowPin(dir string) string {
 	}
 	return ""
 }
-
-// lockedFile serializes writes of parallel helmfile calls into one log.
-type lockedFile struct {
-	mu sync.Mutex
-	f  *os.File
-}
-
-func openLocked(path string) (*lockedFile, error) {
-	f, err := os.Create(path)
-	if err != nil {
-		return nil, err
-	}
-	return &lockedFile{f: f}, nil
-}
-
-func (l *lockedFile) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.f.Write(p)
-}
-
-func (l *lockedFile) Close() error { return l.f.Close() }
 
 // inDir resolves p against dir (an absolute p stays as it is).
 func inDir(dir, p string) string {

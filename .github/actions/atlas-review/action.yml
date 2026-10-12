@@ -49,6 +49,8 @@ inputs:
     required: false
     default: "true"
 
+# Docker actions expose the keys they write to GITHUB_OUTPUT as written
+# (underscores); this list documents them.
 outputs:
   body:
     description: PR comment markdown
@@ -56,21 +58,21 @@ outputs:
     description: Path of the job summary markdown
   status:
     description: Diff result — empty, no-changes or changes
-  pr-status:
+  pr_status:
     description: Render status of the merge result — success, error
-  baseline-status:
+  baseline_status:
     description: Render status of the baseline — success, error or missing
-  render-mode:
+  render_mode:
     description: full or subset
-  classify-mode:
+  classify_mode:
     description: subset or full (empty when subsetting is off)
   total:
     description: Number of changed resources
   releases:
     description: Number of affected releases
-  shadow-result:
+  shadow_result:
     description: covered / uncovered / full / skipped / inconclusive
-  shadow-missed:
+  shadow_missed:
     description: Changed deployments outside the classifier's selection
 
 runs:
