@@ -1,8 +1,8 @@
 name: ATLAS Render
 description: >
-  Render one side (PR or baseline) of an ATLAS helmfile deployment.
-  Discovers deployments, runs helmfile template, and captures redaction
-  maps for the replay pipeline. Two auxiliary modes support changed-file
+  Render one side (PR or baseline) of an ATLAS helmfile deployment with the
+  atlas CLI. Discovers deployments, runs helmfile template, and captures
+  redaction maps for the replay pipeline. Two auxiliary modes support changed-file
   render subsetting: "discover" emits the tree's discovery map, "classify"
   turns two maps plus the changed-file list into the render subset.
 
@@ -110,7 +110,9 @@ runs:
   # no image build per run. The tag must match this ref — a release sets the
   # version, a test branch uses its branch tag.
   image: docker://ghcr.io/max06/atlas:review-next
-  entrypoint: /atlas-render-entrypoint.sh
+  # The image's entrypoint is the atlas CLI; `review ci action render` reads
+  # the INPUT_* variables below (internal/ci/action.go).
+  args: [review, ci, action, render]
   env:
     INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
     INPUT_SNAPSHOT_LABEL: ${{ inputs.snapshot-label }}

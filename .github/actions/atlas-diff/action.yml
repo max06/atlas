@@ -1,7 +1,7 @@
 name: ATLAS Diff
 description: >
   Replay redaction maps, diff rendered ATLAS manifests using dyff, and
-  build the PR comment and job summary markdown.
+  build the PR comment and job summary markdown (atlas CLI).
 
 inputs:
   baseline-dir:
@@ -15,7 +15,8 @@ inputs:
     required: false
   scrub-script:
     description: >
-      Path to scrub-baseline.sh. If omitted, uses $ATLAS_PLUGIN_DIR/scrub-baseline.sh.
+      No effect since the action runs the atlas CLI (the replay is built in).
+      Kept so existing callers do not fail on an unknown input.
     required: false
   baseline-status:
     description: Baseline render status (success/error/missing)
@@ -111,7 +112,9 @@ runs:
   # no image build per run. The tag must match this ref — a release sets the
   # version, a test branch uses its branch tag.
   image: docker://ghcr.io/max06/atlas:review-next
-  entrypoint: /atlas-diff-entrypoint.sh
+  # The image's entrypoint is the atlas CLI; `review ci action diff` reads
+  # the INPUT_* variables below (internal/ci/action.go).
+  args: [review, ci, action, diff]
   env:
     INPUT_BASELINE_DIR: ${{ inputs.baseline-dir }}
     INPUT_PR_DIR: ${{ inputs.pr-dir }}

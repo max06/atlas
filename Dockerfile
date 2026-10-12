@@ -59,19 +59,8 @@ RUN sh /install-tools.sh \
 COPY .github/actions/atlas-render/atlas-redact/ /opt/helm-plugins/atlas-redact/
 RUN chmod +x /opt/helm-plugins/atlas-redact/atlas-redact.sh
 
-# Review actions: the scripts at the paths the two former action images used
-# (/render.sh, /diff.sh, ... and the redaction plugin under /atlas-plugins), so
-# they run unchanged; each action.yml picks its entrypoint.
-COPY .github/actions/atlas-render/entrypoint.sh /atlas-render-entrypoint.sh
-COPY .github/actions/atlas-render/render.sh .github/actions/atlas-render/discover.sh \
-     .github/actions/atlas-render/classify.sh /
-COPY .github/actions/atlas-diff/entrypoint.sh /atlas-diff-entrypoint.sh
-COPY .github/actions/atlas-diff/scrub-baseline.sh .github/actions/atlas-diff/replay.sh \
-     .github/actions/atlas-diff/diff.sh .github/actions/atlas-diff/comment.sh \
-     .github/actions/atlas-diff/shadow-check.sh /
-RUN chmod +x /atlas-render-entrypoint.sh /atlas-diff-entrypoint.sh /render.sh /discover.sh \
-      /classify.sh /scrub-baseline.sh /replay.sh /diff.sh /comment.sh /shadow-check.sh && \
-    ln -s /opt/helm-plugins /atlas-plugins
+# Review actions: atlas-render and atlas-diff run this image with
+# `atlas review ci action render|diff` (their action.yml args).
 
 # Every writable path under /cache: helm repositories and chart cache,
 # helmfile remote states, git config. HOME too, for tools that insist on it.
