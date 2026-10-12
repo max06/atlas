@@ -58,9 +58,9 @@ on:
         type: string
         default: "dyff"
       render-subset:
-        description: 'Changed-file render subsetting: "off", "shadow" (default — full render + coverage check of the classifier), or "on"'
+        description: 'Changed-file render subsetting: "off" (default — full render), "shadow" (full render + coverage check of the classifier), or "on" (render only the selection)'
         type: string
-        default: "shadow"
+        default: "off"
       full-render-label:
         description: "PR label that forces a full render (subsetting off) for that PR"
         type: string
@@ -100,7 +100,7 @@ jobs:
           LABELED: ${{ contains(github.event.pull_request.labels.*.name, inputs.full-render-label) }}
         run: |
           MODE="$REQUESTED"
-          case "$MODE" in off|shadow|on) ;; *) echo "::warning::render-subset='$MODE' unknown — using shadow"; MODE=shadow ;; esac
+          case "$MODE" in off|shadow|on) ;; *) echo "::warning::render-subset='$MODE' unknown — using off"; MODE=off ;; esac
           if [ "$LABELED" = "true" ]; then
             echo "PR carries the full-render label — subsetting off for this run"
             MODE=off

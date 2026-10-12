@@ -531,9 +531,9 @@ Templates are expected to read files only from their own directory and from ance
 
 | `render-subset` | Behaviour |
 |---|---|
-| `shadow` (default) | Full render; the classification is computed alongside and every changed release must lie inside the selection. A violation is reported in the comment as a warning — this is the evidence for cutting over. |
+| `off` (default) | Classic full render. |
+| `shadow` | Full render; the classification is computed alongside and every changed release must lie inside the selection. A violation is reported in the comment as a warning — this is the evidence for cutting over. The check is only meaningful when both sides render completely. |
 | `on` | Renders only the selection; the comment states the scope ("N of M deployments") and the rules applied. |
-| `off` | Classic full render. |
 
 The PR label named by `full-render-label` (default `atlas-full-render`) forces a full render for that PR. A consumer pinned to an ATLAS version without `ATLAS_DISCOVERY_MAP` falls back to a full render automatically.
 
