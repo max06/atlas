@@ -111,7 +111,7 @@ runs:
   # Prebuilt atlas image (Dockerfile at the repo root, workflow image.yml):
   # no image build per run. The tag must match this ref — a release sets the
   # version, a test branch uses its branch tag.
-  image: docker://ghcr.io/max06/atlas:review-next
+  image: docker://ghcr.io/max06/atlas:review-cli
   # The image's entrypoint is the atlas CLI; `review ci action diff` reads
   # the INPUT_* variables below (internal/ci/action.go).
   args: [review, ci, action, diff]
