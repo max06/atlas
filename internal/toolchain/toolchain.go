@@ -18,8 +18,8 @@ import (
 
 // Versions this release is tested with, and the floors ATLAS enforces.
 const (
-	TestedHelm     = "4.2.3"
-	TestedHelmfile = "1.7.3"
+	TestedHelm     = "4.3.0"
+	TestedHelmfile = "1.8.1"
 	MinHelm        = "4.0.0"
 	MinHelmfile    = "1.0.0"
 	// git merge-tree --write-tree (local merge result for reviews)
