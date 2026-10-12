@@ -188,7 +188,7 @@ jobs:
       # scrub the baseline.
       - name: Review
         id: review
-        uses: max06/atlas/.github/actions/atlas-review@main
+        uses: max06/atlas/.github/actions/atlas-review@review-cli
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
           base: ${{ steps.baseline-rev.outputs.sha }}

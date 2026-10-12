@@ -70,7 +70,7 @@ runs:
   # Prebuilt atlas image (Dockerfile at the repo root, workflow image.yml).
   # The tag must match this ref — a release sets the version, a test branch
   # uses its branch tag.
-  image: docker://ghcr.io/max06/atlas:main
+  image: docker://ghcr.io/max06/atlas:review-cli
   args: [review, ci, action, review]
   env:
     INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
