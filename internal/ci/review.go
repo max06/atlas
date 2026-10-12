@@ -82,6 +82,12 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	}
 	l.Printf("review: baseline %s, merge result %s", short(base), short(head))
 
+	// outputs of an earlier run in the same directory must not leak into this one
+	for _, dir := range []string{"classify", "sidedump-maps"} {
+		if err := os.RemoveAll(filepath.Join(temp, dir)); err != nil {
+			return err
+		}
+	}
 	ws := filepath.Join(temp, "atlas-review", "tree")
 	export := func(rev string) error { return repo.Export(ctx, rev, ws) }
 	if c.InPlace {

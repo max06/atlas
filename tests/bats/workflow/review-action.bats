@@ -17,6 +17,10 @@ setup_file() {
     export ATLAS_CLI="${BATS_FILE_TMPDIR}/atlas"
     ( cd "$(_repo_root)" && go build -o "$ATLAS_CLI" ./cmd/atlas )
   fi
+  # the redaction post-renderer (the image carries it as a helm plugin)
+  local default_plugins
+  default_plugins="$(helm env HELM_PLUGINS 2>/dev/null || echo "")"
+  export HELM_PLUGINS="${default_plugins:+${default_plugins}:}$(_repo_root)/.github/actions/atlas-render"
   export FIXTURE_REPO="${BATS_FILE_TMPDIR}/consumer"
   make_fixture_repo "$FIXTURE_REPO"
   export BASE_SHA
@@ -43,8 +47,14 @@ merge_feature() {
     -c commit.gpgsign=false merge -q --no-ff feature -m "merge $1"
 }
 
-review() { # review <subset-mode>
-  ( cd "$FIXTURE_REPO" && INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE="$1" \
+# review <subset-mode> — the export mode (GITHUB_ACTIONS unset: the checkout
+# is never touched); review_in_place switches the checkout, as in CI.
+review() {
+  ( cd "$FIXTURE_REPO" && env -u GITHUB_ACTIONS INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE="$1" \
+      INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl "$ATLAS_CLI" review ci action review )
+}
+review_in_place() {
+  ( cd "$FIXTURE_REPO" && GITHUB_ACTIONS=true INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE="$1" \
       INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl "$ATLAS_CLI" review ci action review )
 }
 
@@ -81,6 +91,24 @@ body() { sed -n '/^body<<ATLAS_EOF$/,/^ATLAS_EOF$/{ /^body<<ATLAS_EOF$/d; /^ATLA
   [ "$(out shadow_result)" = "covered" ]
   [ "$(out releases)" = "1" ]
   body | grep -q 'changed-file subsetting runs in shadow mode'
+}
+
+@test "review action: in place (CI) gives the same comment and returns the checkout to HEAD" {
+  printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - reviewMarker: inplace\n' \
+    > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  merge_feature "values edit (in place)"
+  local merge; merge="$(git -C "$FIXTURE_REPO" rev-parse HEAD)"
+  run review on
+  [ "$status" -eq 0 ]
+  body > "$BATS_TEST_TMPDIR/export.md"
+  : > "$GITHUB_OUTPUT"
+  run review_in_place on
+  [ "$status" -eq 0 ]
+  [ "$(out pr_status)" = "success" ]
+  [ "$(git -C "$FIXTURE_REPO" rev-parse HEAD)" = "$merge" ]
+  [ -z "$(git -C "$FIXTURE_REPO" status --porcelain)" ]
+  # same diff blocks (the rendered values embed the tree path, so compare the summaries)
+  diff <(grep '^<summary>' "$BATS_TEST_TMPDIR/export.md") <(body | grep '^<summary>')
 }
 
 @test "review action: no change in rendered manifests" {

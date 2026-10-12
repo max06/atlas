@@ -225,6 +225,11 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		return res, c.Outputs.Set("status", "missing")
 	}
 
+	// a render tree left from an earlier run would mix with this one (the
+	// diff splits files in place: old split files next to new ones)
+	if err := os.RemoveAll(s.snapshot); err != nil {
+		return res, err
+	}
 	f, err := openLocked(s.stderrLog)
 	if err != nil {
 		return res, err
