@@ -43,6 +43,8 @@ RUN chmod +x /atlas-plugins/atlas-redact/atlas-redact.sh
 
 COPY entrypoint.sh /entrypoint.sh
 COPY render.sh /render.sh
-RUN chmod +x /entrypoint.sh /render.sh
+COPY discover.sh /discover.sh
+COPY classify.sh /classify.sh
+RUN chmod +x /entrypoint.sh /render.sh /discover.sh /classify.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

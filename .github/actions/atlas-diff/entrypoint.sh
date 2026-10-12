@@ -31,6 +31,53 @@ DIFF_OUTPUT="${DIFF_TEMP}/diff-github-output"
 : > "$DIFF_OUTPUT"
 GITHUB_OUTPUT="$DIFF_OUTPUT" /diff.sh
 
+# ── Stage 2b: Render-scope fragment + shadow check ─────────────────────────
+# Builds $DIFF_TEMP/scope.md for comment.sh from the classifier's output.
+#   off    → nothing
+#   shadow → "full render" line + the classifier's would-be selection, plus
+#            the shadow check (every changed release inside the selection?)
+#   on     → the classifier's scope line as is (it already states a full
+#            render when it chose one)
+SUBSET_MODE="${INPUT_SUBSET_MODE:-off}"
+CLASSIFY_DIR="${INPUT_CLASSIFY_DIR:-}"
+RENDER_MODE="${INPUT_RENDER_MODE:-full}"
+rm -f "${DIFF_TEMP}/scope.md"
+if [ "$SUBSET_MODE" != "off" ] && [ -n "$CLASSIFY_DIR" ] && [ -f "$CLASSIFY_DIR/classify.json" ]; then
+  SHADOW_OUTPUT="${DIFF_TEMP}/shadow-github-output"
+  : > "$SHADOW_OUTPUT"
+  if [ "$RENDER_MODE" = "full" ] && [ -f "${DIFF_TEMP}/affected-paths.txt" ]; then
+    AFFECTED_PATHS_FILE="${DIFF_TEMP}/affected-paths.txt" CLASSIFY_JSON="$CLASSIFY_DIR/classify.json" \
+      SHADOW_OUT="$DIFF_TEMP" GITHUB_OUTPUT="$SHADOW_OUTPUT" /shadow-check.sh || true
+  else
+    echo "shadow_result=skipped" >> "$SHADOW_OUTPUT"
+    echo "shadow_missed=0" >> "$SHADOW_OUTPUT"
+  fi
+  {
+    if [ "$SUBSET_MODE" = "shadow" ]; then
+      echo "**Render scope:** full render (changed-file subsetting runs in shadow mode)."
+      if [ "$(jq -r .mode "$CLASSIFY_DIR/classify.json")" = "subset" ]; then
+        echo
+        echo "<details>"
+        echo "<summary>Shadow: the classifier would have rendered $(jq '.selected_pr | length' "$CLASSIFY_DIR/classify.json") of $(jq '.pr_total' "$CLASSIFY_DIR/classify.json") deployments</summary>"
+        echo
+        sed '1,2d' "$CLASSIFY_DIR/classify-summary.md"
+        echo
+        echo "</details>"
+      else
+        echo
+        echo "_Shadow: the classifier would also have chosen a full render — $(jq -r .reason "$CLASSIFY_DIR/classify.json")._"
+      fi
+    else
+      cat "$CLASSIFY_DIR/classify-summary.md"
+    fi
+    if [ -f "${DIFF_TEMP}/shadow-check.md" ] && grep -q 'FAILED' "${DIFF_TEMP}/shadow-check.md"; then
+      echo
+      cat "${DIFF_TEMP}/shadow-check.md"
+    fi
+  } > "${DIFF_TEMP}/scope.md"
+  grep -E '^(shadow_result|shadow_missed)=' "$SHADOW_OUTPUT" >> "$GITHUB_OUTPUT" 2>/dev/null || true
+fi
+
 # ── Stage 3: Comment ───────────────────────────────────────────────────────
 export BASELINE_STATUS="${INPUT_BASELINE_STATUS:-success}"
 export PR_STATUS="${INPUT_PR_STATUS:-success}"

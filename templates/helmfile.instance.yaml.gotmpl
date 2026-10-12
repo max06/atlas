@@ -129,30 +129,16 @@ Purpose:
   {{- end }}
 {{- end }}
 
-{{- /* ====================== ENRICH CTX WITH INSTANCE INLINE VALUES ====================== */ -}}
-{{- /* App templates may reference deployment-level values in their body
-     (e.g. `{{ .Values.targetPort }}` inside an inline values map for a raw
-     chart). At state-build time those values are not yet in the context —
-     the values-loader resolves them later at release-evaluation time. To
-     let the tpl call below succeed, merge the instance's inline map values
-     into the context now. File-based entries are skipped; the loader
-     resolves those at release-time with .Release.* available.
-
-     Merge order: instance inline values go in UNDER the hierarchy so that
-     hierarchy keys win consistently — matching the final value precedence
-     the loader establishes at release-time. Re-overlaying $hierarchy after
-     the instance merge achieves this because $ctx already had $hierarchy
-     merged in earlier. */ -}}
-{{- range $entry := ($thisInstance | get "values" list) }}
-  {{- if kindIs "map" $entry }}
-    {{- $ctx = mergeOverwrite $ctx $entry }}
-  {{- end }}
-{{- end }}
-{{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
-{{- $_ := set $ctx "Values" (deepCopy $ctx) }}
-
-{{- /* ====================== RENDER APP TEMPLATE (atlas + hierarchy + instance values + synth Release; real .Release.* still left for the loader) ====================== */ -}}
-{{- $template := tpl (readFile $templateFile) $ctx | fromYaml }}
+{{- /* ====================== RENDER APP TEMPLATE ====================== */ -}}
+{{- /* atlas + hierarchy + instance inline values + synthetic Release; the real
+     .Release.* is left for the loader. Shared with the discovery map (see
+     atlas.instance.template in _functions.tpl) so the release list the map
+     reads charts from is the one rendered here. */ -}}
+{{- $template := include "atlas.instance.template" (dict
+    "Values"    .Values
+    "hierarchy" $hierarchy
+    "instance"  $thisInstance
+) | fromYaml }}
 
 {{- /* ====================== REWRITE EACH RELEASE ====================== */ -}}
 {{- /* For every release in the app template:
