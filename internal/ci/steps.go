@@ -32,16 +32,19 @@ func (e *ExitError) Error() string { return e.Msg }
 
 // ── discover ────────────────────────────────────────────────────────────────
 
-// Discover writes the discovery map of the tree whose entry helmfile is
-// entry (discover.sh): exit 0 = written, 2 = the tree has no map (entry
+// Discover writes the discovery map of the tree in dir whose entry helmfile
+// is entry (discover.sh): exit 0 = written, 2 = the tree has no map (entry
 // missing, or an ATLAS without ATLAS_DISCOVERY_MAP — the caller renders in
 // full), 1 = helmfile failed (the tree does not build).
-func Discover(ctx context.Context, entry, binary, out string, log io.Writer) error {
-	if _, err := os.Stat(entry); err != nil {
+func Discover(ctx context.Context, dir, entry, binary, out string, log io.Writer) error {
+	if dir == "" {
+		dir = "."
+	}
+	if _, err := os.Stat(inDir(dir, entry)); err != nil {
 		return &ExitError{2, "discover: helmfile not found at " + entry}
 	}
 	var stderr strings.Builder
-	r := helmfile.Runner{Binary: binary, File: entry, Dir: ".", Stderr: &stderr}
+	r := helmfile.Runner{Binary: binary, File: entry, Dir: dir, Stderr: &stderr}
 	if _, err := discovery.Probe(ctx, r); err != nil {
 		if errors.Is(err, discovery.ErrUnsupported) {
 			return &ExitError{2, "discover: no discovery map in build output (ATLAS without ATLAS_DISCOVERY_MAP support)"}

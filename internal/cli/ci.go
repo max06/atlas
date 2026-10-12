@@ -35,7 +35,7 @@ func newReviewCICmd(g *globalFlags) *cobra.Command {
 				if entry == "" {
 					return errors.New("HELMFILE_PATH is required")
 				}
-				return ci.Discover(cmd.Context(), entry, g.helmfile, args[0], os.Stdout)
+				return ci.Discover(cmd.Context(), ".", entry, g.helmfile, args[0], os.Stdout)
 			},
 		},
 		&cobra.Command{
@@ -48,7 +48,8 @@ func newReviewCICmd(g *globalFlags) *cobra.Command {
 					return err
 				}
 				c.Helmfile = g.helmfile
-				return ci.Render(cmd.Context(), c)
+				_, err = ci.Render(cmd.Context(), c)
+				return err
 			},
 		},
 		&cobra.Command{
@@ -140,6 +141,14 @@ func newReviewActionCmd(g *globalFlags) *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				return ci.RenderAction(cmd.Context(), g.helmfile, os.Stdout)
+			},
+		},
+		&cobra.Command{
+			Use:   "review",
+			Short: "atlas-review: the whole review in one step (both sides from the checkout)",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				return ci.ReviewAction(cmd.Context(), g.helmfile, os.Stdout)
 			},
 		},
 		&cobra.Command{

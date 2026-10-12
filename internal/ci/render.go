@@ -33,7 +33,8 @@ import (
 
 // RenderConfig is the render.sh contract.
 type RenderConfig struct {
-	HelmfilePath   string // entry helmfile (HELMFILE_PATH)
+	HelmfilePath   string // entry helmfile (HELMFILE_PATH), relative to Dir
+	Dir            string // the tree to render ("" = working directory)
 	Label          string // "pr" or "baseline" (SNAPSHOT_LABEL): names the outputs
 	Temp           string // output root (RENDER_TEMP, else RUNNER_TEMP, else /tmp)
 	Blocking       bool   // render errors are ::error (PR side) instead of ::warning
@@ -127,9 +128,12 @@ type renderSide struct {
 	extraEnv  []string
 	extraArgs []string // --allow-failed-releases, --skip-refresh
 
-	stderr   *lockedFile
-	phaseMu  sync.Mutex
-	phaseTxt string
+	stderr *lockedFile
+	// filterSupported: release selectors work (selector probe); false only
+	// for an ATLAS with hardcoded sub-helmfile selectors
+	filterSupported bool
+	phaseMu         sync.Mutex
+	phaseTxt        string
 }
 
 // Render renders one side of a review into <Temp>/<Label>-snapshot and writes
@@ -140,7 +144,39 @@ type renderSide struct {
 // A render error is not returned as an error: it is the status "error" (the
 // baseline may be broken and the PR the fix; the workflow decides). Errors
 // are returned for the step itself failing (unwritable output and the like).
-func Render(ctx context.Context, c RenderConfig) error {
+func Render(ctx context.Context, c RenderConfig) (RenderResult, error) {
+	res, err := render(ctx, c)
+	res.StderrLog = filepath.Join(c.Temp, c.Label+"-stderr.log")
+	return res, err
+}
+
+// RenderResult is what a render reports (the render.sh step outputs).
+type RenderResult struct {
+	Status          string // success / error / missing
+	SnapshotDir     string
+	Mode            string // full / subset
+	RenderedPairs   int
+	FilterSupported bool
+	SidedumpDir     string // "" unless redaction maps were captured
+	WorkflowPin     string
+	StderrLog       string
+}
+
+func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
+	if c.Dir == "" {
+		c.Dir = "."
+	}
+	res := RenderResult{FilterSupported: true}
+	// helmfile runs in Dir: every path it gets must be absolute
+	for _, p := range []*string{&c.Temp, &c.SidedumpDir} {
+		if *p != "" {
+			abs, err := filepath.Abs(*p)
+			if err != nil {
+				return res, err
+			}
+			*p = abs
+		}
+	}
 	s := &renderSide{
 		RenderConfig: c,
 		ctx:          ctx,
@@ -150,6 +186,8 @@ func Render(ctx context.Context, c RenderConfig) error {
 		sideName:     "target branch",
 		level:        "warning",
 		log:          gha.Log{W: c.Log},
+
+		filterSupported: true,
 	}
 	if c.Label == "pr" {
 		s.sideName = "merge result"
@@ -164,14 +202,14 @@ func Render(ctx context.Context, c RenderConfig) error {
 		s.Timeout = 900 * time.Second
 	}
 	if err := os.MkdirAll(c.Temp, 0o755); err != nil {
-		return err
+		return res, err
 	}
 
 	// SOPS key from the action input → a file sops reads
 	if c.SopsAgeKeyFile == "" && c.SopsAgeKey != "" {
 		keyFile := filepath.Join(c.Temp, "sops-age-key.txt")
 		if err := os.WriteFile(keyFile, []byte(c.SopsAgeKey), 0o600); err != nil {
-			return err
+			return res, err
 		}
 		s.extraEnv = append(s.extraEnv, "SOPS_AGE_KEY_FILE="+keyFile)
 		s.log.Printf("SOPS key file: %d bytes", len(c.SopsAgeKey))
@@ -181,14 +219,15 @@ func Render(ctx context.Context, c RenderConfig) error {
 	stopHeartbeat := s.heartbeat()
 	defer stopHeartbeat()
 
-	if _, err := os.Stat(c.HelmfilePath); err != nil {
+	if _, err := os.Stat(inDir(c.Dir, c.HelmfilePath)); err != nil {
 		s.log.Printf("Helmfile not found at %s", c.HelmfilePath)
-		return c.Outputs.Set("status", "missing")
+		res.Status = "missing"
+		return res, c.Outputs.Set("status", "missing")
 	}
 
 	f, err := openLocked(s.stderrLog)
 	if err != nil {
-		return err
+		return res, err
 	}
 	s.stderr = f
 	defer f.Close()
@@ -209,11 +248,13 @@ func Render(ctx context.Context, c RenderConfig) error {
 		mode = "full"
 		rendered, renderErr, err = s.full()
 	}
+	res.FilterSupported = s.filterSupported
 	if err != nil {
-		return err
+		return res, err
 	}
 	if errors.Is(renderErr, errDiscovery) {
-		return nil // outputs written, nothing rendered
+		res.Status = "error"
+		return res, nil // outputs written, nothing rendered
 	}
 	status := "success"
 	if renderErr != nil {
@@ -226,9 +267,10 @@ func Render(ctx context.Context, c RenderConfig) error {
 		s.log.Annotate(s.level, "%s %s failed (phase: %s)", label, what, s.currentPhase())
 		s.stderrTail()
 	}
+	res.Status, res.SnapshotDir, res.Mode, res.RenderedPairs = status, s.snapshot, mode, rendered
 	out := c.Outputs
 	if err := out.Set("status", status); err != nil {
-		return err
+		return res, err
 	}
 	_ = out.Set("snapshot_dir", s.snapshot)
 	_ = out.Set("render_mode", mode)
@@ -241,7 +283,7 @@ func Render(ctx context.Context, c RenderConfig) error {
 		if _, err := os.Stat(s.snapshot); err == nil {
 			releases, err := snapshot.Releases(s.snapshot)
 			if err != nil {
-				return err
+				return res, err
 			}
 			for _, r := range releases {
 				mapFile := filepath.Join(c.SidedumpDir, filepath.FromSlash(r)+".json")
@@ -249,19 +291,21 @@ func Render(ctx context.Context, c RenderConfig) error {
 					continue
 				}
 				if err := os.MkdirAll(filepath.Dir(mapFile), 0o755); err != nil {
-					return err
+					return res, err
 				}
 				if err := os.WriteFile(mapFile, []byte("{}\n"), 0o644); err != nil {
-					return err
+					return res, err
 				}
 			}
+			res.SidedumpDir = c.SidedumpDir
 			_ = out.Set("sidedump_dir", c.SidedumpDir)
 		}
 	}
 	if c.MergeFallback {
 		_ = out.Set("merge_fallback", "true")
 	}
-	pin := WorkflowPin(".")
+	pin := WorkflowPin(c.Dir)
+	res.WorkflowPin = pin
 	_ = out.Set("workflow_pin", pin)
 	shown := pin
 	if shown == "" {
@@ -275,7 +319,7 @@ func Render(ctx context.Context, c RenderConfig) error {
 			fmt.Fprint(c.Log, string(data))
 		})
 	}
-	return nil
+	return res, nil
 }
 
 var errDiscovery = errors.New("discovery failed")
@@ -288,7 +332,7 @@ func (s *renderSide) helmfileBin() string {
 }
 
 func (s *renderSide) runner(w io.Writer) helmfile.Runner {
-	return helmfile.Runner{Binary: s.Helmfile, File: s.HelmfilePath, Dir: ".", Stderr: w, ExtraEnv: s.extraEnv}
+	return helmfile.Runner{Binary: s.Helmfile, File: s.HelmfilePath, Dir: s.Dir, Stderr: w, ExtraEnv: s.extraEnv}
 }
 
 // run runs one helmfile call with the time limit: SIGTERM to its process
@@ -492,6 +536,7 @@ func (s *renderSide) full() (int, error, error) {
 		w = s.startWarmup(helmfile.Options{})
 		s.phase("selector probe (helmfile list)")
 		filterSupported = s.probe(len(entries))
+		s.filterSupported = filterSupported
 		_ = out.Setf("filter_supported", "%t", filterSupported)
 		pairs = pairsOf(entries)
 	}
@@ -803,3 +848,11 @@ func (l *lockedFile) Write(p []byte) (int, error) {
 }
 
 func (l *lockedFile) Close() error { return l.f.Close() }
+
+// inDir resolves p against dir (an absolute p stays as it is).
+func inDir(dir, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(dir, p)
+}
