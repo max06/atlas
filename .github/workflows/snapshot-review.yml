@@ -125,6 +125,9 @@ jobs:
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 2
+          # The review container works on the fetched commits only and must
+          # not see the job token; the one fetch below carries it explicitly.
+          persist-credentials: false
         continue-on-error: true
 
       - name: Fallback to PR branch
@@ -132,6 +135,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       # Baseline commit: merge^1 normally. Without a merge ref (conflicts) the
       # PR branch is compared with its merge-base, so the diff shows the PR's
@@ -145,18 +149,24 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
+          # Token scoped to this one command; the checkout keeps no credentials.
+          fetch() {
+            git -c "http.${SERVER_URL}/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+              fetch -q --depth=1 origin "$1"
+          }
           SHA=""
           if [ "$FALLBACK" != "true" ] && git rev-parse -q --verify 'HEAD^2' >/dev/null; then
             SHA="$(git rev-parse 'HEAD^1')"
             echo "Baseline: merge^1 = $SHA"
           else
             SHA="$(gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha' 2>/dev/null || true)"
-            if [ -n "$SHA" ] && git fetch -q --depth=1 origin "$SHA"; then
+            if [ -n "$SHA" ] && fetch "$SHA"; then
               echo "Baseline: merge-base of the PR = $SHA"
             else
               echo "::warning::Could not resolve the merge-base — comparing with the target branch tip"
-              git fetch -q --depth=1 origin "refs/heads/${BASE_REF}" && SHA="$(git rev-parse FETCH_HEAD)"
+              fetch "refs/heads/${BASE_REF}" && SHA="$(git rev-parse FETCH_HEAD)"
             fi
           fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
