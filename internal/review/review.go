@@ -25,9 +25,8 @@ import (
 type Spec struct {
 	Base    string // target revision; "" = <remote>/<default branch>
 	Head    string // "" = working tree (incl. uncommitted + untracked files)
-	Remote  string // remote for the default base and the fetch (default "origin")
+	Remote  string // remote for the default base (default "origin")
 	NoMerge bool   // compare Base and Head directly (CI: the platform already merged)
-	Offline bool   // do not fetch the base ref
 }
 
 // Session holds the resolved revisions and the shared workspace.
@@ -51,19 +50,19 @@ func Open(ctx context.Context, repo *gitrev.Repo, entry string, spec Spec, log i
 	if remote == "" {
 		remote = "origin"
 	}
+	// The base is taken as it is in the clone, like `git diff origin/main`:
+	// the CLI never fetches or writes refs. The log line carries the base's
+	// commit date, so a stale local base is visible to the caller.
 	base := spec.Base
-	if base == "" {
-		base = repo.DefaultBase(ctx, remote)
-	}
-	if !spec.Offline {
-		if err := repo.FetchBase(ctx, base); err != nil {
-			return nil, fmt.Errorf("refresh base: %w", err)
-		}
-	}
 	var err error
-	if s.BaseRev, err = repo.Resolve(ctx, base); err != nil {
+	if base == "" {
+		if base, s.BaseRev, err = repo.DefaultBase(ctx, remote); err != nil {
+			return nil, err
+		}
+	} else if s.BaseRev, err = repo.Resolve(ctx, base); err != nil {
 		return nil, fmt.Errorf("base %q: %w", base, err)
 	}
+	baseLabel := fmt.Sprintf("%s (%s, %s)", base, short(s.BaseRev), repo.CommitDate(ctx, s.BaseRev))
 	headLabel := spec.Head
 	if spec.Head == "" {
 		headLabel = "working tree"
@@ -76,12 +75,12 @@ func Open(ctx context.Context, repo *gitrev.Repo, entry string, spec Spec, log i
 	}
 	if spec.NoMerge {
 		s.HeadTree = s.HeadRev
-		fmt.Fprintf(log, "review: base %s (%s) vs head %s (%s), no merge\n", base, short(s.BaseRev), headLabel, short(s.HeadRev))
+		fmt.Fprintf(log, "review: base %s vs head %s (%s), no merge\n", baseLabel, headLabel, short(s.HeadRev))
 	} else {
 		if s.HeadTree, err = repo.MergeTree(ctx, s.BaseRev, s.HeadRev); err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(log, "review: base %s (%s) vs merge of %s (%s) into it\n", base, short(s.BaseRev), headLabel, short(s.HeadRev))
+		fmt.Fprintf(log, "review: base %s vs merge of %s (%s) into it\n", baseLabel, headLabel, short(s.HeadRev))
 	}
 	if s.Workspace, err = os.MkdirTemp("", "atlas-review-"); err != nil {
 		return nil, err

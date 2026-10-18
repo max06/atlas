@@ -175,9 +175,29 @@ func TestExportReplacesContent(t *testing.T) {
 	}
 }
 
-func TestFetchBaseRejectsLocalBranchNames(t *testing.T) {
+func TestDefaultBaseFallsBackToLocalMainWithoutFetching(t *testing.T) {
 	r := repo(t)
-	if err := r.FetchBase(context.Background(), "main"); err == nil || !strings.Contains(err.Error(), "--offline") {
-		t.Fatalf("want an --offline hint for a non-remote ref, got %v", err)
+	ref, id, err := r.DefaultBase(context.Background(), "origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != "main" {
+		t.Fatalf("want the local main when no remote-tracking ref exists, got %q", ref)
+	}
+	if want, _ := r.Resolve(context.Background(), "main"); id != want {
+		t.Fatalf("id = %s, want %s", id, want)
+	}
+	if date := r.CommitDate(context.Background(), id); !strings.HasPrefix(date, "20") {
+		t.Fatalf("commit date = %q", date)
+	}
+}
+
+func TestDefaultBaseFailsWithoutAnyMain(t *testing.T) {
+	r := repo(t)
+	if _, err := r.git(context.Background(), nil, "branch", "-m", "main", "trunk"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.DefaultBase(context.Background(), "origin"); err == nil || !strings.Contains(err.Error(), "--base") {
+		t.Fatalf("want a --base hint, got %v", err)
 	}
 }

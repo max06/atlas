@@ -73,30 +73,35 @@ func (r *Repo) Shallow(ctx context.Context) bool {
 	return err == nil && out == "true"
 }
 
-// DefaultBase picks the remote-tracking ref a local review compares against:
-// origin/HEAD when it points somewhere, else origin/main. origin/HEAD is not
-// trusted blindly — a clone made from a local path inherits that clone's
-// checked-out branch — so callers print what was picked.
-func (r *Repo) DefaultBase(ctx context.Context, remote string) string {
+// DefaultBase picks the ref a local review compares against, as it is in the
+// clone (the CLI never fetches, like `git diff origin/main`): the branch
+// <remote>/HEAD points at, else <remote>/main, else the local main. It returns
+// the ref name and its commit id. <remote>/HEAD is not trusted blindly — a
+// clone made from a local path inherits that clone's checked-out branch — so
+// callers print what was picked.
+func (r *Repo) DefaultBase(ctx context.Context, remote string) (string, string, error) {
+	candidates := []string{}
 	if out, err := r.git(ctx, nil, "symbolic-ref", "--quiet", "--short", "refs/remotes/"+remote+"/HEAD"); err == nil && out != "" {
-		return out
+		candidates = append(candidates, out)
 	}
-	return remote + "/main"
+	candidates = append(candidates, remote+"/main", "main")
+	for _, ref := range candidates {
+		if id, err := r.Resolve(ctx, ref); err == nil {
+			return ref, id, nil
+		}
+	}
+	return "", "", fmt.Errorf("no base branch found (tried %s); pass --base <rev>", strings.Join(candidates, ", "))
 }
 
-// FetchBase refreshes a remote-tracking ref ("origin/main") by fetching only
-// that branch. Other refs are left alone.
-func (r *Repo) FetchBase(ctx context.Context, base string) error {
-	remote, branch, ok := strings.Cut(base, "/")
-	if !ok {
-		return fmt.Errorf("base %q is not a remote-tracking ref (<remote>/<branch>); pass --offline to use it as is", base)
+// CommitDate returns the committer date of rev (YYYY-MM-DD), or "" when git
+// cannot tell. Reviews print it next to the base, so a stale local base is
+// visible without the CLI touching the network.
+func (r *Repo) CommitDate(ctx context.Context, rev string) string {
+	out, err := r.git(ctx, nil, "log", "-1", "--format=%cs", rev)
+	if err != nil {
+		return ""
 	}
-	if _, err := r.git(ctx, nil, "remote", "get-url", remote); err != nil {
-		return fmt.Errorf("base %q: no remote %q (pass --offline to use the ref as is)", base, remote)
-	}
-	_, err := r.git(ctx, nil, "fetch", "--quiet", remote,
-		fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch))
-	return err
+	return out
 }
 
 // Snapshot returns a commit whose tree is the current working tree: tracked

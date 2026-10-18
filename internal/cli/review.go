@@ -25,21 +25,21 @@ type revFlags struct {
 
 func (f *revFlags) register(cmd *cobra.Command) {
 	fl := cmd.Flags()
-	fl.StringVar(&f.spec.Base, "base", "", "target revision (default <remote>/<default branch>, fetched first)")
+	fl.StringVar(&f.spec.Base, "base", "", "target revision (default: <remote>/<default branch> as it is in the clone, never fetched; a branch cut from canary wants --base origin/canary)")
 	fl.StringVar(&f.spec.Head, "head", "", "revision to review (default: the working tree, incl. uncommitted and untracked files)")
 	fl.StringVar(&f.spec.Remote, "remote", "origin", "remote for the default base")
 	fl.BoolVar(&f.spec.NoMerge, "no-merge", false, "compare --base and --head directly instead of base vs merge result (CI: the platform already merged)")
-	fl.BoolVar(&f.spec.Offline, "offline", false, "do not fetch the base ref")
 }
 
 func newReviewCmd(g *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "review",
 		Short: "Compare two revisions: what a change can affect, and how renders differ",
-		Long: `Reviews answer "what changes if this merges now": the base is the CURRENT
-tip of the target branch (by default the remote-tracking ref, fetched first —
-a stale local branch would show newer target commits as reverts), the other
-side is the merge result, built locally with git merge-tree.`,
+		Long: `Reviews answer "what changes if this merges now": the base is the target
+branch as it is in your clone (by default the remote-tracking ref, like
+"git diff origin/main"; the CLI never fetches, so run "git fetch" yourself
+when the printed base date looks old), the other side is the merge result,
+built locally with git merge-tree.`,
 	}
 	cmd.AddCommand(newReviewClassifyCmd(g), newReviewDiffCmd(g), newReviewCICmd(g))
 	return cmd

@@ -113,7 +113,7 @@ setup() {
   printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - cliMarker: changed\n' \
     > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
   local before; before="$(git -C "$FIXTURE_REPO" status --porcelain)"
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --offline
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA"
   [ "$status" -eq 0 ]
   [[ "$stderr" == *"classify: mode=subset"* ]]
   [ "$output" = "changed  cluster1/deployment1/app1" ]
@@ -127,12 +127,12 @@ setup() {
   printf '{{ fail "broken target" }}\n' > "$dep/values.yaml.gotmpl"
   fixture_commit "$FIXTURE_REPO" "break the target side"
   git -C "$FIXTURE_REPO" checkout -q "$BASE_SHA" -- deployments/cluster1/apps/deployment1/values.yaml.gotmpl
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base broken-target --offline
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base broken-target
   [ "$status" -ne 0 ]
   [[ "$stderr" == *"target side does not render"* ]]
   [[ "$stderr" == *"--allow-base-error"* ]]
   [ -z "$output" ]
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base broken-target --offline --allow-base-error
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base broken-target --allow-base-error
   [ "$status" -eq 0 ]
   [[ "$output" == *"added    cluster1/deployment1/app1"* ]]
 }
@@ -146,11 +146,11 @@ setup() {
   fixture_commit "$FIXTURE_REPO" "target edit"
   git -C "$FIXTURE_REPO" checkout -q feature
 
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review classify --base target --head feature --offline
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review classify --base target --head feature
   [ "$status" -eq 0 ]
   [ "$(jq -c '.selected' <<< "$output")" = '["cluster1|deployment3"]' ]
   # --no-merge compares the branches directly: the target's edit shows up as well
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review classify --base target --head feature --offline --no-merge
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review classify --base target --head feature --no-merge
   [ "$(jq -c '.selected' <<< "$output")" = '["cluster1|deployment1","cluster1|deployment3"]' ]
 }
 
@@ -162,7 +162,7 @@ setup() {
   echo "# target" >> "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
   fixture_commit "$FIXTURE_REPO" "target edit"
 
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review classify --base target --head feature --offline
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review classify --base target --head feature
   [ "$status" -ne 0 ]
   [[ "$stderr" == *"conflicts in: deployments/cluster1/apps/deployment1/deployment.yaml"* ]]
 }
@@ -170,12 +170,12 @@ setup() {
 @test "cli: review diff --format markdown prints the review comment of the change" {
   printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - cliMarker: markdown\n' \
     > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --offline --format markdown
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --format markdown
   [ "$status" -eq 0 ]
   [[ "$output" == "## ATLAS Review"* ]]
   [[ "$output" == *"**Render scope:** 1 of "* ]]
   [[ "$output" == *"<summary>cluster1 / deployment1 / app1 (1 resources)</summary>"* ]]
   [[ "$output" == *"+ cliMarker: markdown"* ]]
-  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --offline --format yaml
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --format yaml
   [ "$status" -ne 0 ]
 }

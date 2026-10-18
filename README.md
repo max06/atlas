@@ -432,7 +432,7 @@ atlas doctor                                 # helm / helmfile / git versions
 
 **Reviews compare the current target with the merge result.** By default:
 
-- the base is `origin/<default branch>`, fetched first (only that ref). A stale local branch would show newer target commits as reverts. `--base` overrides it and `--offline` skips the fetch;
+- the base is `origin/<default branch>` as it is in the clone (the local `main` when no remote-tracking ref exists). The CLI never fetches or writes refs, exactly like `git diff origin/main`; the printed base carries its commit date, so run `git fetch` yourself when it looks old (a stale base shows newer target commits as reverts). `--base` overrides it, for example `--base origin/canary` for a branch cut from canary;
 - the other side is the working tree, including uncommitted and untracked files. It is snapshotted through a temporary index, so your index and `git status` stay untouched. `--head <rev>` reviews a commit instead;
 - the two are merged with `git merge-tree`, without a checkout. A conflict stops the review and names the files.
 
