@@ -1,6 +1,7 @@
-# Tests for the ATLAS Review action scripts (render.sh, diff.sh, comment.sh,
-# replay.sh). These scripts run inside Docker container actions with tools
-# baked in; this workflow replicates that environment on a bare runner.
+# Tests for the ATLAS Review pipeline: the bash scripts (render.sh, diff.sh,
+# comment.sh, replay.sh, ...) and their Go port in the atlas CLI, which the
+# review actions run. Both are checked with the same bats assertions; this
+# workflow replicates the image's toolchain on a bare runner.
 #
 # Separated from the main tests.yml matrix because the action scripts have
 # their own tool dependencies (dyff) and don't need Helm/Helmfile version
@@ -14,10 +15,22 @@ on:
     paths:
       - .github/actions/**
       - tests/bats/workflow/**
+      - tests/bats/helpers/**
+      - tests/bats/redaction/redaction-replay.bats
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
   pull_request:
     paths:
       - .github/actions/**
       - tests/bats/workflow/**
+      - tests/bats/helpers/**
+      - tests/bats/redaction/redaction-replay.bats
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
   workflow_dispatch:
 
 permissions:
@@ -63,5 +76,30 @@ jobs:
           curl -fsSL "https://github.com/homeport/dyff/releases/download/${DYFF_VERSION}/dyff_${DYFF_VERSION#v}_linux_amd64.tar.gz" | tar xz
           sudo mv dyff /usr/local/bin/dyff
 
+      # The atlas CLI (cmd/atlas). With ATLAS_CLI set, every classify scenario
+      # also runs the Go port and compares it with classify.sh, and cli.bats
+      # drives the binary end to end.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Go vet + unit tests
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build the atlas CLI
+        run: |
+          go build -o "${RUNNER_TEMP}/atlas" ./cmd/atlas
+          echo "ATLAS_CLI=${RUNNER_TEMP}/atlas" >> "$GITHUB_ENV"
+
       - name: Run workflow script tests
         run: bats --recursive --jobs 4 tests/bats/workflow/
+
+      # The same assertions against the Go port: shims in
+      # tests/bats/helpers/cli-actions serve each script's contract through
+      # `atlas review ci` (the actions run the CLI since review-cli).
+      - name: Run workflow tests against the atlas CLI
+        env:
+          ATLAS_REVIEW_BACKEND: cli
+        run: bats --recursive --jobs 4 tests/bats/workflow/ tests/bats/redaction/redaction-replay.bats

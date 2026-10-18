@@ -1,8 +1,8 @@
 name: ATLAS Render
 description: >
-  Render one side (PR or baseline) of an ATLAS helmfile deployment.
-  Discovers deployments, runs helmfile template, and captures redaction
-  maps for the replay pipeline. Two auxiliary modes support changed-file
+  Render one side (PR or baseline) of an ATLAS helmfile deployment with the
+  atlas CLI. Discovers deployments, runs helmfile template, and captures
+  redaction maps for the replay pipeline. Two auxiliary modes support changed-file
   render subsetting: "discover" emits the tree's discovery map, "classify"
   turns two maps plus the changed-file list into the render subset.
 
@@ -26,6 +26,12 @@ inputs:
       Render mode only. Path to a "<cluster>|<deployment>" line file (from
       classify). When set, only those pairs are rendered (subset mode);
       when empty, the full tree is discovered and rendered.
+    required: false
+  map-file:
+    description: >
+      Render mode only. Discovery map of this side (mode discover). A full
+      render takes its pairs from the map instead of a discovery build and
+      the selector probe.
     required: false
   map-baseline:
     description: Classify mode — discovery map JSON of the target branch
@@ -100,7 +106,13 @@ outputs:
 
 runs:
   using: docker
-  image: Dockerfile
+  # Prebuilt atlas image (Dockerfile at the repo root, workflow image.yml):
+  # no image build per run. The tag must match this ref — a release sets the
+  # version, a test branch uses its branch tag.
+  image: docker://ghcr.io/max06/atlas:main
+  # The image's entrypoint is the atlas CLI; `review ci action render` reads
+  # the INPUT_* variables below (internal/ci/action.go).
+  args: [review, ci, action, render]
   env:
     INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
     INPUT_SNAPSHOT_LABEL: ${{ inputs.snapshot-label }}
@@ -110,6 +122,7 @@ runs:
     INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
     INPUT_MODE: ${{ inputs.mode }}
     INPUT_PAIRS_FILE: ${{ inputs.pairs-file }}
+    INPUT_MAP_FILE: ${{ inputs.map-file }}
     INPUT_MAP_BASELINE: ${{ inputs.map-baseline }}
     INPUT_MAP_PR: ${{ inputs.map-pr }}
     INPUT_CHANGES_FILE: ${{ inputs.changes-file }}

@@ -1,0 +1,83 @@
+# atlas image: the CLI plus its toolchain (Dockerfile at the repo root).
+#
+# Pull requests build the image without pushing it. Tags v* push the release
+# (semver tags: 1.2.3, 1.2, 1). A push to a branch that changes the image
+# inputs (and a manual dispatch) pushes a test build tagged with the branch
+# name and the short commit — for the wrapper's ATLAS_IMAGE, e.g.
+# ATLAS_IMAGE=ghcr.io/max06/atlas:cli-poc.
+
+name: Image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - go.mod
+      - go.sum
+      - cmd/**
+      - internal/**
+      - .github/actions/**
+      - contrib/argocd-cmp/**
+      - .github/workflows/image.yml
+  push:
+    tags: ["v*"]
+    branches-ignore: ["renovate/**", "dependabot/**"]
+    paths:
+      - Dockerfile
+      - go.mod
+      - go.sum
+      - cmd/**
+      - internal/**
+      - .github/actions/**
+      - contrib/argocd-cmp/**
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,enable=${{ github.ref_type == 'branch' && github.event_name != 'pull_request' }}
+            type=ref,event=pr
+
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        if: github.event_name == 'pull_request'
+        run: |
+          docker buildx build --load -t atlas-smoke --build-arg VERSION=smoke .
+          docker run --rm --user 12345:12345 atlas-smoke doctor

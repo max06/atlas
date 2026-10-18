@@ -405,6 +405,49 @@ For a **standalone cluster** (no group), steps 10–12 are skipped entirely.
 
 ---
 
+## atlas CLI (proof of concept)
+
+`cmd/atlas` is a command-line driver for ATLAS repositories. It sets the `ATLAS_*` switches from flags, applies the production render flags, and compares revisions for reviews. It runs the `helmfile` binary; the ATLAS templates stay versioned by the repository's entry helmfile, so the CLI and the template version are independent.
+
+```bash
+go install github.com/max06/atlas/cmd/atlas@<ref>
+
+atlas render -c cluster -d my-app            # manifests to stdout, secrets stay ENC[...], no key needed
+atlas render -c group/cluster -d my-app --decrypt   # with decrypted SOPS values (needs the key)
+atlas inspect -c cluster -d my-app           # the helmfile states ATLAS generates
+atlas discover                               # the discovery map as JSON
+atlas review classify                        # which pairs your working tree affects
+atlas review diff --patch                    # render them on both sides and diff
+atlas review diff --format markdown          # the PR comment the review workflow would post
+atlas doctor                                 # helm / helmfile / git versions
+```
+
+**Container image and wrapper.** `ghcr.io/max06/atlas:<version>` carries the CLI plus the toolchain it is tested with (helm, helmfile, kustomize, sops, the redaction plugin). Copy [`contrib/atlas-wrapper.sh`](contrib/atlas-wrapper.sh) into a consumer repository as `bin/atlas`; it needs only docker and git. The wrapper mounts the repository at its own absolute path, runs as your uid, keeps charts and helmfile states in the named volume `atlas-cache`, and passes `SOPS_AGE_KEY_FILE` only with `--decrypt`/`--redact`. `ATLAS_IMAGE=<ref>` runs another build (for example a branch test image); otherwise the tag comes from `engine:` in `atlas.yaml`, then from the wrapper's default. A moving atlas ref in the entry helmfile (a branch) stays cached in the volume: `docker volume rm atlas-cache` refreshes it.
+
+`-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`). `-c` takes the full cluster path or the leaf name; an unknown cluster or deployment fails with the nearest known names.
+
+**Keyless by default.** `render`, `inspect --values` and `review diff` decrypt nothing unless you pass `--decrypt` (or `--redact`, which decrypts and then redacts): SOPS values stay `ENC[...]`, no key is needed, no secret reaches the terminal. That needs an ATLAS version that honors `ATLAS_SKIP_SECRETS` — an older one ignores the variable and decrypts. The CLI therefore reads the `capabilities` of the discovery map first (a probe of well under a second) and stops with a hint when the pinned ATLAS cannot render keyless. `--argocd` always decrypts (the production path).
+
+**Flags are the interface.** The `ATLAS_*` variables the CLI controls (`ATLAS_FILTER_*`, `ATLAS_SKIP_SECRETS`, `ATLAS_REDACT_SECRETS`, `ATLAS_DISCOVERY_MAP`, `ATLAS_SIDEDUMP_MAP_DIR`) are ignored in the caller's environment, with a warning. A plain `helmfile` call with those variables keeps working.
+
+**Reviews compare the current target with the merge result.** By default:
+
+- the base is `origin/<default branch>` as it is in the clone (the local `main` when no remote-tracking ref exists). The CLI never fetches or writes refs, exactly like `git diff origin/main`; the printed base carries its commit date, so run `git fetch` yourself when it looks old (a stale base shows newer target commits as reverts). `--base` overrides it, for example `--base origin/canary` for a branch cut from canary;
+- the other side is the working tree, including uncommitted and untracked files. It is snapshotted through a temporary index, so your index and `git status` stay untouched. `--head <rev>` reviews a commit instead;
+- the two are merged with `git merge-tree`, without a checkout. A conflict stops the review and names the files.
+
+Both sides are exported into one workspace path in turn, because rendered values embed the checkout path. In CI, the platform already made the merge commit, and a shallow clone has no history to merge in: pass both commits with `--no-merge`.
+
+**A target side that does not render stops the review.** A diff against it would show every selected release as added. `--allow-base-error` compares anyway (the change may be the fix).
+
+`atlas review classify` is a port of the review pipeline's `classify.sh`. Its precomputed mode (`--map-base`, `--map-head`, `--changes-file`, `--out`) writes the same output set, and the classify scenarios compare both when `ATLAS_CLI` points at a binary. `atlas review diff` compares rendered files byte for byte.
+
+**The CI review is the CLI.** The review workflow runs `atlas review ci action review` in the atlas image (action `atlas-review`). The steps of the former bash pipeline are subcommands of `atlas review ci` (`render`, `discover`, `scrub`, `replay`, `diff`, `shadow`, `comment`) with the same environment contract as the scripts; the scripts under `.github/actions/*/` remain as the reference implementation of the workflow tests.
+
+`atlas render --argocd` runs as the Argo CD config management plugin: the filter comes from `ARGOCD_ENV_ATLAS_FILTER_CLUSTER` / `ARGOCD_ENV_ATLAS_FILTER_DEPLOYMENT_NAME`, and releases render into `ARGOCD_APP_NAMESPACE` unless `ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE` is set.
+
+---
+
 ## How It Works
 
 ATLAS processes your repository in four stages, each implemented in its own helmfile/gotmpl:
@@ -506,9 +549,9 @@ ATLAS provides a reusable GitHub Actions workflow that compares rendered Kuberne
 
 ### How it works
 
-1. Checks out the **target branch HEAD**, renders all manifests as a baseline
-2. Checks out the **merge result** (what will be deployed after merging), renders manifests
-3. Generates per-resource diffs grouped by release, posts a sticky PR comment
+1. Checks out the **merge result** (GitHub's trial merge, what will be deployed after merging) with its first parent, the **target commit** it was made against
+2. Runs ONE container step (action `atlas-review`, the atlas CLI): discovery maps of both commits, classification of the changed paths, the render of the merge result (with its redaction maps), the render of the target commit from the same checkout path, the redaction replay over the target render, per-resource semantic diffs (dyff)
+3. Posts a sticky PR comment and a job summary with the complete diff
 
 This "merge-result" strategy ensures the diff answers *"what changes if I hit merge right now?"* — it accounts for changes that landed on main since the PR was created.
 
@@ -577,6 +620,9 @@ jobs:
 |-------|---------|-------------|
 | `helmfile-path` | `helmfile.yaml.gotmpl` | Path to the helmfile entry point |
 | `diff-mode` | `dyff` | Diff engine: `dyff` for YAML-aware semantic diffs, `classic` for standard unified diffs |
+| `render-subset` | `off` | Changed-file render subsetting: `off`, `shadow` or `on` (see above) |
+| `full-render-label` | `atlas-full-render` | PR label that forces a full render for that PR |
+| `runs-on` | `ubuntu-latest` | Runner label, or a JSON object such as `{"group":"…","labels":["…"]}` — full renders of large repositories need more than a standard runner |
 
 ### Secrets
 

@@ -34,6 +34,18 @@ _repo_root() {
   cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"/../../.. && pwd
 }
 
+# _actions_dir returns the directory holding the review pipeline steps
+# (<action>/<script>.sh). ATLAS_REVIEW_BACKEND=cli swaps in shims that run the
+# same contracts through the atlas CLI ($ATLAS_CLI): every workflow test then
+# checks the Go port with the assertions written for the scripts.
+_actions_dir() {
+  if [ "${ATLAS_REVIEW_BACKEND:-}" = "cli" ]; then
+    echo "$(_repo_root)/tests/bats/helpers/cli-actions"
+  else
+    echo "$(_repo_root)/.github/actions"
+  fi
+}
+
 # ensure_rendered performs the bulk render exactly once per bats run.
 # Call from setup_file(); subsequent calls are no-ops.
 # Uses flock so parallel file execution (bats --jobs) is safe: the first

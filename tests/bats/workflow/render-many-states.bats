@@ -16,7 +16,7 @@ load '../helpers/render'
 STATE_COUNT=101
 
 _render_script() {
-  echo "$(_repo_root)/.github/actions/atlas-render/render.sh"
+  echo "$(_actions_dir)/atlas-render/render.sh"
 }
 
 # Build the fixture once per file: one local dummy chart plus STATE_COUNT

@@ -25,7 +25,7 @@ load '../helpers/render'
 
 REPO_ROOT="${BATS_TEST_DIRNAME}/../../.."
 PLUGIN_DIR="${REPO_ROOT}/.github/actions/atlas-render/atlas-redact"
-SCRUB_SCRIPT="${REPO_ROOT}/.github/actions/atlas-diff/scrub-baseline.sh"
+SCRUB_SCRIPT="$(_actions_dir)/atlas-diff/scrub-baseline.sh"
 
 # --- Stage 1: side-dump during a redacted render ----------------------------
 #

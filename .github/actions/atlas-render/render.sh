@@ -18,6 +18,9 @@
 #                            discovery map, so they are known to exist. An empty
 #                            file renders nothing and reports success (this side has
 #                            no selected pair — e.g. every selected deployment is new).
+#   RENDER_MAP_FILE        — full render: discovery map of this side (discover.sh). When
+#                            set and valid, the pairs come from the map; the slow
+#                            discovery build and the selector probe are skipped.
 #   ATLAS_SIDEDUMP_MAP_DIR — if set, enables redaction-map side-dump (PR render only)
 #   MERGE_FALLBACK         — "true" if merge ref was unavailable (PR render only)
 #   SOPS_AGE_KEY           — SOPS age private key (written to a temp file)
@@ -61,12 +64,86 @@ if [ -z "${SOPS_AGE_KEY_FILE:-}" ] && [ -n "${SOPS_AGE_KEY:-}" ]; then
   echo "SOPS key file: $(wc -c < "$KEY_FILE") bytes"
 fi
 
+# ── Progress and time limits ────────────────────────────────────────────────
+# A render runs for minutes without output (helmfile writes to files, stderr
+# goes to the log). The heartbeat prints the phase and the files written once
+# a minute, so a slow render and a hanging one look different in the step log.
+# Every helmfile call has a time limit: a hang becomes an error with the end
+# of the stderr log instead of waiting for the job timeout. -k: a deadlocked
+# helmfile ignores SIGTERM (seen with helmfile#2261), so KILL follows after 30 s.
+export HELMFILE_TIMEOUT="${HELMFILE_TIMEOUT:-900}"
+# Parallel helmfile calls: one per CPU (RENDER_PARALLEL overrides). A fixed 4
+# overloaded 2-CPU runners and left larger ones idle.
+RENDER_JOBS="${RENDER_PARALLEL:-$(nproc 2>/dev/null || echo 2)}"
+PHASE_FILE="${RENDER_TEMP}/${SNAPSHOT_LABEL}-phase"
+phase() {
+  echo "$1" > "$PHASE_FILE"
+  echo "[$(date -u +%H:%M:%S)] ${SIDE_LABEL}: $1"
+}
+phase "start (${RENDER_JOBS} parallel helmfile calls)"
+(
+  started=$(date +%s)
+  last_files=-1
+  stalled=0
+  while sleep 60; do
+    files=$(find "$SNAPSHOT_DIR" -type f 2>/dev/null | wc -l)
+    echo "[heartbeat] ${SIDE_LABEL}: $(( $(date +%s) - started ))s, phase: $(cat "$PHASE_FILE" 2>/dev/null), ${files} files written"
+    # No new file for two beats: show what runs (git clone? sops? helm?).
+    if [ "$files" = "$last_files" ]; then stalled=$((stalled + 1)); else stalled=0; fi
+    last_files=$files
+    if [ "$stalled" -ge 2 ]; then
+      echo "[heartbeat] no progress for ${stalled} min — processes:"
+      ps -o pid,ppid,etime,args 2>/dev/null | grep -v ' ps -o\| grep ' | cut -c1-220 | sed 's/^/[heartbeat]   /'
+    fi
+  done
+) &
+HEARTBEAT_PID=$!
+stderr_tail() {
+  # helmfile errors name files and keys, not values; still keep it short
+  echo "::group::Last lines of the helmfile log (${SIDE_LABEL})"
+  tail -n 25 "$STDERR_LOG" 2>/dev/null | cut -c1-400
+  echo "::endgroup::"
+}
+trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
 # ── Helmfile not found (baseline may not have it yet) ───────────────────────
 if [ ! -f "$HELMFILE_PATH" ]; then
   echo "Helmfile not found at $HELMFILE_PATH"
   echo "status=missing" >> "$GITHUB_OUTPUT"
   exit 0
 fi
+
+# ── Template flags and repository warm-up ───────────────────────────────────
+# Parallel helmfile calls must not run "helm repo add" themselves: every call
+# rewrote the shared repositories.yaml, and a concurrent call then failed with
+# "repo <name> not found". `helmfile repos` adds every repository once (in the
+# background while discovery runs); the renders then use --skip-refresh and
+# add nothing. --allow-failed-releases (helmfile >= 1.8) lets the other
+# releases of a call continue when one release fails; the call still fails.
+# TEMPLATE_EXTRA is a plain string: the xargs subshells cannot see arrays.
+TEMPLATE_EXTRA=""
+if helmfile --help 2>/dev/null | grep -q -- '--allow-failed-releases'; then
+  TEMPLATE_EXTRA="--allow-failed-releases"
+fi
+export TEMPLATE_EXTRA
+REPOS_LOG="${RENDER_TEMP}/${SNAPSHOT_LABEL}-repos.log"
+WARMUP_PID=""
+start_repo_warmup() {
+  # args: optional VAR=value filter assignments for the warm-up build
+  ( env "$@" timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" repos >"$REPOS_LOG" 2>&1 ) &
+  WARMUP_PID=$!
+}
+finish_repo_warmup() {
+  [ -n "$WARMUP_PID" ] || return 0
+  if wait "$WARMUP_PID"; then
+    TEMPLATE_EXTRA="$TEMPLATE_EXTRA --skip-refresh"
+    echo "Repositories added once ($(grep -c 'has been added' "$REPOS_LOG" 2>/dev/null || echo 0) new)"
+  else
+    echo "::warning::Repository warm-up failed on ${SIDE_LABEL} — every render adds its repositories itself"
+    tail -n 10 "$REPOS_LOG" 2>/dev/null | cut -c1-300
+  fi
+  export TEMPLATE_EXTRA
+}
 
 # ── Subset mode ─────────────────────────────────────────────────────────────
 # The pairs file replaces discovery: the review classifier derived it from this
@@ -96,22 +173,29 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
       for d in "${ds[@]}"; do selectors+=(--selector "cluster=$cluster,deploymentName=$d"); done
       ATLAS_FILTER_CLUSTER="$cluster" \
       ATLAS_FILTER_DEPLOYMENT_NAME="$deployments" \
-      helmfile -f "$HELMFILE_PATH" \
+      timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
         template "${selectors[@]}" \
-        --skip-schema-validation \
+        --skip-schema-validation --include-crds $TEMPLATE_EXTRA \
         --output-dir "$RENDER_DIR" \
         --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
         2>>"$STDERR_LOG" \
       || { echo "::${LEVEL_TAG}::Render failed for $cluster [$deployments] on ${SIDE_LABEL}" >&2; return 1; }
     }
     export -f render_cluster
+    phase "add repositories of the selection (helmfile repos)"
+    start_repo_warmup \
+      ATLAS_FILTER_CLUSTER="$(cut -d'|' -f1 "$RENDER_PAIRS_FILE" | sort -u | paste -sd,)" \
+      ATLAS_FILTER_DEPLOYMENT_NAME="$(cut -d'|' -f2 "$RENDER_PAIRS_FILE" | sort -u | paste -sd,)"
+    finish_repo_warmup
+    phase "subset render of ${PAIR_COUNT} pair(s)"
     # group "<cluster>|<deployment>" lines into one "<cluster>|<d1>,<d2>" per cluster
     sort -u "$RENDER_PAIRS_FILE" | grep '|' \
       | awk -F'|' '{ if ($1 in acc) acc[$1]=acc[$1] "," $2; else acc[$1]=$2 } END { for (c in acc) print c "|" acc[c] }' \
-      | xargs -r -P4 -I{} bash -c 'render_cluster "{}"' || RENDER_STATUS=$?
+      | xargs -r -P"$RENDER_JOBS" -I{} bash -c 'render_cluster "{}"' || RENDER_STATUS=$?
   fi
   if [ $RENDER_STATUS -ne 0 ]; then
-    echo "::${LEVEL_TAG}::${SIDE_LABEL^} subset render failed"
+    echo "::${LEVEL_TAG}::${SIDE_LABEL^} subset render failed (phase: $(cat "$PHASE_FILE"))"
+    stderr_tail
     echo "status=error" >> "$GITHUB_OUTPUT"
   else
     echo "status=success" >> "$GITHUB_OUTPUT"
@@ -126,6 +210,26 @@ if [ -n "${RENDER_PAIRS_FILE:-}" ]; then
 fi
 
 if [ "${SKIP_FULL_RENDER:-}" != "true" ]; then
+
+# ── Pairs from the discovery map ────────────────────────────────────────────
+# The workflow already built this side's discovery map (seconds). Its pairs
+# are the same as the discovery build below (tested in discovery-map.bats);
+# a map also proves that the stage-1 filter and the selectors work.
+if [ -n "${RENDER_MAP_FILE:-}" ] && [ -s "$RENDER_MAP_FILE" ] \
+   && jq -e '.pairs | type == "array"' "$RENDER_MAP_FILE" >/dev/null 2>&1; then
+  phase "pairs from the discovery map"
+  start_repo_warmup
+  jq '[.pairs[] | {name: .deploymentName, namespace: "",
+        labels: ("cluster:" + .cluster + ",deploymentName:" + .deploymentName)}]' \
+    "$RENDER_MAP_FILE" > "$LIST_JSON"
+  echo "list_json=$LIST_JSON" >> "$GITHUB_OUTPUT"
+  TOTAL=$(jq length "$LIST_JSON")
+  FILTER_SUPPORTED=true
+  echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+  PAIRS_FROM_MAP=true
+fi
+
+if [ "${PAIRS_FROM_MAP:-}" != "true" ]; then
 # ── Discover deployments ────────────────────────────────────────────────────
 # Discovery deliberately avoids `helmfile list`. Since helmfile v1.2.0 its
 # ListReleases collects per-state results through a channel with a fixed buffer
@@ -150,7 +254,8 @@ DISCOVERY_QUERY='map(
       labels: ($state.commonLabels | to_entries | sort_by(.key)
                | map("\(.key):\(.value)") | join(","))
     })'
-if ! helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
+phase "discovery (helmfile build)"
+if ! timeout -k 30 "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS build --embed-values=false 2>"$STDERR_LOG" \
   | yq eval-all -o=json '[.]' - \
   | jq "$DISCOVERY_QUERY" > "$LIST_JSON"; then
   echo "::${LEVEL_TAG}::Failed to discover deployments on ${SIDE_LABEL}"
@@ -162,12 +267,17 @@ echo "list_json=$LIST_JSON" >> "$GITHUB_OUTPUT"
 
 TOTAL=$(jq length "$LIST_JSON")
 
+# The discovery build cached the remote states: the repository warm-up can
+# run now, in parallel with the selector probe, without a concurrent fetch.
+start_repo_warmup
+
 # ── Selector-support probe ──────────────────────────────────────────────────
 # Tests whether CLI --selector reaches release-level commonLabels. On current
 # ATLAS this always passes; consumers pinned to older ATLAS refs with hardcoded
 # sub-helmfile selectors will fail the probe and fall back to bulk rendering.
+phase "selector probe (helmfile list)"
 PROBE_OUT=$(ATLAS_REDACT_SECRETS=true \
-  helmfile $HELMFILE_ARGS \
+  timeout -k 30 300 helmfile $HELMFILE_ARGS \
   list --selector cluster=__atlas_probe_nonexistent__ \
   --output json --allow-no-matching-release 2>/dev/null || true)
 if [ -z "$PROBE_OUT" ]; then
@@ -187,6 +297,9 @@ else
   echo "::endgroup::"
 fi
 echo "filter_supported=$FILTER_SUPPORTED" >> "$GITHUB_OUTPUT"
+fi # discovery build + probe (no map)
+
+finish_repo_warmup
 
 # ── Render ──────────────────────────────────────────────────────────────────
 OUTPUT_DIR_TEMPLATE='{{.OutputDir}}/{{.Environment.Values.atlas.deployment.cluster}}/{{.Environment.Values.atlas.deployment.deploymentName}}/{{.Release.Name}}'
@@ -210,10 +323,10 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
     deployment="${pair#*|}"
     ATLAS_FILTER_CLUSTER="$cluster" \
     ATLAS_FILTER_DEPLOYMENT_NAME="$deployment" \
-    helmfile -f "$HELMFILE_PATH" \
+    timeout -k 30 "$HELMFILE_TIMEOUT" helmfile -f "$HELMFILE_PATH" \
       template \
       --selector "cluster=$cluster,deploymentName=$deployment" \
-      --skip-schema-validation \
+      --skip-schema-validation --include-crds $TEMPLATE_EXTRA \
       --output-dir "$RENDER_DIR" \
       --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
       2>>"$STDERR_LOG" \
@@ -221,18 +334,21 @@ if [ "$FILTER_SUPPORTED" = "true" ]; then
   }
   export -f render_one
   export LEVEL_TAG SIDE_LABEL OUTPUT_DIR_TEMPLATE
-  printf '%s\n' "$PAIRS" | xargs -r -P4 -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
+  phase "render of $(printf '%s\n' "$PAIRS" | grep -c '|') pair(s)"
+  printf '%s\n' "$PAIRS" | xargs -r -P"$RENDER_JOBS" -I{} bash -c 'render_one "{}"' || RENDER_STATUS=$?
 else
   # Bulk path: single helmfile template invocation.
-  ATLAS_REDACT_SECRETS=true helmfile $HELMFILE_ARGS template \
-    --skip-schema-validation \
+  phase "bulk render"
+  ATLAS_REDACT_SECRETS=true timeout -k 30 "$HELMFILE_TIMEOUT" helmfile $HELMFILE_ARGS template \
+    --skip-schema-validation --include-crds \
     --output-dir "$SNAPSHOT_DIR" \
     --output-dir-template "$OUTPUT_DIR_TEMPLATE" \
     2>>"$STDERR_LOG" || RENDER_STATUS=$?
 fi
 
 if [ $RENDER_STATUS -ne 0 ]; then
-  echo "::${LEVEL_TAG}::${SIDE_LABEL^} render failed"
+  echo "::${LEVEL_TAG}::${SIDE_LABEL^} render failed (phase: $(cat "$PHASE_FILE"))"
+  stderr_tail
   echo "status=error" >> "$GITHUB_OUTPUT"
 else
   echo "status=success" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,95 @@
+name: ATLAS Review
+description: >
+  The whole ATLAS review in one step: discovery maps and classification of
+  both revisions, both renders (from one workspace path), redaction replay,
+  semantic diff, shadow check, PR comment and job summary — the atlas CLI
+  (`atlas review ci action review`). The checkout must hold the merge result
+  at HEAD and the baseline commit.
+
+inputs:
+  helmfile-path:
+    description: Path to the helmfile entry point (repo-relative)
+    required: false
+    default: helmfile.yaml.gotmpl
+  base:
+    description: >
+      Baseline commit: the merge commit's first parent, or the PR's
+      merge-base when the merge ref is unavailable. Must be fetched.
+    required: true
+  render-subset:
+    description: 'Changed-file render subsetting: "off", "shadow" or "on"'
+    required: false
+    default: "off"
+  diff-mode:
+    description: '"dyff" (YAML-aware, default) or "classic" (unified diff)'
+    required: false
+    default: dyff
+  sops-age-key:
+    description: SOPS age private key for *.values.sops.yaml files
+    required: false
+  merge-fallback:
+    description: '"true" when HEAD is the PR branch (no merge ref)'
+    required: false
+    default: "false"
+  latest-atlas-tag:
+    description: Latest ATLAS release tag (pin check in the comment)
+    required: false
+  latest-main-sha:
+    description: Latest commit on max06/atlas main (pin check in the comment)
+    required: false
+  run-url:
+    description: Run URL for the comment's links
+    required: false
+  in-place:
+    description: >
+      "true" (default): render in the checkout, switching it between the two
+      commits and back to HEAD (renders from RUNNER_TEMP were about 45 %
+      slower on GitHub runners). "false": export both commits into a
+      workspace under RUNNER_TEMP and leave the checkout alone.
+    required: false
+    default: "true"
+
+# Docker actions expose the keys they write to GITHUB_OUTPUT as written
+# (underscores); this list documents them.
+outputs:
+  body:
+    description: PR comment markdown
+  summary-file:
+    description: Path of the job summary markdown
+  status:
+    description: Diff result — empty, no-changes or changes
+  pr_status:
+    description: Render status of the merge result — success, error
+  baseline_status:
+    description: Render status of the baseline — success, error or missing
+  render_mode:
+    description: full or subset
+  classify_mode:
+    description: subset or full (empty when subsetting is off)
+  total:
+    description: Number of changed resources
+  releases:
+    description: Number of affected releases
+  shadow_result:
+    description: covered / uncovered / full / skipped / inconclusive
+  shadow_missed:
+    description: Changed deployments outside the classifier's selection
+
+runs:
+  using: docker
+  # Prebuilt atlas image (Dockerfile at the repo root, workflow image.yml).
+  # The tag must match this ref — a release sets the version, a test branch
+  # uses its branch tag.
+  image: docker://ghcr.io/max06/atlas:main
+  args: [review, ci, action, review]
+  env:
+    INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
+    INPUT_BASE: ${{ inputs.base }}
+    INPUT_SUBSET_MODE: ${{ inputs.render-subset }}
+    INPUT_DIFF_MODE: ${{ inputs.diff-mode }}
+    INPUT_SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
+    INPUT_MERGE_FALLBACK: ${{ inputs.merge-fallback }}
+    INPUT_LATEST_ATLAS_TAG: ${{ inputs.latest-atlas-tag }}
+    INPUT_LATEST_MAIN_SHA: ${{ inputs.latest-main-sha }}
+    INPUT_RUN_URL: ${{ inputs.run-url }}
+    INPUT_IN_PLACE: ${{ inputs.in-place }}

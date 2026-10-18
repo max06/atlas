@@ -103,7 +103,7 @@ fi
 # ── Merge ref fallback warning ──
 if [ "$MERGE_FALLBACK" = "true" ]; then
   emit '> [!WARNING]'
-  emit '> **Merge ref unavailable** — this likely means the PR has merge conflicts with the target branch. The diff below was generated from the PR branch alone and may not reflect the actual merge result. Please rebase or merge the target branch into your PR.'
+  emit '> **Merge ref unavailable** — this likely means the PR has merge conflicts with the target branch. The diff below compares the PR branch with its merge-base, so it shows the PR'"'"'s own changes, not the actual merge result. Please rebase or merge the target branch into your PR.'
   emit ''
 fi
 

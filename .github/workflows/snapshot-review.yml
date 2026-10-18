@@ -1,9 +1,10 @@
 # ATLAS Review — Reusable GitHub Actions Workflow
 #
 # Compares rendered Kubernetes manifests between the current target branch HEAD
-# and the merge result of a pull request using Docker container actions for
-# rendering (atlas-render) and diffing (atlas-diff). Tool installation is baked
-# into the Docker images; checkout logic stays visible in the workflow.
+# and the merge result of a pull request. The review itself is ONE container
+# step (action atlas-review: the atlas CLI in the prebuilt atlas image); the
+# workflow keeps the checkout, the baseline resolution and the comment.
+# (The step-wise actions atlas-render and atlas-diff stay available.)
 #
 # Merge-result strategy: the baseline is the live target-branch HEAD (what is
 # deployed now); the PR side is GitHub's trial merge ref (what will be deployed
@@ -18,7 +19,7 @@
 #   The ATLAS directory convention is the dependency graph, so the PR's changed
 #   paths select the (cluster, deployment) pairs whose render can differ. Both
 #   revisions' discovery maps (ATLAS_DISCOVERY_MAP) plus `git diff --name-status`
-#   feed the classifier (atlas-render mode=classify); default-deny — anything
+#   feed the classifier; default-deny — anything
 #   outside deployments/templates, global values, or the entry helmfile means a
 #   full render. Modes:
 #     off    — classic full render, no classification
@@ -65,6 +66,10 @@ on:
         description: "PR label that forces a full render (subsetting off) for that PR"
         type: string
         default: "atlas-full-render"
+      runs-on:
+        description: 'Runner for the review job: a label ("ubuntu-latest", "linux-amd-8") or a JSON object, e.g. {"group":"Default larger runners","labels":["linux-amd-8"]}. Full renders of large repositories need more than a standard runner.'
+        type: string
+        default: "ubuntu-latest"
     secrets:
       sops-age-key:
         required: false
@@ -77,7 +82,7 @@ permissions:
 jobs:
   review:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ startsWith(inputs.runs-on, '{') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     steps:
       - name: Check for latest ATLAS release
         id: latest-release
@@ -110,11 +115,19 @@ jobs:
       # ── Render merge result (PR side) ──────────────────────────────────────
       # Order matters: PR render runs first to capture sidedump maps that the
       # replay step uses to scrub the (potentially leaky) baseline.
+      # fetch-depth 2: the merge commit's first parent IS the target commit the
+      # merge was made against — the baseline. A separately fetched target tip
+      # can be newer (main moved since GitHub built the merge ref) and would
+      # show those newer commits as reverted by the PR.
       - name: Checkout merge result
         id: merge-checkout
         uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 2
+          # The review container works on the fetched commits only and must
+          # not see the job token; the one fetch below carries it explicitly.
+          persist-credentials: false
         continue-on-error: true
 
       - name: Fallback to PR branch
@@ -122,121 +135,88 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
-      # ── Classification inputs ──────────────────────────────────────────────
-      # The target branch tip is fetched into a worktree so its discovery map
-      # and the changed-file list are available BEFORE the first render, without
-      # a third checkout. Any failure here leaves the outputs empty, and the
-      # classifier then defaults to a full render.
-      - name: Prepare classification inputs
-        id: prep
-        if: steps.subset.outputs.mode != 'off'
+      # Baseline commit: merge^1 normally. Without a merge ref (conflicts) the
+      # PR branch is compared with its merge-base, so the diff shows the PR's
+      # own changes, not everything the target gained since the branch point.
+      - name: Resolve baseline
+        id: baseline-rev
         env:
+          GH_TOKEN: ${{ github.token }}
+          FALLBACK: ${{ steps.merge-checkout.outcome == 'failure' }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
-          if git fetch --depth=1 origin "refs/heads/${BASE_REF}" \
-             && git worktree add --detach "${RUNNER_TEMP}/base-tree" FETCH_HEAD \
-             && git diff --name-status --no-renames FETCH_HEAD HEAD > "${RUNNER_TEMP}/changes.txt"; then
-            echo "base_tree=${RUNNER_TEMP}/base-tree" >> "$GITHUB_OUTPUT"
-            echo "changes_file=${RUNNER_TEMP}/changes.txt" >> "$GITHUB_OUTPUT"
-            echo "Changed paths: $(wc -l < "${RUNNER_TEMP}/changes.txt")"
+          # Token scoped to this one command; the checkout keeps no credentials.
+          fetch() {
+            git -c "http.${SERVER_URL}/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+              fetch -q --depth=1 origin "$1"
+          }
+          SHA=""
+          if [ "$FALLBACK" != "true" ] && git rev-parse -q --verify 'HEAD^2' >/dev/null; then
+            SHA="$(git rev-parse 'HEAD^1')"
+            echo "Baseline: merge^1 = $SHA"
           else
-            echo "::warning::Could not prepare classification inputs — full render"
-            echo "base_tree=" >> "$GITHUB_OUTPUT"
-            echo "changes_file=" >> "$GITHUB_OUTPUT"
+            SHA="$(gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha' 2>/dev/null || true)"
+            if [ -n "$SHA" ] && fetch "$SHA"; then
+              echo "Baseline: merge-base of the PR = $SHA"
+            else
+              echo "::warning::Could not resolve the merge-base — comparing with the target branch tip"
+              fetch "refs/heads/${BASE_REF}" && SHA="$(git rev-parse FETCH_HEAD)"
+            fi
           fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Discovery map (merge result)
-        id: map-pr
-        if: steps.subset.outputs.mode != 'off'
-        uses: max06/atlas/.github/actions/atlas-render@main
-        with:
-          mode: discover
-          helmfile-path: ${{ inputs.helmfile-path }}
-          snapshot-label: pr
+      # ── Diagnostics (debug logging only) ───────────────────────────────────
+      # A host-side monitor, outside the action container: if the review
+      # stalls, the log still shows the containers, processes, memory and disk.
+      - name: Start host monitor (debug)
+        if: runner.debug == '1'
+        run: |
+          nohup bash -c 'while true; do
+            echo "=== $(date -u +%H:%M:%S)"; free -m | head -2; df -h / | tail -1
+            for c in $(docker ps -q 2>/dev/null); do
+              echo "--- container $(docker inspect -f "{{.Name}}" "$c")"
+              docker top "$c" -eo pid,ppid,stat,etime,pcpu,rss,wchan:24,args 2>/dev/null | cut -c1-220
+              pid=$(docker inspect -f "{{.State.Pid}}" "$c")
+              echo "--- connections"
+              sudo nsenter -t "$pid" -n ss -tnp 2>/dev/null | cut -c1-200 | head -20
+            done
+            for f in "$RUNNER_TEMP"/*-stderr.log; do [ -f "$f" ] && { echo "--- tail $f"; tail -n 3 "$f" | cut -c1-200; }; done
+            sleep 15; done' > "$RUNNER_TEMP/host-monitor.log" 2>&1 &
+          echo "host monitor started"
 
-      - name: Discovery map (target branch)
-        id: map-baseline
-        if: steps.subset.outputs.mode != 'off' && steps.prep.outputs.base_tree != ''
-        uses: max06/atlas/.github/actions/atlas-render@main
-        with:
-          mode: discover
-          helmfile-path: ${{ steps.prep.outputs.base_tree }}/${{ inputs.helmfile-path }}
-          snapshot-label: baseline
-
-      - name: Classify changed paths
-        id: classify
-        if: steps.subset.outputs.mode != 'off'
-        uses: max06/atlas/.github/actions/atlas-render@main
-        with:
-          mode: classify
-          helmfile-path: ${{ inputs.helmfile-path }}
-          snapshot-label: classify
-          map-baseline: ${{ steps.map-baseline.outputs.map_file }}
-          map-pr: ${{ steps.map-pr.outputs.map_file }}
-          changes-file: ${{ steps.prep.outputs.changes_file }}
-
-      - name: Render PR side
-        uses: max06/atlas/.github/actions/atlas-render@main
-        id: pr
+      # ── The review ─────────────────────────────────────────────────────────
+      # One container step (atlas CLI): discovery maps of both commits,
+      # classification, both renders from ONE workspace path (rendered values
+      # embed absolute paths), redaction replay, semantic diff, shadow check
+      # and the comment. The merge result renders first: its redaction maps
+      # scrub the baseline.
+      - name: Review
+        id: review
+        uses: max06/atlas/.github/actions/atlas-review@main
         with:
           helmfile-path: ${{ inputs.helmfile-path }}
-          snapshot-label: pr
+          base: ${{ steps.baseline-rev.outputs.sha }}
+          render-subset: ${{ steps.subset.outputs.mode }}
+          diff-mode: ${{ inputs.diff-mode }}
           sops-age-key: ${{ secrets.sops-age-key }}
-          enable-sidedump: "true"
-          blocking: "true"
           merge-fallback: ${{ steps.merge-checkout.outcome == 'failure' }}
-          pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_pr_file || '' }}
-
-      # ── Render baseline (target branch) ────────────────────────────────────
-      - name: Checkout target branch
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          clean: false
-
-      - name: Render baseline
-        uses: max06/atlas/.github/actions/atlas-render@main
-        id: baseline
-        with:
-          helmfile-path: ${{ inputs.helmfile-path }}
-          snapshot-label: baseline
-          sops-age-key: ${{ secrets.sops-age-key }}
-          enable-sidedump: "false"
-          blocking: "false"
-          pairs-file: ${{ (steps.subset.outputs.mode == 'on' && steps.classify.outputs.mode == 'subset') && steps.classify.outputs.pairs_baseline_file || '' }}
-
-      # ── Diff, replay, and comment ──────────────────────────────────────────
-      - name: Diff and build comment
-        uses: max06/atlas/.github/actions/atlas-diff@main
-        id: diff
-        with:
-          baseline-dir: ${{ steps.baseline.outputs.snapshot_dir }}
-          pr-dir: ${{ steps.pr.outputs.snapshot_dir }}
-          sidedump-map-dir: ${{ steps.pr.outputs.sidedump_dir }}
-          baseline-status: ${{ steps.baseline.outputs.status }}
-          pr-status: ${{ steps.pr.outputs.status }}
-          merge-fallback: ${{ steps.merge-checkout.outcome == 'failure' }}
-          baseline-filter: ${{ steps.baseline.outputs.filter_supported }}
-          pr-filter: ${{ steps.pr.outputs.filter_supported }}
-          workflow-pin-target: ${{ steps.baseline.outputs.workflow_pin }}
-          workflow-pin-merge: ${{ steps.pr.outputs.workflow_pin }}
           latest-atlas-tag: ${{ steps.latest-release.outputs.tag }}
           latest-main-sha: ${{ steps.latest-release.outputs.main_sha }}
-          helmfile-path: ${{ inputs.helmfile-path }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          diff-mode: ${{ inputs.diff-mode }}
-          subset-mode: ${{ steps.subset.outputs.mode }}
-          classify-dir: ${{ steps.classify.outputs.classify_dir }}
-          render-mode: ${{ steps.pr.outputs.render_mode }}
 
       # ── Post results ───────────────────────────────────────────────────────
       - name: Post PR comment
-        if: always() && steps.diff.outputs.body
+        if: always() && steps.review.outputs.body
         uses: marocchino/sticky-pull-request-comment@v3.0.5
         with:
           header: atlas-review
-          message: ${{ steps.diff.outputs.body }}
+          message: ${{ steps.review.outputs.body }}
 
       - name: Write job summary
         if: always()
@@ -245,8 +225,12 @@ jobs:
             cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Host monitor log (debug)
+        if: always() && runner.debug == '1'
+        run: tail -n 400 "$RUNNER_TEMP/host-monitor.log" 2>/dev/null || echo "no monitor log"
+
       - name: Gate on PR render status
-        if: always() && steps.pr.outputs.status == 'error'
+        if: always() && steps.review.outputs.pr_status == 'error'
         run: |
           echo "::error::Merge result failed to render — see the PR comment for details"
           exit 1

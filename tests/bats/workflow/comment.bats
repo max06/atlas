@@ -7,7 +7,7 @@
 load '../helpers/render'
 
 _comment_script() {
-  echo "$(_repo_root)/.github/actions/atlas-diff/comment.sh"
+  echo "$(_actions_dir)/atlas-diff/comment.sh"
 }
 
 setup() {

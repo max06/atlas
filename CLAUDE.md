@@ -39,6 +39,19 @@ helmfile build -f tests/helmfile.yaml.gotmpl \
   --debug --selector cluster=cluster1,deploymentName=deployment1
 ```
 
+## atlas CLI (Go, proof of concept)
+
+`cmd/atlas` + `internal/*`: a driver around the helmfile binary (render, inspect, discover, review classify/diff, doctor). The review workflow (`snapshot-review.yml`) runs ONE container step, the action `atlas-review` (`atlas review ci action review`, `internal/ci/review.go`): both commits are exported in turn into one workspace path, discovered, classified, rendered, compared and commented. The step-wise actions `atlas-render` / `atlas-diff` (`atlas review ci action render|diff`) stay available. Actions read their `INPUT_*` variables (`internal/ci/action.go`). The pipeline steps live in `internal/ci` (render one side, discover, replay, diff, shadow, comment), `internal/snapshot` (render trees: release detection, per-resource split, redaction replay, dyff diff) and `internal/report` (comment, summary, scope, shadow check). `internal/classify` ports `classify.sh`.
+
+The bash scripts under `.github/actions/*/` are the reference implementation the port was checked against; each `atlas review ci <step>` keeps its script's environment contract. With `ATLAS_REVIEW_BACKEND=cli` the workflow tests run every script assertion through shims in `tests/bats/helpers/cli-actions/` (needs `ATLAS_CLI`); with `ATLAS_CLI` alone the classify scenarios compare both outputs, and `tests/bats/workflow/cli.bats` drives the binary end to end.
+
+```bash
+go vet ./... && go test ./...
+go build -o /tmp/atlas ./cmd/atlas
+ATLAS_CLI=/tmp/atlas bats --recursive tests/bats/workflow/                       # scripts (+ classify comparison)
+ATLAS_CLI=/tmp/atlas ATLAS_REVIEW_BACKEND=cli bats --recursive tests/bats/workflow/ tests/bats/redaction/redaction-replay.bats
+```
+
 ## Architecture
 
 ### Entry Points

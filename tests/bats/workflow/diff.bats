@@ -8,7 +8,7 @@
 load '../helpers/render'
 
 _diff_script() {
-  echo "$(_repo_root)/.github/actions/atlas-diff/diff.sh"
+  echo "$(_actions_dir)/atlas-diff/diff.sh"
 }
 
 setup_file() {
