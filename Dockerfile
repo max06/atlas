@@ -10,25 +10,24 @@
 # volume there and runs as the caller's uid. Docker copies the mode into a new
 # named volume, so any uid can write to it.
 
-FROM golang:1.24-alpine AS build
+# Built for linux/amd64 and linux/arm64 (Apple silicon runs arm64 natively).
+# The Go build and the tool downloads run on the build platform and target
+# TARGETARCH, so they need no emulation; only the final stage's apk runs
+# emulated when cross-building.
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath \
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X github.com/max06/atlas/internal/cli.Version=${VERSION}" \
       -o /out/atlas ./cmd/atlas
 
-FROM alpine:3.24
-
-# No gnupg, on purpose: SOPS decrypts with age in every use of this image
-# (wrapper, CI, Argo CD plugin). With a gpg binary present, sops tries the PGP
-# recipients first; in CI, gpg state in the shared /github/home of one step
-# made gpg -d hang forever in the next step. Without gpg the PGP attempt fails
-# at once and age decrypts.
-RUN apk add --no-cache bash ca-certificates curl git jq
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS tools
+RUN apk add --no-cache curl
 
 # renovate: datasource=github-releases depName=helm/helm
 ARG HELM_VERSION=v4.3.0
@@ -43,16 +42,27 @@ ARG YQ_VERSION=v4.54.1
 # renovate: datasource=github-releases depName=homeport/dyff
 ARG DYFF_VERSION=v1.12.0
 
+ARG TARGETARCH
 COPY .github/actions/atlas-render/install-tools.sh /install-tools.sh
 COPY .github/actions/atlas-diff/install-tools.sh /install-tools-diff.sh
-RUN sh /install-tools.sh \
+RUN TARGETARCH=${TARGETARCH} sh /install-tools.sh \
       helm=${HELM_VERSION} \
       helmfile=${HELMFILE_VERSION} \
       sops=${SOPS_VERSION} \
       yq=${YQ_VERSION} \
       kustomize=${KUSTOMIZE_VERSION} && \
-    sh /install-tools-diff.sh dyff=${DYFF_VERSION} && \
-    rm /install-tools.sh /install-tools-diff.sh
+    TARGETARCH=${TARGETARCH} sh /install-tools-diff.sh dyff=${DYFF_VERSION}
+
+FROM alpine:3.24
+
+# No gnupg, on purpose: SOPS decrypts with age in every use of this image
+# (wrapper, CI, Argo CD plugin). With a gpg binary present, sops tries the PGP
+# recipients first; in CI, gpg state in the shared /github/home of one step
+# made gpg -d hang forever in the next step. Without gpg the PGP attempt fails
+# at once and age decrypts.
+RUN apk add --no-cache bash ca-certificates curl git jq
+
+COPY --from=tools /usr/local/bin/ /usr/local/bin/
 
 # Redaction post-renderer (atlas render --redact). Plugins are read-only data;
 # HELM_PLUGINS points at them, so they work for any uid.
