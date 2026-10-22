@@ -158,8 +158,8 @@ the template directory. Non-string entries (inline maps) are passed through.
   body (e.g. `{{ .Values.targetPort }}` inside an inline values map for a raw
   chart); file-based values: entries are skipped — the values-loader resolves
   those at release-time with .Release.* available. Instance inline values go
-  in UNDER the hierarchy (re-overlay) so hierarchy keys win consistently,
-  matching the final value precedence the loader establishes.
+  in OVER the hierarchy, matching the final value precedence the loader
+  establishes: the instance is the most specific layer.
 
   Shared by helmfile.instance.yaml.gotmpl (the real release rewrite) and the
   discovery map mode of helmfile.all.yaml.gotmpl (which local charts a pair's
@@ -181,7 +181,6 @@ the template directory. Non-string entries (inline maps) are passed through.
     {{- $ctx = mergeOverwrite $ctx $entry }}
   {{- end }}
 {{- end }}
-{{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 {{- tpl (readFile $templateFile) $ctx }}
 {{- end -}}

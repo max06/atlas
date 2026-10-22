@@ -11,11 +11,13 @@
 #   2. Preserve inline map values in the emitted release.values list so
 #      they reach the chart alongside the values-loader output.
 #
-# Precedence rules still apply: hierarchy (global) wins over instance
-# inline for overlapping keys. The inline map's reference to
-# {{ .Values.globalOnly }} resolves to the instance-provided value at
-# tpl time, but the values-loader's hierarchy overlay replaces it at
-# release-evaluation time.
+# Precedence rules still apply: instance inline wins over the hierarchy
+# (global) for overlapping keys, so {{ .Values.globalOnly }} resolves to the
+# instance-provided value at tpl time AND the release gets that value.
+#
+# Decision (max06/atlas#86, v0.10.0): before, the hierarchy overrode the
+# instance, and the three assertions on globalOnly below expected the
+# hierarchy value. They were flipped on purpose.
 
 load '../helpers/render'
 
@@ -30,17 +32,13 @@ setup_file() { ensure_rendered; }
   [ "$output" = "fromInstanceInline" ]
 }
 
-@test "d46: hierarchy value resolves in template inline map" {
-  # The template references {{ .Values.globalOnly }}. At tpl time this
-  # resolves to the hierarchy value (global.values.yaml: fromGlobal)
-  # because hierarchy is merged into ctx before instance values at tpl
-  # time. But the instance also sets globalOnly=instanceTriesToOverride.
-  # The final rendered value depends on the tpl context merge order —
-  # instance values are merged last into ctx (mergeOverwrite), so tpl
-  # resolves to the instance value. However, the values-loader's
-  # hierarchy FINAL PASS overrides it back to the hierarchy value.
+@test "d46: an overridden hierarchy key resolves to the instance value in a template inline map" {
+  # The template references {{ .Values.globalOnly }}. global.values.yaml
+  # sets fromGlobal, the instance sets instanceTriesToOverride. The
+  # instance is the most specific layer, so the template sees the value
+  # the release gets.
   run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .inlineFromHierarchy
-  [ "$output" = "fromGlobal" ]
+  [ "$output" = "instanceTriesToOverride" ]
 }
 
 @test "d46: static inline value passes through unchanged" {
@@ -58,12 +56,11 @@ setup_file() { ensure_rendered; }
   [ "$output" = "fromInstanceInline" ]
 }
 
-@test "d46: hierarchy wins over instance inline for globalOnly" {
+@test "d46: instance inline wins over hierarchy for globalOnly" {
   # Same key set in global.values.yaml (fromGlobal) and in the
-  # deployment's instance values (instanceTriesToOverride). Hierarchy
-  # final pass must win.
+  # deployment's instance values (instanceTriesToOverride).
   run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .globalOnly
-  [ "$output" = "fromGlobal" ]
+  [ "$output" = "instanceTriesToOverride" ]
 }
 
 # --- Template value FILE (.yaml.gotmpl) referencing instance values ---
@@ -73,9 +70,9 @@ setup_file() { ensure_rendered; }
   [ "$output" = "fromInstanceInline" ]
 }
 
-@test "d46: hierarchy value resolves in template values file" {
+@test "d46: an overridden hierarchy key resolves to the instance value in a template values file" {
   run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .fileFromHierarchy
-  [ "$output" = "fromGlobal" ]
+  [ "$output" = "instanceTriesToOverride" ]
 }
 
 @test "d46: static value from template values file passes through" {

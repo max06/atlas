@@ -1,16 +1,21 @@
 # Fixture: instance-level inline values (apps[].values list in deployment.yaml)
-# merge into the release's values with precedence between template-defaults
-# (below) and hierarchy values (above). Uses the app1 template so we have
-# template-include + template-defaults layers to test against.
+# are the most specific layer: they win over the template AND over every
+# file of the directory hierarchy, including this deployment's own values.yaml.
+# Uses the app1 template so we have template-include + template-defaults
+# layers to test against.
 #
-# Expected precedence (established by helmfile.single.yaml.gotmpl):
-#   chart defaults < template-include < template-defaults < instance inline < hierarchy
+# Expected precedence (established by _values_loader.tpl):
+#   chart defaults < template-include < template-defaults < hierarchy < instance inline
 #
 # Keys set here to probe each boundary:
-#   - instanceOnly:    unique key — proves instance values are delivered at all
-#   - templateInclude: collides with app1/values.yaml.gotmpl — instance should win
-#   - templateDefault: collides with app1 inline template-defaults — instance should win
-#   - globalOnly:      collides with hierarchy — hierarchy should win over instance
+#   - instanceOnly:     unique key — proves instance values are delivered at all
+#   - templateInclude:  collides with app1/values.yaml.gotmpl — instance wins
+#   - templateDefault:  collides with app1 inline template-defaults — instance wins
+#   - globalOnly:       collides with global.values.yaml — instance wins
+#   - clusterOnly:      collides with cluster1/cluster.values.yaml — instance wins
+#   - deploymentShared: collides with this deployment's values.yaml — instance wins
+#   (deploymentOnly is set only in values.yaml next to this file: the
+#   deployment layer itself is still delivered)
 apps:
   - template: app1
     namespace: test
@@ -19,6 +24,8 @@ apps:
         templateInclude: fromInstance
         templateDefault: fromInstance
         globalOnly: fromInstance
+        clusterOnly: fromInstance
+        deploymentShared: fromInstance
 settings:
   branch: main
   autoSync: false

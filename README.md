@@ -344,17 +344,21 @@ ATLAS loads and merges values from multiple levels. Later sources override earli
 | 1  | Chart defaults    | Chart's `values.yaml`                            | Always present |
 | 2  | Template-include  | File references in template release `values:` list | Per app template |
 | 3  | Template-defaults | Inline maps in template release `values:` list   | Per app template |
-| 4  | Instance inline   | `apps[].values` list in `deployment.yaml`        | Per app instance |
-| 5  | Template secrets  | `release.secrets` list (SOPS files)              | Per app template |
-| 6  | Instance secrets  | `apps[].secrets` list (SOPS files)               | Per app instance |
-| 7  | Global            | `global.values.*`                                | All clusters, all deployments |
-| 8  | Group             | `{group}/group.values.*`                         | All clusters in that group |
-| 9  | Cluster           | `{cluster}/cluster.values.*`                     | All deployments on that cluster |
-| 10 | Deployment        | `{deployment}/values.*`                          | Only that specific deployment |
+| 4  | Template secrets  | `release.secrets` list (SOPS files)              | Per app template |
+| 5  | Global            | `global.values.*`                                | All clusters, all deployments |
+| 6  | Group             | `{group}/group.values.*`                         | All clusters in that group |
+| 7  | Cluster           | `{cluster}/cluster.values.*`                     | All deployments on that cluster |
+| 8  | Deployment        | `{deployment}/values.*`                          | Only that specific deployment |
+| 9  | Instance inline   | `apps[].values` list in `deployment.yaml`        | Per app instance |
+| 10 | Instance secrets  | `apps[].secrets` list (SOPS files)               | Per app instance |
+
+Template values are defaults: every file of the directory hierarchy overrides them. The instance (`apps[]` in `deployment.yaml`) is the most specific scope — one app instance of one deployment — so it overrides the hierarchy, including the deployment's own `values.*` files (one deployment can hold several instances).
 
 Template-include and template-defaults are entries in the Helmfile release's `values:` list inside an app template. The list is ordered — the **last element has highest priority**. The table above shows the conventional ordering.
 
-Secrets (`release.secrets` and `apps[].secrets`) are merged AFTER all `values:` entries are resolved, regardless of declaration order. This mirrors helmfile's env-level "non-HCL secrets are loaded first but merged last" contract — secret leaves win over plain-value leaves with the same key.
+Secrets are merged AFTER the `values:` entries of their layer, regardless of declaration order: `release.secrets` after the template's `values:`, `apps[].secrets` after the instance's `values:`. This mirrors helmfile's env-level "non-HCL secrets are loaded first but merged last" contract — secret leaves win over plain-value leaves with the same key on the same layer. Hierarchy files still override template secrets, and instance values still override hierarchy secrets (`*.values.sops.yaml`): the layer order wins over the secret rule.
+
+Before v0.10.0 the hierarchy overrode the instance (`apps[].values` sat between template-defaults and template secrets). A value set inline on an app instance was silently replaced by any hierarchy file that set the same key. Consumers that relied on that must move those values into the hierarchy file of the matching scope.
 
 ### File Types (for hierarchy levels 5–8, loaded in this order per level)
 
@@ -374,24 +378,24 @@ For a deployment at `deployments/{group}/{cluster}/apps/{name}/deployment.yaml` 
  1. charts/{chart}/values.yaml                                         ← chart defaults
  2. templates/{template}/values.yaml.gotmpl (or other included files)  ← template-include
  3. inline maps in templates/{template}/helmfile.yaml.gotmpl           ← template-defaults
- 4. apps[].values in deployment.yaml                                   ← instance inline
- 5. release.secrets in templates/{template}/helmfile.yaml.gotmpl       ← template secrets
- 6. apps[].secrets in deployment.yaml                                  ← instance secrets
- 7. deployments/global.values.sops.yaml                                ← ATLAS hierarchy begins
- 8. deployments/global.values.yaml
- 9. deployments/global.values.yaml.gotmpl
-10. deployments/{group}/group.values.sops.yaml
-11. deployments/{group}/group.values.yaml
-12. deployments/{group}/group.values.yaml.gotmpl
-13. deployments/{group}/{cluster}/cluster.values.sops.yaml
-14. deployments/{group}/{cluster}/cluster.values.yaml
-15. deployments/{group}/{cluster}/cluster.values.yaml.gotmpl
-16. deployments/{group}/{cluster}/apps/{name}/values.sops.yaml
-17. deployments/{group}/{cluster}/apps/{name}/values.yaml
-18. deployments/{group}/{cluster}/apps/{name}/values.yaml.gotmpl       ← highest priority
+ 4. release.secrets in templates/{template}/helmfile.yaml.gotmpl       ← template secrets
+ 5. deployments/global.values.sops.yaml                                ← ATLAS hierarchy begins
+ 6. deployments/global.values.yaml
+ 7. deployments/global.values.yaml.gotmpl
+ 8. deployments/{group}/group.values.sops.yaml
+ 9. deployments/{group}/group.values.yaml
+10. deployments/{group}/group.values.yaml.gotmpl
+11. deployments/{group}/{cluster}/cluster.values.sops.yaml
+12. deployments/{group}/{cluster}/cluster.values.yaml
+13. deployments/{group}/{cluster}/cluster.values.yaml.gotmpl
+14. deployments/{group}/{cluster}/apps/{name}/values.sops.yaml
+15. deployments/{group}/{cluster}/apps/{name}/values.yaml
+16. deployments/{group}/{cluster}/apps/{name}/values.yaml.gotmpl       ← hierarchy ends
+17. apps[].values in deployment.yaml                                   ← instance inline
+18. apps[].secrets in deployment.yaml                                  ← instance secrets, highest priority
 ```
 
-For a **standalone cluster** (no group), steps 10–12 are skipped entirely.
+For a **standalone cluster** (no group), steps 8–10 are skipped entirely.
 
 ### Rules
 
