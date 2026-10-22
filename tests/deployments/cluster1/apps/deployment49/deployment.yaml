@@ -1,0 +1,19 @@
+# Fixture: the secret boundaries of the instance layer (app-secrets template,
+# same SOPS files as deployment38).
+#   key1 — template values only                       -> fromValues
+#   key2 — template values + template secrets + instance inline
+#          -> instance inline wins: the instance layer is above the
+#             template layer, secrets or not
+#   key3 — template secrets + instance inline + instance secrets
+#          -> instance secret wins: secrets beat values on the same layer
+apps:
+  - template: app-secrets
+    namespace: test
+    values:
+      - key2: fromInstanceInline
+        key3: fromInstanceInline
+    secrets:
+      - instance-secret.sops.yaml
+settings:
+  branch: main
+  autoSync: false

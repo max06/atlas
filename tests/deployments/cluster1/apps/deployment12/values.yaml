@@ -1,0 +1,4 @@
+# Deployment-level values of deployment12: the last hierarchy layer. The
+# instance (apps[].values in deployment.yaml) still wins over this file.
+deploymentOnly: fromDeployment
+deploymentShared: fromDeployment

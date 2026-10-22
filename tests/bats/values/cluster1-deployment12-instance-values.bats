@@ -1,13 +1,17 @@
 #!/usr/bin/env bats
 #
 # Scenario: instance-level inline values (deployment.yaml apps[].values list)
-# merge into the release with precedence BETWEEN template-defaults (below) and
-# hierarchy values (above):
+# are the most specific layer. They win over the template AND over every file
+# of the directory hierarchy, the deployment's own values.yaml included:
 #
-#   chart defaults < template-include < template-defaults < instance inline < hierarchy
+#   chart defaults < template-include < template-defaults < hierarchy < instance inline
+#
+# Decision (max06/atlas#86, v0.10.0): before, the hierarchy overrode the
+# instance. The assertion "hierarchy (global) wins over instance inline" of
+# this file was flipped on purpose.
 #
 # The fixture at tests/deployments/cluster1/apps/deployment12/deployment.yaml
-# sets four keys that collide at different layers in the chain to probe each
+# sets keys that collide at different layers in the chain to probe each
 # boundary in the precedence order.
 
 load '../helpers/render'
@@ -35,9 +39,25 @@ setup_file() { ensure_rendered; }
   [ "$output" = "fromInstance" ]
 }
 
-@test "d12: hierarchy (global) wins over instance inline" {
-  # global.values.yaml sets globalOnly=fromGlobal; instance tried to set fromInstance.
-  # Hierarchy is the last entry in the release values list, so it takes priority.
+@test "d12: instance inline wins over hierarchy (global)" {
+  # global.values.yaml sets globalOnly=fromGlobal; the instance sets fromInstance.
   run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .globalOnly
-  [ "$output" = "fromGlobal" ]
+  [ "$output" = "fromInstance" ]
+}
+
+@test "d12: instance inline wins over hierarchy (cluster)" {
+  # cluster1/cluster.values.yaml sets clusterOnly=fromCluster; the instance sets fromInstance.
+  run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .clusterOnly
+  [ "$output" = "fromInstance" ]
+}
+
+@test "d12: instance inline wins over the deployment's own values.yaml" {
+  # deployment12/values.yaml sets deploymentShared=fromDeployment; the instance sets fromInstance.
+  run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .deploymentShared
+  [ "$output" = "fromInstance" ]
+}
+
+@test "d12: the deployment's values.yaml is still delivered" {
+  run get_path "$CLUSTER" "$DEPLOYMENT" "$INSTANCE" .deploymentOnly
+  [ "$output" = "fromDeployment" ]
 }

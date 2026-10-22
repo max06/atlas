@@ -40,15 +40,21 @@ Inputs (passed via `include "atlas.values.merged" $args`):
 Returns: merged YAML as a string. Callers either emit directly (loader)
 or `fromYaml` it (stage-3).
 
-Resolution order (later overrides earlier — chart < template < instance < hierarchy):
+Resolution order (later overrides earlier — chart < template < hierarchy < instance):
   - hierarchy (FIRST PASS, baseline ctx for template/instance .gotmpls):
       global.values.{sops.yaml, yaml, yaml.gotmpl}
       group.values.{...} (only when cluster has a group)
       cluster.values.{...}
       deployment-level values.{sops.yaml, yaml, yaml.gotmpl}
   - template release.values: list (in declaration order)
-  - instance apps[].values: list (in declaration order)
-  - hierarchy (FINAL PASS — wins precedence over template + instance)
+  - template release.secrets: list
+  - hierarchy (OVERLAY — the directory hierarchy wins over the template:
+    template values are defaults)
+  - instance apps[].values: list (in declaration order) — one app instance
+    of one deployment is the most specific scope, so it wins over the
+    hierarchy
+  - instance apps[].secrets: list — secret leaves win over plain values of
+    the same (instance) layer
 */ -}}
 
 {{- /*
@@ -266,14 +272,13 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 
 {{- /* Enrich tpl context with instance inline map values so template
      expressions referencing deployment-level values resolve. Instance
-     values are merged UNDER the hierarchy (re-overlay) so hierarchy keys
-     win consistently — matching the final value precedence. */ -}}
+     values go in OVER the hierarchy: a template expression sees the value
+     the release gets, matching the final value precedence. */ -}}
 {{- range $entry := ($thisInstance | get "values" list) }}
   {{- if kindIs "map" $entry }}
     {{- $ctx = mergeOverwrite $ctx $entry }}
   {{- end }}
 {{- end }}
-{{- $ctx = mergeOverwrite $ctx (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== TEMPLATE-LEVEL VALUES ====================== */ -}}
@@ -316,13 +321,12 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
         {{- $progCtx = mergeOverwrite $progCtx (deepCopy $merged) }}
         {{- /* Include instance inline map values so template value files can
              reference deployment-level values (e.g. {{ .Values.targetPort }}).
-             Hierarchy is re-overlaid last to maintain precedence. */ -}}
+             Instance values go in last: they are the most specific layer. */ -}}
         {{- range $iv := ($thisInstance | get "values" list) }}
           {{- if kindIs "map" $iv }}
             {{- $progCtx = mergeOverwrite $progCtx $iv }}
           {{- end }}
         {{- end }}
-        {{- $progCtx = mergeOverwrite $progCtx (deepCopy $hierarchy) }}
         {{- $_ := set $progCtx "Release" $.Release }}
         {{- $_ := set $progCtx "Values" (deepCopy $progCtx) }}
         {{- $merged = mergeOverwrite $merged (tpl (readFile $absPath) $progCtx | fromYaml) }}
@@ -340,9 +344,39 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
   {{- end }}
 {{- end }}
 
-{{- /* ====================== INSTANCE-LEVEL VALUES ====================== */ -}}
+{{- /* ====================== RELEASE.SECRETS (template-relative, merged AFTER template values:) ====================== */ -}}
+{{- /* Helmfile contract: env-level secrets are merged last regardless of
+     declaration order. Replicate per layer — release.secrets land AFTER
+     all template values: entries, apps[].secrets after all instance
+     values: entries (below). Paths resolve template-relative for
+     release.secrets and deployment-relative for apps[].secrets.
+     Decryption is via SOPS (helmfile fetchSecretValue), the same path used
+     for .sops.yaml in values: lists, so non-SOPS files are not supported
+     here. */ -}}
+{{- range $entry := ($thisRelease | get "secrets" list) }}
+  {{- if kindIs "string" $entry }}
+    {{- $absPath := printf "%s/%s" $templateDir $entry }}
+    {{- if isFile $absPath }}
+      {{- $sopsValues := include "atlas.sops.load" (dict "path" $absPath "redact" $.redact "skipSecrets" $skipSecrets) | fromYaml }}
+      {{- $merged = mergeOverwrite $merged $sopsValues }}
+    {{- else }}
+      {{- /* A missing secrets file would deploy without credentials (or
+           with chart defaults) — the most dangerous silent skip. */ -}}
+      {{- fail (printf "values-loader: release %q: secrets file not found: %s" $.Release.Name $absPath) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{- /* ====================== HIERARCHY OVERLAY (over the template) ====================== */ -}}
+{{- /* Template values and secrets are defaults: every file of the directory
+     hierarchy (global → group → cluster → deployment) overrides them. */ -}}
+{{- $merged = mergeOverwrite $merged $hierarchy }}
+
+{{- /* ====================== INSTANCE-LEVEL VALUES (over the hierarchy) ====================== */ -}}
 {{- /* $thisInstance was found earlier (before template-level values) to
-     enrich the tpl context. Reuse it here for value processing. */ -}}
+     enrich the tpl context. Reuse it here for value processing. An
+     apps[] entry applies to one instance of one deployment — the most
+     specific scope there is — so it wins over the hierarchy. */ -}}
 {{- range $entry := ($thisInstance | get "values" list) }}
   {{- if kindIs "string" $entry }}
     {{- $absPath := printf "%s/%s" $deploymentDir $entry }}
@@ -369,29 +403,9 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
   {{- end }}
 {{- end }}
 
-{{- /* ====================== RELEASE.SECRETS (template-relative, merged AFTER values:) ====================== */ -}}
-{{- /* Helmfile contract: env-level secrets are merged last regardless of
-     declaration order. Replicate at the release level — every entry in
-     release.secrets and apps[].secrets lands AFTER all values: entries.
-     Paths resolve template-relative for release.secrets and deployment-
-     relative for instance-level apps[].secrets. Decryption is via SOPS
-     (helmfile fetchSecretValue), the same path used for .sops.yaml in
-     values: lists, so non-SOPS files are not supported here. */ -}}
-{{- range $entry := ($thisRelease | get "secrets" list) }}
-  {{- if kindIs "string" $entry }}
-    {{- $absPath := printf "%s/%s" $templateDir $entry }}
-    {{- if isFile $absPath }}
-      {{- $sopsValues := include "atlas.sops.load" (dict "path" $absPath "redact" $.redact "skipSecrets" $skipSecrets) | fromYaml }}
-      {{- $merged = mergeOverwrite $merged $sopsValues }}
-    {{- else }}
-      {{- /* A missing secrets file would deploy without credentials (or
-           with chart defaults) — the most dangerous silent skip. */ -}}
-      {{- fail (printf "values-loader: release %q: secrets file not found: %s" $.Release.Name $absPath) }}
-    {{- end }}
-  {{- end }}
-{{- end }}
-
-{{- /* ====================== INSTANCE.SECRETS (deployment-relative, merged LAST among secrets) ====================== */ -}}
+{{- /* ====================== INSTANCE.SECRETS (deployment-relative, merged LAST) ====================== */ -}}
+{{- /* The instance layer's secrets: after the instance values, so secret
+     leaves win over plain values of the same layer. */ -}}
 {{- range $entry := ($thisInstance | get "secrets" list) }}
   {{- if kindIs "string" $entry }}
     {{- $absPath := printf "%s/%s" $deploymentDir $entry }}
@@ -404,9 +418,6 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
     {{- end }}
   {{- end }}
 {{- end }}
-
-{{- /* ====================== HIERARCHY OVERLAY (FINAL — PRECEDENCE) ====================== */ -}}
-{{- $merged = mergeOverwrite $merged $hierarchy }}
 
 {{- /* ====================== EMIT MERGED VALUES ====================== */ -}}
 {{ $merged | toYaml }}
