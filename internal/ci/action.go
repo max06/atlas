@@ -14,6 +14,7 @@ import (
 	"github.com/max06/atlas/internal/gha"
 	"github.com/max06/atlas/internal/gitrev"
 	"github.com/max06/atlas/internal/report"
+	"github.com/max06/atlas/internal/snapshot"
 )
 
 // sharedCaches points helm and helmfile at /github/home: GitHub mounts the
@@ -211,6 +212,9 @@ type CompareInput struct {
 	ClassifySummary      string
 	HelmfilePath, RunURL string
 	Temp                 string
+	// Keyless: both sides rendered without decryption; there are no redaction
+	// maps to replay, nothing is suppressed, the comment says so.
+	Keyless bool
 }
 
 // Compare replays the redaction maps over the baseline, diffs the trees,
@@ -221,10 +225,19 @@ type CompareInput struct {
 func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Writer) error {
 	scratch := gha.Outputs{} // stage outputs that are not step outputs
 
-	// 1. replay the PR side's redaction maps over the baseline
-	statuses, err := Replay(ReplayConfig{BaselineDir: in.BaselineDir, SidedumpDir: in.SidedumpDir, Temp: in.Temp, Pairs: in.Pairs, Outputs: scratch, Log: log})
-	if err != nil {
-		return err
+	// 1. replay the PR side's redaction maps over the baseline (not keyless:
+	//    nothing was decrypted, so there is nothing to scrub)
+	var statuses []snapshot.ScrubStatus
+	if in.Keyless {
+		if err := os.WriteFile(filepath.Join(in.Temp, "replay-status.txt"), nil, 0o644); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		statuses, err = Replay(ReplayConfig{BaselineDir: in.BaselineDir, SidedumpDir: in.SidedumpDir, Temp: in.Temp, Pairs: in.Pairs, Outputs: scratch, Log: log})
+		if err != nil {
+			return err
+		}
 	}
 
 	// 2. diff
@@ -259,6 +272,7 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 		BaselineStatus:    in.BaselineStatus,
 		PRStatus:          in.PRStatus,
 		DiffStatus:        d.Result.Status,
+		Keyless:           in.Keyless,
 		MergeFallback:     in.MergeFallback,
 		BaselineFilter:    in.BaselineFilter,
 		PRFilter:          in.PRFilter,

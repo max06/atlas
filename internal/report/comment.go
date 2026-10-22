@@ -13,6 +13,8 @@ type CommentInput struct {
 	DiffStatus     string // empty / no-changes / changes
 
 	MergeFallback bool
+	// Keyless: rendered without decrypting SOPS files on either side.
+	Keyless bool
 	// Filter support (selector probe) per side; false = an old ATLAS that
 	// leaks template-level secrets.
 	BaselineFilter, PRFilter bool
@@ -46,6 +48,11 @@ func (l *lines) emit(s ...string) {
 func Comment(in CommentInput) string {
 	var l lines
 	l.emit("## ATLAS Review", "")
+	if in.Keyless {
+		l.emit("> [!NOTE]",
+			"> Keyless review: SOPS files were not decrypted on either side. Secret values appear as `ENC[...]` and are compared encrypted.",
+			"")
+	}
 
 	// merge-result render error (blocking)
 	if in.PRStatus == "error" {

@@ -618,6 +618,7 @@ jobs:
 | `full-render-label` | `atlas-full-render` | PR label that forces a full render for that PR |
 | `diff-mode` | `dyff` | `dyff` for YAML-aware semantic diffs, `classic` for unified diffs |
 | `sops-age-key` | | SOPS age private key for `*.values.sops.yaml` files (a secret) |
+| `keyless` | `false` | Render without decrypting SOPS files on either side: secret values stay `ENC[...]` and are compared encrypted. A review without any key; structural changes to secrets stay visible, value changes show as changed ciphertext |
 | `github-token` | `github.token` | Token for the comment and the merge-base lookup |
 | `image` | derived | Review image. Derived from the action reference; required from a local path (`uses: ./`) |
 | `checkout` | `true` | `false` when the workspace already holds the repository with both commits |

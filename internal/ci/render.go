@@ -44,11 +44,15 @@ type RenderConfig struct {
 	MergeFallback  bool   // the merge ref was unavailable (MERGE_FALLBACK)
 	SopsAgeKey     string // written to a key file unless SopsAgeKeyFile is set
 	SopsAgeKeyFile string
-	Timeout        time.Duration // per helmfile call (HELMFILE_TIMEOUT seconds, default 900)
-	Parallel       int           // concurrent helmfile calls (RENDER_PARALLEL, default: CPUs)
-	Helmfile       string        // helmfile binary
-	Outputs        gha.Outputs
-	Log            io.Writer
+	// Keyless renders with ATLAS_SKIP_SECRETS instead of ATLAS_REDACT_SECRETS:
+	// no SOPS file is decrypted, secret values stay ENC[...] and are compared
+	// as they are. No redaction maps are captured.
+	Keyless  bool
+	Timeout  time.Duration // per helmfile call (HELMFILE_TIMEOUT seconds, default 900)
+	Parallel int           // concurrent helmfile calls (RENDER_PARALLEL, default: CPUs)
+	Helmfile string        // helmfile binary
+	Outputs  gha.Outputs
+	Log      io.Writer
 }
 
 // RenderConfigFromEnv reads the render.sh environment.
@@ -211,7 +215,7 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	}
 
 	// SOPS key from the action input → a file sops reads
-	if c.SopsAgeKeyFile == "" && c.SopsAgeKey != "" {
+	if !c.Keyless && c.SopsAgeKeyFile == "" && c.SopsAgeKey != "" {
 		keyFile := filepath.Join(c.Temp, "sops-age-key.txt")
 		if err := os.WriteFile(keyFile, []byte(c.SopsAgeKey), 0o600); err != nil {
 			return res, err
@@ -512,7 +516,7 @@ func (s *renderSide) subset() (int, error, error) {
 			for _, d := range deps {
 				sel = append(sel, "--selector", "cluster="+cluster+",deploymentName="+d)
 			}
-			opts := helmfile.Options{Clusters: []string{cluster}, Deployments: deps, Redact: true, SidedumpDir: s.SidedumpDir}
+			opts := s.renderOptions([]string{cluster}, deps)
 			if err := s.run(s.Timeout, opts, nil, s.templateArgs(sel)...); err != nil {
 				s.log.Annotate(s.level, "Render failed for %s [%s] on %s", cluster, strings.Join(deps, ","), s.sideName)
 				return err
@@ -582,14 +586,14 @@ func (s *renderSide) full() (int, error, error) {
 
 	if !filterSupported {
 		s.phase("bulk render")
-		return len(pairs), s.run(s.Timeout, helmfile.Options{Redact: true, SidedumpDir: s.SidedumpDir}, nil, s.templateArgs(nil)...), nil
+		return len(pairs), s.run(s.Timeout, s.renderOptions(nil, nil), nil, s.templateArgs(nil)...), nil
 	}
 	s.phase(fmt.Sprintf("render of %d pair(s)", len(pairs)))
 	jobs := make([]func() error, 0, len(pairs))
 	for _, p := range pairs {
 		cluster, dep, _ := strings.Cut(p, "|")
 		jobs = append(jobs, func() error {
-			opts := helmfile.Options{Clusters: []string{cluster}, Deployments: []string{dep}, Redact: true, SidedumpDir: s.SidedumpDir}
+			opts := s.renderOptions([]string{cluster}, []string{dep})
 			sel := []string{"--selector", "cluster=" + cluster + ",deploymentName=" + dep}
 			if err := s.run(s.Timeout, opts, nil, s.templateArgs(sel)...); err != nil {
 				s.log.Annotate(s.level, "Render failed for %s/%s on %s", cluster, dep, s.sideName)
@@ -704,11 +708,20 @@ func pairsOf(entries []listEntry) []string {
 }
 
 // probe tests whether CLI --selector reaches the release-level commonLabels:
+// renderOptions are the helmfile options of one render call: redaction with
+// captured maps, or, keyless, no decryption at all.
+func (s *renderSide) renderOptions(clusters, deployments []string) helmfile.Options {
+	if s.Keyless {
+		return helmfile.Options{Clusters: clusters, Deployments: deployments, SkipSecrets: true}
+	}
+	return helmfile.Options{Clusters: clusters, Deployments: deployments, Redact: true, SidedumpDir: s.SidedumpDir}
+}
+
 // a selector matching nothing must list zero releases. Consumers pinned to an
 // ATLAS with hardcoded sub-helmfile selectors fail it.
 func (s *renderSide) probe(total int) bool {
 	var stdout bytes.Buffer
-	_ = s.exec(300*time.Second, helmfile.Options{Redact: true}, &stdout, nil, "list",
+	_ = s.exec(300*time.Second, helmfile.Options{Redact: !s.Keyless, SkipSecrets: s.Keyless}, &stdout, nil, "list",
 		"--selector", "cluster=__atlas_probe_nonexistent__", "--output", "json", "--allow-no-matching-release")
 	count := 0
 	if out := bytes.TrimSpace(stdout.Bytes()); len(out) > 0 {

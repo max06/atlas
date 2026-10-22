@@ -120,6 +120,22 @@ body() { sed -n '/^body<<ATLAS_EOF$/,/^ATLAS_EOF$/{ /^body<<ATLAS_EOF$/d; /^ATLA
   body | grep -q '^No changes detected in rendered Kubernetes manifests.$'
 }
 
+@test "review action: keyless renders without a key and says so" {
+  printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - reviewMarker: keyless\n' \
+    > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  merge_feature "values edit (keyless)"
+  run bash -c "cd '$FIXTURE_REPO' && env -u GITHUB_ACTIONS -u SOPS_AGE_KEY_FILE INPUT_KEYLESS=true INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE=on \
+      INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl '$ATLAS_CLI' review ci action review"
+  [ "$status" -eq 0 ]
+  [ "$(out pr_status)" = "success" ]
+  [ "$(out baseline_status)" = "success" ]
+  [ "$(out status)" = "changes" ]
+  body | grep -q 'Keyless review'
+  body | grep -q '+ reviewMarker: keyless'
+  # nothing decrypted, nothing redacted: no replay marker in the baseline tree
+  [ ! -d "$RUNNER_TEMP/sidedump-maps" ]
+}
+
 @test "review action: a merge result that does not render is reported and gated" {
   printf '{{ fail "broken on purpose" }}\n' > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/values.yaml.gotmpl"
   merge_feature "break the merge result"

@@ -52,6 +52,10 @@ inputs:
     description: SOPS age private key for *.values.sops.yaml files (a secret)
     required: false
     default: ""
+  keyless:
+    description: '"true": render without decrypting SOPS files on either side; secret values stay ENC[...] and are compared encrypted. No key needed. Default "false".'
+    required: false
+    default: "false"
   github-token:
     description: Token for the PR comment and the merge-base lookup (pull-requests write, contents read)
     required: false
@@ -216,6 +220,7 @@ runs:
         INPUT_SUBSET_MODE: ${{ steps.setup.outputs.subset }}
         INPUT_DIFF_MODE: ${{ inputs.diff-mode }}
         INPUT_SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
+        INPUT_KEYLESS: ${{ inputs.keyless }}
         INPUT_MERGE_FALLBACK: ${{ steps.revisions.outputs.merge_fallback }}
         INPUT_LATEST_ATLAS_TAG: ${{ steps.latest.outputs.tag }}
         INPUT_LATEST_MAIN_SHA: ${{ steps.latest.outputs.main_sha }}
