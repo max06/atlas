@@ -44,6 +44,33 @@
 #         helmfile-path: helmfile.yaml.gotmpl
 #       secrets:
 #         sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
+#
+# Keeping the key away from other branches (pull_request_target):
+#   A repository secret is readable by any workflow on any branch, so anyone
+#   who can push a branch can read it. To prevent that:
+#   1. Store the key as the secret SOPS_AGE_KEY in a GitHub environment whose
+#      deployment branches are only the protected target branches.
+#   2. Trigger the caller on `pull_request_target` instead of `pull_request`:
+#      GitHub then takes the workflow definition from the target branch, and
+#      a PR cannot edit it.
+#   3. Pass the environment name and `secrets: inherit`:
+#
+#   on:
+#     pull_request_target:
+#       branches: [main]
+#   jobs:
+#     review:
+#       uses: max06/atlas/.github/workflows/snapshot-review.yml@<version>
+#       with:
+#         environment: atlas-review
+#       secrets: inherit
+#
+#   The review still checks out and renders the PR's merge result. The diff
+#   is the same as with `pull_request`.
+#   Limit: the render runs the PR's templates while the key is present, and
+#   templates can run commands. Use `pull_request_target` only where everyone
+#   who can open a PR is trusted. PRs from forks are skipped under
+#   `pull_request_target`.
 
 name: ATLAS Review
 
@@ -70,10 +97,17 @@ on:
         description: 'Runner for the review job: a label ("ubuntu-latest", "linux-amd-8") or a JSON object, e.g. {"group":"Default larger runners","labels":["linux-amd-8"]}. Full renders of large repositories need more than a standard runner.'
         type: string
         default: "ubuntu-latest"
+      environment:
+        description: 'GitHub environment for the review job. Its secret SOPS_AGE_KEY is the key when the secret sops-age-key is not passed. Empty (default): no environment.'
+        type: string
+        default: ""
     secrets:
       sops-age-key:
         required: false
         description: "SOPS Age private key for decrypting *.values.sops.yaml files"
+      SOPS_AGE_KEY:
+        required: false
+        description: "Fallback name of the key, for `secrets: inherit` and environment secrets (input `environment`)"
 
 permissions:
   contents: read
@@ -81,7 +115,13 @@ permissions:
 
 jobs:
   review:
-    if: github.event_name == 'pull_request'
+    # pull_request_target runs with the target repository's secrets: never
+    # for a PR from a fork, whose templates the render would run.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    environment: ${{ inputs.environment }}
     runs-on: ${{ startsWith(inputs.runs-on, '{') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     steps:
       - name: Check for latest ATLAS release
@@ -204,7 +244,7 @@ jobs:
           base: ${{ steps.baseline-rev.outputs.sha }}
           render-subset: ${{ steps.subset.outputs.mode }}
           diff-mode: ${{ inputs.diff-mode }}
-          sops-age-key: ${{ secrets.sops-age-key }}
+          sops-age-key: ${{ secrets.sops-age-key || secrets.SOPS_AGE_KEY }}
           merge-fallback: ${{ steps.merge-checkout.outcome == 'failure' }}
           latest-atlas-tag: ${{ steps.latest-release.outputs.tag }}
           latest-main-sha: ${{ steps.latest-release.outputs.main_sha }}
