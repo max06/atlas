@@ -1,0 +1,13 @@
+name: ATLAS Review
+description: PROBE — prints the action context (replaced by the real action in the next commits)
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_REPO: ${{ github.action_repository }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        echo "action_ref=[$ACTION_REF] action_repository=[$ACTION_REPO] action_path=[$ACTION_PATH]"
+        echo "action_ref=$ACTION_REF" >> "$GITHUB_OUTPUT"
