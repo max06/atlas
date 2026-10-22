@@ -141,46 +141,48 @@ func Comment(in CommentInput) string {
 	return l.b.String()
 }
 
-// pinMessages states how the caller pins the review workflow:
+// pinMessages states how the caller references the review (the root action
+// `max06/atlas@<ref>`, or the deprecated reusable workflow). A release
+// reference is the recommendation: it pins the action, the CLI and the image
+// to one version, so a review is reproducible.
 //
-//	@main                    → silent (always gets security fixes)
-//	@SHA matching main HEAD  → silent (equivalent to @main)
+//	@latest release          → silent
 //	pin changed by PR        → neutral note (regardless of old/new version)
-//	@SHA not matching main   → warning (pinned to unknown commit)
-//	@latest-tag              → note: on latest, but @main recommended for auto-fixes
-//	@old-tag                 → warning: behind latest, may miss security mitigations
+//	@SHA matching main HEAD  → silent
+//	@SHA elsewhere           → silent (a commit is a valid pin)
+//	@main                    → note: the development branch, pin a release
+//	@older release           → note: a newer release exists
 //	not detected             → silent (no false alarm on renamed/forked workflows)
 func pinMessages(l *lines, in CommentInput) {
 	merge, target := in.WorkflowPinMerge, in.WorkflowPinTarget
-	if merge == "" || merge == "main" {
+	if merge == "" {
 		return
 	}
 	isSHA := shaPattern.MatchString(merge)
-	if isSHA && in.LatestMainSHA != "" && merge == in.LatestMainSHA {
+	if isSHA {
 		return
 	}
 	changed := target != "" && target != merge
 	if changed {
-		l.emit("> [!NOTE]", "> This PR changes the ATLAS workflow pin: `@"+target+"` → `@"+merge+"`.", "")
+		l.emit("> [!NOTE]", "> This PR changes the ATLAS review reference: `@"+target+"` → `@"+merge+"`.", "")
 	}
 	switch {
-	case isSHA:
-		if !changed {
-			l.emit("> [!WARNING]",
-				"> Workflow pinned to a commit SHA (`"+merge[:7]+"`) that does not match the current `main` branch. This pin may miss secret-leak mitigations added in newer commits.",
-				"")
-		}
-	case in.LatestTag != "":
-		if merge == in.LatestTag {
-			l.emit("> [!NOTE]",
-				"> Workflow pinned to the latest release (`@"+merge+"`). Using `@main` is recommended to receive secret-leak mitigations automatically.",
-				"")
-		} else if !changed {
-			l.emit("> [!WARNING]",
-				"> Workflow pinned to `@"+merge+"`, latest is `@"+in.LatestTag+"`. Older versions may miss secret-leak mitigations added in newer releases.",
-				"")
-		}
+	case merge == "main":
+		l.emit("> [!NOTE]",
+			"> The review runs from `max06/atlas@main`, the development branch. Pin a release (`@"+orDefault(in.LatestTag, "v<version>")+"`) for reproducible reviews.",
+			"")
+	case in.LatestTag != "" && merge != in.LatestTag && !changed:
+		l.emit("> [!NOTE]",
+			"> The review is pinned to `@"+merge+"`; the latest release is `@"+in.LatestTag+"`.",
+			"")
 	}
+}
+
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }
 
 // Summary builds the job summary (complete diff, pin table).
@@ -193,7 +195,7 @@ func Summary(in CommentInput) string {
 		return "`" + s + "`"
 	}
 	l.emit("## ATLAS Review Summary", "",
-		"### Workflow pin detection", "",
+		"### ATLAS review reference", "",
 		"| Source | Pin |",
 		"| --- | --- |",
 		"| Target branch | "+cell(in.WorkflowPinTarget)+" |",

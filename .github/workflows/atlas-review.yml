@@ -1,16 +1,50 @@
-# Dogfood: run ATLAS snapshot-review against our own test fixtures.
-# Catches unexpected rendering changes when templates are modified.
-
+# Dogfood: review our own test fixtures with the root action (./), as a
+# consumer would with `uses: max06/atlas@<ref>`. Catches rendering changes
+# when templates are modified, and runs the action itself on every PR.
+#
+# From a local path the action has no reference to derive the image from:
+# the image is this branch's build when the image workflow produced one
+# (the branch touched image inputs), else the main build.
 name: ATLAS Review (self)
 
 on:
   pull_request:
     branches: [main]
 
+permissions: {}
+
+concurrency:
+  group: atlas-review-self-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
-    uses: ./.github/workflows/snapshot-review.yml
-    with:
-      helmfile-path: tests/helmfile.yaml.gotmpl
-    secrets:
-      sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # The action checks out the merge result itself; this checkout only
+      # provides the action's own files for `uses: ./`.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Pick the review image
+        id: image
+        env:
+          BRANCH_TAG: ${{ github.head_ref }}
+        run: |
+          tag="${BRANCH_TAG//\//-}"
+          if docker manifest inspect "ghcr.io/max06/atlas:${tag}" >/dev/null 2>&1; then
+            echo "ref=ghcr.io/max06/atlas:${tag}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=ghcr.io/max06/atlas:main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: ./
+        with:
+          helmfile-path: tests/helmfile.yaml.gotmpl
+          render-subset: shadow
+          image: ${{ steps.image.outputs.ref }}
+          sops-age-key: ${{ secrets.SOPS_AGE_KEY }}

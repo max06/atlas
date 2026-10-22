@@ -547,17 +547,101 @@ ATLAS_REDACT_SECRETS=true helmfile template
 
 ---
 
-## CI / Review Workflow
+## CI / Review
 
-ATLAS provides a reusable GitHub Actions workflow that compares rendered Kubernetes manifests between the target branch and the merge result. It renders both sides in a single job and posts a diff as a PR comment.
+ATLAS reviews a pull request by rendering what the merge would deploy and what the target branch deploys today, and posts the manifest diff as a PR comment. The review is a GitHub action: `uses: max06/atlas@<release>` in a job you own.
 
 ### How it works
 
-1. Checks out the **merge result** (GitHub's trial merge, what will be deployed after merging) with its first parent, the **target commit** it was made against
-2. Runs ONE container step (action `atlas-review`, the atlas CLI): discovery maps of both commits, classification of the changed paths, the render of the merge result (with its redaction maps), the render of the target commit from the same checkout path, the redaction replay over the target render, per-resource semantic diffs (dyff)
-3. Posts a sticky PR comment and a job summary with the complete diff
+1. The action checks out the **merge result** (GitHub's trial merge: what will be deployed after merging) with fetch depth 2, so its first parent, the **target commit** the merge was made against, is the baseline. Without a merge ref (conflicts) the PR branch is compared with its merge-base. The checkout keeps no credentials.
+2. ONE container step (the atlas CLI, image `ghcr.io/max06/atlas`): discovery maps of both commits, classification of the changed paths, the render of the merge result (with its redaction maps), the render of the target commit from the same checkout path, the redaction replay over the target render, per-resource semantic diffs (dyff), the shadow check.
+3. A sticky PR comment and a job summary with the complete diff. Outputs for your own gates.
 
-This "merge-result" strategy ensures the diff answers *"what changes if I hit merge right now?"* — it accounts for changes that landed on main since the PR was created.
+This "merge-result" strategy makes the diff answer *"what changes if I merge right now?"*: it accounts for changes that landed on the target branch since the PR was opened.
+
+### Setup
+
+Copy this workflow into your repository and own it: trigger, secrets, runner, concurrency and the required check are your policy. The action does the rest.
+
+```yaml
+# .github/workflows/atlas-review.yml
+name: ATLAS Review
+on:
+  pull_request:
+    branches: [main]
+    # `edited` reviews again when the base branch of the PR changes
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+concurrency:
+  group: atlas-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read        # checkout of the merge result
+      pull-requests: write  # the sticky comment
+    steps:
+      - uses: max06/atlas@v0.11.0
+        id: atlas
+        with:
+          helmfile-path: helmfile.yaml.gotmpl
+          render-subset: "on"
+          sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
+
+  # A fixed job name for the branch ruleset. No path filter on the trigger:
+  # a workflow skipped by a path filter leaves a required check pending.
+  atlas-review-result:
+    needs: review
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          [ "${{ needs.review.result }}" = "success" ] || { echo "::error::ATLAS review: ${{ needs.review.result }}"; exit 1; }
+```
+
+**Pin a release.** `max06/atlas@v0.11.0` pins the action, the CLI and the container image to one version (the image follows the reference the action is used with), so a review is reproducible and a bump is one Renovate or Dependabot PR. `@main` is the development branch.
+
+**Large repositories:** a full render (entry or global changes) can exhaust a standard runner; put the job on a larger one (`runs-on`). Set `render-parallel` and `helmfile-timeout` only when the defaults (CPUs of the runner, 900 s per helmfile call) do not fit.
+
+**Keeping the key away from feature branches:** a repository secret is readable by every workflow on every branch. To limit the key to protected branches, store `SOPS_AGE_KEY` in a GitHub environment that only those branches may use, put `environment: <name>` on the review job, and trigger on `pull_request_target` (GitHub then takes the workflow from the target branch; skip PRs from forks, whose templates would run with the key present: `if: github.event.pull_request.head.repo.full_name == github.repository`). The render still runs the PR's templates while the key is present: use this only where everyone who can open a PR is trusted.
+
+### Inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `helmfile-path` | `helmfile.yaml.gotmpl` | Entry helmfile, repo-relative |
+| `render-subset` | `off` | Changed-file render subsetting: `off`, `shadow` or `on` (see below) |
+| `full-render-label` | `atlas-full-render` | PR label that forces a full render for that PR |
+| `diff-mode` | `dyff` | `dyff` for YAML-aware semantic diffs, `classic` for unified diffs |
+| `sops-age-key` | | SOPS age private key for `*.values.sops.yaml` files (a secret) |
+| `github-token` | `github.token` | Token for the comment and the merge-base lookup |
+| `image` | derived | Review image. Derived from the action reference; required from a local path (`uses: ./`) |
+| `checkout` | `true` | `false` when the workspace already holds the repository with both commits |
+| `head`, `base` | | Two revisions to compare directly instead of the pull request (push-based reviews, manual runs) |
+| `comment`, `comment-header` | `true`, `atlas-review` | Post the sticky comment; its marker (one comment per marker) |
+| `fail-on-render-error` | `true` | Fail the step when the merge result does not render |
+| `in-place` | `true` | Render in the checkout (faster on GitHub runners) or in a workspace under `RUNNER_TEMP` |
+| `render-parallel`, `helmfile-timeout` | CPUs, `900` | Concurrent helmfile calls per render; seconds per call |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `status`, `has_changes` | `no-changes` or `changes`; `true` when manifests differ |
+| `pr_status`, `baseline_status` | Render status of the merge result (`success`, `error`) and of the baseline (`success`, `error`, `missing`) |
+| `render_mode`, `classify_mode` | `full` or `subset`; what the classifier decided |
+| `changed_resources`, `changed_releases` | Counts |
+| `shadow_result`, `shadow_missed` | `covered`, `uncovered`, `full`, `skipped` or `inconclusive`; deployments the classifier missed |
+| `head`, `base` | The two commits |
+| `comment_body`, `summary_file` | The comment markdown; the path of the job summary |
+
+### Migrating from the reusable workflow
+
+`snapshot-review.yml` (`uses: max06/atlas/.github/workflows/snapshot-review.yml@…`) is deprecated and is removed in the next minor release. Replace the `uses:` job with the example above: the inputs keep their names (`helmfile-path`, `render-subset`, `full-render-label`, `diff-mode`), `runs-on` and `environment` move to your job, and the secret becomes the input `sops-age-key`.
 
 ### Changed-file render subsetting
 
@@ -591,48 +675,7 @@ The PR label named by `full-render-label` (default `atlas-full-render`) forces a
 - **Merge ref unavailable** — falls back to PR branch with a prominent warning (likely merge conflicts)
 - A **job summary** on the pipeline run page shows which deployments were discovered on each side
 
-### Setup
-
-```yaml
-# .github/workflows/atlas-review.yml
-name: ATLAS Review
-on:
-  pull_request:
-    branches: [main]
-
-jobs:
-  review:
-    uses: max06/atlas/.github/workflows/snapshot-review.yml@main
-    with:
-      helmfile-path: helmfile.yaml.gotmpl
-    secrets:
-      sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
-```
-
-> [!NOTE]
-> **Pin the workflow to `@main`, not a version tag.** The workflow ships
-> redaction-replay logic that scrubs baseline output against the PR render's
-> captured secret map — if you pin to an older tag, you miss security fixes
-> for leaks discovered after that tag was cut. The workflow itself does not
-> decide which ATLAS version your repo consumes (that's controlled by your
-> checked-in helmfile / pinned sub-helmfile refs), so tracking `@main` gives
-> you leak-fix delivery without affecting your deployment version.
-
-### Inputs
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `helmfile-path` | `helmfile.yaml.gotmpl` | Path to the helmfile entry point |
-| `diff-mode` | `dyff` | Diff engine: `dyff` for YAML-aware semantic diffs, `classic` for standard unified diffs |
-| `render-subset` | `off` | Changed-file render subsetting: `off`, `shadow` or `on` (see above) |
-| `full-render-label` | `atlas-full-render` | PR label that forces a full render for that PR |
-| `runs-on` | `ubuntu-latest` | Runner label, or a JSON object such as `{"group":"…","labels":["…"]}` — full renders of large repositories need more than a standard runner |
-
-### Secrets
-
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `sops-age-key` | No | SOPS Age private key for decrypting encrypted value files |
+### The CI key
 
 If your repository uses SOPS-encrypted value files, the `sops-age-key` secret is **mandatory**. **Recommended: create a dedicated CI age key** rather than reusing a personal or production key:
 

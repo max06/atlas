@@ -1,13 +1,245 @@
+# ATLAS Review — the review of a consumer repository as one GitHub action.
+#
+#   - uses: max06/atlas@v0.11.0
+#     with:
+#       sops-age-key: ${{ secrets.SOPS_AGE_KEY }}
+#
+# The action owns everything from the checkout to the PR comment: the single
+# checkout (GitHub's merge ref with its first parent, the baseline), the
+# fallback when no merge ref exists, the subset mode, the review container
+# (atlas CLI, image ghcr.io/max06/atlas), the sticky comment and the job
+# summary. The caller owns the job: trigger (pull_request or
+# pull_request_target), environment, permissions, runner, concurrency, the
+# required-check job and what it does with the outputs.
+#
+# The container image follows the reference this action is used with
+# (github.action_ref): @v0.11.0 runs ghcr.io/max06/atlas:v0.11.0, @main runs
+# :main. A branch reference maps to the image tag the image workflow pushes
+# for that branch (feat/x → feat-x). Used from a local path (./), no reference
+# exists: pass `image`.
+#
+# Both sides render from ONE path, the checkout, which the review switches
+# between the two commits: rendered values embed the checkout path, so two
+# directories would diff as path strings.
 name: ATLAS Review
-description: PROBE — prints the action context (replaced by the real action in the next commits)
+description: >-
+  Renders the merge result and its baseline with ATLAS and posts the manifest
+  diff as a PR comment. Secrets are redacted, changed-file subsetting limits
+  the render to what the change can affect.
+author: max06
+branding:
+  icon: layers
+  color: blue
+
+inputs:
+  helmfile-path:
+    description: Entry helmfile of the consumer repository, repo-relative
+    required: false
+    default: helmfile.yaml.gotmpl
+  render-subset:
+    description: 'Changed-file render subsetting: "off" (full render), "shadow" (full render + coverage check of the classifier) or "on" (render only the selection)'
+    required: false
+    default: "off"
+  full-render-label:
+    description: PR label that forces a full render for that PR
+    required: false
+    default: atlas-full-render
+  diff-mode:
+    description: '"dyff" (YAML-aware, default) or "classic" (unified diff)'
+    required: false
+    default: dyff
+  sops-age-key:
+    description: SOPS age private key for *.values.sops.yaml files (a secret)
+    required: false
+    default: ""
+  github-token:
+    description: Token for the PR comment and the merge-base lookup (pull-requests write, contents read)
+    required: false
+    default: ${{ github.token }}
+  image:
+    description: Container image of the review (atlas CLI + toolchain). Default derived from the action reference; required when the action is used from a local path.
+    required: false
+    default: ""
+  checkout:
+    description: '"true" (default): the action checks out the merge result (fetch depth 2, no persisted credentials). "false": the workspace already holds the repository with both commits.'
+    required: false
+    default: "true"
+  head:
+    description: Revision to review instead of the PR merge result (with `base`). Empty (default) = the pull request.
+    required: false
+    default: ""
+  base:
+    description: Baseline revision instead of the merge commit's first parent. Empty (default) = resolved from the pull request.
+    required: false
+    default: ""
+  comment:
+    description: '"true" (default): post the sticky PR comment. "false": only the outputs.'
+    required: false
+    default: "true"
+  comment-header:
+    description: Marker of the sticky PR comment (one comment per header; change it to run two reviews side by side)
+    required: false
+    default: atlas-review
+  fail-on-render-error:
+    description: '"true" (default): the step fails when the merge result does not render.'
+    required: false
+    default: "true"
+  in-place:
+    description: '"true" (default): render in the checkout, switching it between the two commits and back to HEAD (renders from RUNNER_TEMP were about 45 % slower on GitHub runners). "false": export both commits into a workspace under RUNNER_TEMP and leave the checkout alone.'
+    required: false
+    default: "true"
+  render-parallel:
+    description: Concurrent helmfile invocations per render (default = CPUs of the runner)
+    required: false
+    default: ""
+  helmfile-timeout:
+    description: Seconds a single helmfile invocation may take (default 900)
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: Diff result — empty, no-changes or changes
+    value: ${{ steps.review.outputs.status }}
+  has_changes:
+    description: '"true" when rendered manifests differ'
+    value: ${{ steps.review.outputs.status == 'changes' }}
+  pr_status:
+    description: Render status of the merge result — success or error
+    value: ${{ steps.review.outputs.pr_status }}
+  baseline_status:
+    description: Render status of the baseline — success, error or missing
+    value: ${{ steps.review.outputs.baseline_status }}
+  render_mode:
+    description: full or subset
+    value: ${{ steps.review.outputs.render_mode }}
+  classify_mode:
+    description: subset or full (empty when subsetting is off)
+    value: ${{ steps.review.outputs.classify_mode }}
+  changed_resources:
+    description: Number of changed resources
+    value: ${{ steps.review.outputs.total }}
+  changed_releases:
+    description: Number of affected releases
+    value: ${{ steps.review.outputs.releases }}
+  shadow_result:
+    description: covered / uncovered / full / skipped / inconclusive
+    value: ${{ steps.review.outputs.shadow_result }}
+  shadow_missed:
+    description: Changed deployments outside the classifier's selection
+    value: ${{ steps.review.outputs.shadow_missed }}
+  head:
+    description: Commit reviewed (the merge result, or `head`)
+    value: ${{ steps.revisions.outputs.head }}
+  base:
+    description: Baseline commit
+    value: ${{ steps.revisions.outputs.base }}
+  comment_body:
+    description: The PR comment (markdown)
+    value: ${{ steps.review.outputs.body }}
+  summary_file:
+    description: Path of the job summary (markdown)
+    value: ${{ steps.review.outputs.summary-file }}
+
 runs:
   using: composite
   steps:
-    - shell: bash
+    - name: Resolve the review image and mode
+      id: setup
+      shell: bash
       env:
+        INPUT_IMAGE: ${{ inputs.image }}
         ACTION_REF: ${{ github.action_ref }}
-        ACTION_REPO: ${{ github.action_repository }}
-        ACTION_PATH: ${{ github.action_path }}
+        REQUESTED: ${{ inputs.render-subset }}
+        LABELED: ${{ contains(github.event.pull_request.labels.*.name, inputs.full-render-label) }}
+      run: ${GITHUB_ACTION_PATH}/action/setup.sh
+
+    - name: Checkout the merge result
+      id: merge-checkout
+      if: inputs.checkout == 'true' && inputs.head == '' && github.event.pull_request.number != ''
+      uses: actions/checkout@v7
+      with:
+        ref: refs/pull/${{ github.event.pull_request.number }}/merge
+        fetch-depth: 2
+        # The review container works on the fetched commits only and must not
+        # see the job token; the one fetch in the next step carries it.
+        persist-credentials: false
+      continue-on-error: true
+
+    - name: Checkout the PR branch (no merge ref)
+      if: inputs.checkout == 'true' && inputs.head == '' && github.event.pull_request.number != '' && steps.merge-checkout.outcome != 'success'
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        persist-credentials: false
+
+    - name: Checkout the requested revision
+      if: inputs.checkout == 'true' && inputs.head != ''
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.head }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Resolve the revisions
+      id: revisions
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        INPUT_HEAD: ${{ inputs.head }}
+        INPUT_BASE: ${{ inputs.base }}
+        MERGE_CHECKOUT: ${{ steps.merge-checkout.outcome }}
+        REPO: ${{ github.repository }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        SERVER_URL: ${{ github.server_url }}
+      run: ${GITHUB_ACTION_PATH}/action/revisions.sh
+
+    - name: Look up the latest ATLAS release
+      id: latest
+      shell: bash
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
       run: |
-        echo "action_ref=[$ACTION_REF] action_repository=[$ACTION_REPO] action_path=[$ACTION_PATH]"
-        echo "action_ref=$ACTION_REF" >> "$GITHUB_OUTPUT"
+        echo "tag=$(gh release list -R max06/atlas --limit 1 --json tagName --jq '.[0].tagName // ""' 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+        echo "main_sha=$(gh api repos/max06/atlas/commits/main --jq .sha 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+    - name: Review
+      id: review
+      shell: bash
+      env:
+        IMAGE: ${{ steps.setup.outputs.image }}
+        INPUT_HELMFILE_PATH: ${{ inputs.helmfile-path }}
+        INPUT_BASE: ${{ steps.revisions.outputs.base }}
+        INPUT_SUBSET_MODE: ${{ steps.setup.outputs.subset }}
+        INPUT_DIFF_MODE: ${{ inputs.diff-mode }}
+        INPUT_SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
+        INPUT_MERGE_FALLBACK: ${{ steps.revisions.outputs.merge_fallback }}
+        INPUT_LATEST_ATLAS_TAG: ${{ steps.latest.outputs.tag }}
+        INPUT_LATEST_MAIN_SHA: ${{ steps.latest.outputs.main_sha }}
+        INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        INPUT_IN_PLACE: ${{ inputs.in-place }}
+        RENDER_PARALLEL: ${{ inputs.render-parallel }}
+        HELMFILE_TIMEOUT: ${{ inputs.helmfile-timeout }}
+      run: ${GITHUB_ACTION_PATH}/action/review.sh
+
+    - name: Post the PR comment
+      if: always() && inputs.comment == 'true' && steps.review.outputs.body != '' && github.event.pull_request.number != ''
+      uses: marocchino/sticky-pull-request-comment@v3.0.5
+      with:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        header: ${{ inputs.comment-header }}
+        number: ${{ github.event.pull_request.number }}
+        message: ${{ steps.review.outputs.body }}
+
+    - name: Job summary and render gate
+      if: always()
+      shell: bash
+      env:
+        SUMMARY_FILE: ${{ steps.review.outputs.summary-file }}
+        PR_STATUS: ${{ steps.review.outputs.pr_status }}
+        REVIEW_OUTCOME: ${{ steps.review.outcome }}
+        FAIL_ON_RENDER_ERROR: ${{ inputs.fail-on-render-error }}
+      run: ${GITHUB_ACTION_PATH}/action/finish.sh

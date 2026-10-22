@@ -125,111 +125,64 @@ get_body() {
   [[ "$body" == *"Merge ref unavailable"* ]]
 }
 
-# ── Workflow version checks ─────────────────────────────────────────────────
+# ── ATLAS review reference ──────────────────────────────────────────────────
+# Decision (review as an action, versioned references): a release pin is the
+# recommendation and is silent; @main gets a note; an older release gets a
+# note, never a warning; a commit SHA is a valid pin and is silent.
 
-@test "comment.sh: pinned to old tag shows WARNING" {
+@test "comment.sh: pinned to an older release shows a NOTE with both versions" {
   export WORKFLOW_PIN_MERGE="v0.2.0"
   export LATEST_ATLAS_TAG="v0.3.0"
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
   body=$(get_body)
-  [[ "$body" == *"[!WARNING]"* ]]
+  [[ "$body" == *"[!NOTE]"* ]]
+  [[ "$body" != *"[!WARNING]"* ]]
   [[ "$body" == *"@v0.2.0"* ]]
   [[ "$body" == *"@v0.3.0"* ]]
-  [[ "$body" == *"secret-leak mitigations"* ]]
 }
 
-@test "comment.sh: pinned to main is silent" {
+@test "comment.sh: pinned to main recommends a release" {
   export WORKFLOW_PIN_MERGE="main"
   export LATEST_ATLAS_TAG="v0.3.0"
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
   body=$(get_body)
-  [[ "$body" != *"secret-leak"* ]]
-  [[ "$body" != *"workflow pin"* ]]
+  [[ "$body" == *"[!NOTE]"* ]]
+  [[ "$body" == *"development branch"* ]]
+  [[ "$body" == *"@v0.3.0"* ]]
 }
 
-@test "comment.sh: pin change detected" {
+@test "comment.sh: reference change detected" {
   export WORKFLOW_PIN_TARGET="v0.2.0"
   export WORKFLOW_PIN_MERGE="v0.3.0"
   export LATEST_ATLAS_TAG="v0.3.0"
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
   body=$(get_body)
-  [[ "$body" == *"changes the ATLAS workflow pin"* ]]
+  [[ "$body" == *"changes the ATLAS review reference"* ]]
 }
 
-@test "comment.sh: pinned to latest is silent" {
+@test "comment.sh: pinned to the latest release is silent" {
   export WORKFLOW_PIN_MERGE="v0.3.0"
   export LATEST_ATLAS_TAG="v0.3.0"
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
   body=$(get_body)
-  # On latest — should recommend @main, not warn
-  [[ "$body" == *"[!NOTE]"* ]]
-  [[ "$body" == *"@main"* ]]
+  [[ "$body" != *"[!NOTE]"* ]]
   [[ "$body" != *"[!WARNING]"* ]]
-  [[ "$body" != *"changes the ATLAS workflow pin"* ]]
+  [[ "$body" != *"changes the ATLAS review reference"* ]]
 }
 
-@test "comment.sh: pinned to latest shows @main recommendation" {
-  export WORKFLOW_PIN_MERGE="v0.3.0"
-  export LATEST_ATLAS_TAG="v0.3.0"
-  run bash "$(_comment_script)"
-  [ "$status" -eq 0 ]
-  body=$(get_body)
-  [[ "$body" == *"latest release"* ]]
-  [[ "$body" == *"@main"* ]]
-  [[ "$body" == *"secret-leak mitigations"* ]]
-}
-
-# ── SHA pinning ────────────────────────────────────────────────────────────
-
-@test "comment.sh: SHA matching main HEAD is silent" {
+@test "comment.sh: a commit SHA pin is silent, also when it is not main HEAD" {
   export WORKFLOW_PIN_MERGE="abc1234567890abc1234567890abc123456789ab"
-  export LATEST_MAIN_SHA="abc1234567890abc1234567890abc123456789ab"
+  export LATEST_MAIN_SHA="def9876543210def9876543210def987654321de"
+  export LATEST_ATLAS_TAG="v0.3.0"
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
   body=$(get_body)
   [[ "$body" != *"[!WARNING]"* ]]
   [[ "$body" != *"[!NOTE]"* ]]
-  [[ "$body" != *"secret-leak"* ]]
-  [[ "$body" != *"commit SHA"* ]]
-}
-
-@test "comment.sh: SHA not matching main HEAD shows WARNING" {
-  export WORKFLOW_PIN_MERGE="abc1234567890abc1234567890abc123456789ab"
-  export LATEST_MAIN_SHA="def9876543210def9876543210def987654321de"
-  run bash "$(_comment_script)"
-  [ "$status" -eq 0 ]
-  body=$(get_body)
-  [[ "$body" == *"[!WARNING]"* ]]
-  [[ "$body" == *"commit SHA"* ]]
-  [[ "$body" == *"abc1234"* ]]
-  [[ "$body" == *"secret-leak mitigations"* ]]
-}
-
-@test "comment.sh: SHA pin changed by PR shows NOTE" {
-  export WORKFLOW_PIN_TARGET="abc1234567890abc1234567890abc123456789ab"
-  export WORKFLOW_PIN_MERGE="def9876543210def9876543210def987654321de"
-  export LATEST_MAIN_SHA="fff000000000000000000000000000000000000f"
-  run bash "$(_comment_script)"
-  [ "$status" -eq 0 ]
-  body=$(get_body)
-  [[ "$body" == *"[!NOTE]"* ]]
-  [[ "$body" == *"changes the ATLAS workflow pin"* ]]
-  # Pin changed — no stale-SHA warning (user is actively updating)
-  [[ "$body" != *"does not match"* ]]
-}
-
-@test "comment.sh: SHA without LATEST_MAIN_SHA shows WARNING" {
-  export WORKFLOW_PIN_MERGE="abc1234567890abc1234567890abc123456789ab"
-  export LATEST_MAIN_SHA=""
-  run bash "$(_comment_script)"
-  [ "$status" -eq 0 ]
-  body=$(get_body)
-  [[ "$body" == *"[!WARNING]"* ]]
-  [[ "$body" == *"commit SHA"* ]]
 }
 
 # ── Security messaging ──────────────────────────────────────────────────────
@@ -333,7 +286,7 @@ get_body() {
   export LATEST_ATLAS_TAG="v0.3.0"
   run bash "$(_comment_script)"
   [ "$status" -eq 0 ]
-  grep -q 'Workflow pin detection' "${COMMENT_TEMP}/summary.md"
+  grep -q 'ATLAS review reference' "${COMMENT_TEMP}/summary.md"
   grep -q 'v0.2.0' "${COMMENT_TEMP}/summary.md"
   grep -q 'v0.3.0' "${COMMENT_TEMP}/summary.md"
 }

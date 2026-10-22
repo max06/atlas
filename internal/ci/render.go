@@ -842,7 +842,10 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
-var pinPattern = regexp.MustCompile(`uses:\s*max06/atlas/\.github/workflows/snapshot-review\.yml@(\S+)`)
+// pinPattern matches the consumer's reference to the review: the root action
+// (`uses: max06/atlas@<ref>`), the one-step action or the deprecated reusable
+// workflow.
+var pinPattern = regexp.MustCompile(`uses:\s*max06/atlas(?:/\.github/(?:workflows/snapshot-review\.yml|actions/atlas-review))?@(\S+)`)
 
 // WorkflowPin is the ref the repository in dir pins the review workflow to
 // (its .github/workflows/*.yml|yaml), "" when none is found.
