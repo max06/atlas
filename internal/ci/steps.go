@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -386,9 +387,63 @@ func logTail(path string, n int) string {
 	if err != nil || len(data) == 0 {
 		return ""
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	return tailLines(string(data), n)
+}
+
+func tailLines(text string, n int) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// progressLine matches the lines a render writes while it works; they never
+// explain a failure.
+var progressLine = regexp.MustCompile(`^(wrote |Templating release=|Adding repo |"?[\w.-]+"? has been added to your repositories|Building dependency|Pulling |Comparing |Listing |Hang tight|Update Complete|Successfully |::debug::)`)
+
+// errorLine matches a line that explains a failure.
+var errorLine = regexp.MustCompile(`(?i)(^|[^a-z])(error|fail|fatal|panic|exception|not found|forbidden|denied|timed? ?out|too long|invalid|cannot|could not)`)
+
+// errorExcerpt returns the lines of a render log that explain its failure:
+// the error lines, without progress output, consecutive duplicates folded
+// into one line with a count (a parallel render repeats one error per pair).
+// Without any error line the last n lines are returned, as before.
+func errorExcerpt(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	var out []string
+	last, count := "", 0
+	flush := func() {
+		if last == "" {
+			return
+		}
+		if count > 1 {
+			out = append(out, fmt.Sprintf("%s  (×%d)", last, count))
+		} else {
+			out = append(out, last)
+		}
+		last, count = "", 0
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if progressLine.MatchString(line) || !errorLine.MatchString(line) {
+			continue
+		}
+		if line == last {
+			count++
+			continue
+		}
+		flush()
+		last, count = line, 1
+	}
+	flush()
+	if len(out) == 0 {
+		return tailLines(string(data), n)
+	}
+	if len(out) > n {
+		out = append(out[:n], fmt.Sprintf("… %d more error line(s), see the step log", len(out)-n))
+	}
+	return strings.Join(out, "\n")
 }

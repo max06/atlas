@@ -287,8 +287,8 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 		Scope:             scope,
 		HelmfilePath:      in.HelmfilePath,
 		RunURL:            in.RunURL,
-		BaselineErrors:    logTail(in.BaselineStderr, 50),
-		PRErrors:          logTail(in.PRStderr, 50),
+		BaselineErrors:    errorExcerpt(in.BaselineStderr, 50),
+		PRErrors:          errorExcerpt(in.PRStderr, 50),
 	}
 	if d.Blocks.Summary != "" {
 		c.SummaryBlocks = d.Blocks.Summary + "\n"
