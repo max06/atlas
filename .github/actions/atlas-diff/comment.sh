@@ -62,10 +62,20 @@ PR_STDERR_LOG="${PR_STDERR_LOG:-${COMMENT_TEMP}/pr-stderr.log}"
 # Read error logs (truncated to keep comment reasonable)
 BASELINE_ERRORS=""
 PR_ERRORS=""
+# error_excerpt <log> — the lines that explain a failure: error lines without
+# progress output, consecutive duplicates folded with a count (a parallel
+# render repeats one error per pair); the last 50 lines when none matches.
+error_excerpt() {
+  local lines
+  lines=$(grep -vE '^(wrote |Templating release=|Adding repo |"?[A-Za-z0-9._-]+"? has been added to your repositories|Building dependency|Pulling |Comparing |Listing |Hang tight|Update Complete|Successfully |::debug::)' "$1" \
+    | grep -iE '(^|[^a-z])(error|fail|fatal|panic|exception|not found|forbidden|denied|timed? ?out|too long|invalid|cannot|could not)' \
+    | uniq -c | sed -E 's/^ *1 (.*)$/\1/; s/^ *([0-9]+) (.*)$/\2  (×\1)/' | head -50)
+  if [ -n "$lines" ]; then printf '%s' "$lines"; else tail -50 "$1"; fi
+}
 [ -f "$BASELINE_STDERR_LOG" ] && [ -s "$BASELINE_STDERR_LOG" ] && \
-  BASELINE_ERRORS=$(tail -50 "$BASELINE_STDERR_LOG")
+  BASELINE_ERRORS=$(error_excerpt "$BASELINE_STDERR_LOG")
 [ -f "$PR_STDERR_LOG" ] && [ -s "$PR_STDERR_LOG" ] && \
-  PR_ERRORS=$(tail -50 "$PR_STDERR_LOG")
+  PR_ERRORS=$(error_excerpt "$PR_STDERR_LOG")
 
 # Build the comment body
 BODY=""

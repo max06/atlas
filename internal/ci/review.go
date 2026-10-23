@@ -87,7 +87,7 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	l.Printf("review: baseline %s, merge result %s", short(base), short(head))
 
 	// outputs of an earlier run in the same directory must not leak into this one
-	for _, dir := range []string{"classify", "sidedump-maps"} {
+	for _, dir := range []string{"classify", "sidedump-maps", "sidedump-maps-baseline"} {
 		if err := os.RemoveAll(filepath.Join(temp, dir)); err != nil {
 			return err
 		}
@@ -175,11 +175,29 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		if subset {
 			rc.PairsFile = filepath.Join(classifyDir, "pairs-"+label+".txt")
 		}
+		// Redaction in the CLI when the side's ATLAS hands the maps out
+		// through the carrier (capability redactMaps); the helm post-renderer
+		// for an older ATLAS. Keyless renders redact nothing.
+		sideMap := baseMap
+		if label == "pr" {
+			sideMap = headMap
+		}
+		if !c.Keyless {
+			rc.RedactInCLI = sideMap.Has(discovery.CapabilityRedactMaps)
+			how := "helm post-renderer (ATLAS without the redactMaps capability)"
+			if rc.RedactInCLI {
+				how = "in the CLI (maps from helmfile build)"
+			}
+			l.Printf("redaction of the %s: %s", label, how)
+		}
 		if label == "pr" && !c.Keyless {
 			rc.SidedumpDir = filepath.Join(temp, "sidedump-maps")
 			if err := os.MkdirAll(rc.SidedumpDir, 0o755); err != nil {
 				return RenderResult{}, err
 			}
+		}
+		if label == "baseline" && rc.RedactInCLI {
+			rc.SidedumpDir = filepath.Join(temp, "sidedump-maps-baseline")
 		}
 		if label == "pr" {
 			rc.MergeFallback = c.MergeFallback

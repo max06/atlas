@@ -108,9 +108,12 @@ func RenderAction(ctx context.Context, binary string, log io.Writer) error {
 			MapFile:       input("MAP_FILE"),
 			MergeFallback: input("MERGE_FALLBACK") == "true",
 			SopsAgeKey:    input("SOPS_AGE_KEY"),
-			Helmfile:      binary,
-			Outputs:       out,
-			Log:           log,
+			// redaction in the CLI (maps from a helmfile build in
+			// ATLAS_REDACT_MAPS mode) instead of the helm post-renderer
+			RedactInCLI: input("REDACT_IN_CLI") == "true",
+			Helmfile:    binary,
+			Outputs:     out,
+			Log:         log,
 		}
 		var err error
 		if c.Timeout, c.Parallel, err = renderTuning(); err != nil {
@@ -287,8 +290,8 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 		Scope:             scope,
 		HelmfilePath:      in.HelmfilePath,
 		RunURL:            in.RunURL,
-		BaselineErrors:    logTail(in.BaselineStderr, 50),
-		PRErrors:          logTail(in.PRStderr, 50),
+		BaselineErrors:    errorExcerpt(in.BaselineStderr, 50),
+		PRErrors:          errorExcerpt(in.PRStderr, 50),
 	}
 	if d.Blocks.Summary != "" {
 		c.SummaryBlocks = d.Blocks.Summary + "\n"

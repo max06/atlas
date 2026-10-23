@@ -64,7 +64,7 @@ ATLAS_CLI=/tmp/atlas ATLAS_REVIEW_BACKEND=cli bats --recursive tests/bats/workfl
 
 2. **templates/helmfile.single.yaml.gotmpl** — Per-deployment fan-out shim. Reads `deployment.yaml` and emits one sub-helmfile entry per app instance, each pointing at `helmfile.instance.yaml.gotmpl` with the atlas object augmented by `instance.{template, name}`. No value resolution happens here.
 
-3. **templates/helmfile.instance.yaml.gotmpl** — Per-instance state-file renderer. Reads the chosen app template, rewrites each release (chart paths, name munging, condition/installed strip, secrets strip, postRenderer guard, skipSchemaValidation default, label/path/patch wiring), replaces `release.values` with a single pointer to the values-loader, and wires the redaction post-renderer when `redactSecrets` is on.
+3. **templates/helmfile.instance.yaml.gotmpl** — Per-instance state-file renderer. Reads the chosen app template, rewrites each release (chart paths, name munging, condition/installed strip, secrets strip, postRenderer guard, skipSchemaValidation default, label/path/patch wiring), replaces `release.values` with a single pointer to the values-loader, and, for the redaction, either wires the post-renderer (`redactSecrets`) or collects the per-release replacement maps and hands them out through the release-less carrier state `helmfile.discovery-map.yaml` (`redactMaps`; the CLI redacts the rendered tree itself, see `internal/ci/render.go`).
 
 4. **templates/helmfile.values-loader.yaml.gotmpl** + **templates/_values_loader.tpl** — Helmfile evaluates the loader once per release at release-evaluation time (where `.Release.*` is finally available). The shared `atlas.values.merged` named template walks the hierarchy (global → group → cluster → deployment), merges the template `values:` list and `release.secrets`, overlays the hierarchy, then merges the instance `apps[].values` list and `apps[].secrets` (chart < template < hierarchy < instance; secrets after the values of their layer). The non-redaction render skips the redaction-twin call entirely; redaction does a `redact=true` pass to build the per-release replacement map.
 
@@ -108,7 +108,8 @@ Templates receive an `atlas` values object containing:
 - `cwd` — Absolute working directory path
 - `deploymentDefinitions` — Path to deployments directory
 - `appTemplates` — Path to application templates
-- `redactSecrets` — Enable type-aware secret redaction (`ATLAS_REDACT_SECRETS=true`)
+- `redactSecrets` — Enable type-aware secret redaction through the helm post-renderer (`ATLAS_REDACT_SECRETS=true`)
+- `redactMaps` — Compute the same replacement maps but emit them through the carrier state in `helmfile build` output, no post-renderer (`ATLAS_REDACT_MAPS=1`; the CI review's default when the capability is listed)
 - `skipSecrets` — Never decrypt SOPS files; values keep their `ENC[...]` form (`ATLAS_SKIP_SECRETS=true`)
 - `discoveryMap` — Emit the discovery map instead of sub-helmfiles (`ATLAS_DISCOVERY_MAP=1`; see `templates/helmfile.all.yaml.gotmpl`)
 - `filter.cluster` / `filter.deploymentName` — Stage-1 filter lists (from the comma-separated `ATLAS_FILTER_*` env vars; never passed through `.Values`)

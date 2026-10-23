@@ -72,6 +72,13 @@
 {{- /* Discovery-map mode — env var is the source of truth, like the others. */ -}}
 {{- $_ := set $atlas "discoveryMap" (eq (env "ATLAS_DISCOVERY_MAP") "1") }}
 
+{{- /* Redaction-map mode (ATLAS_REDACT_MAPS=1): the per-release replacement
+     maps of the redaction are computed as for the post-renderer, but handed
+     out through a release-less carrier state that `helmfile build` prints,
+     and no post-renderer is wired. The atlas CLI renders unredacted and
+     redacts the rendered tree itself with these maps. */ -}}
+{{- $_ := set $atlas "redactMaps" (eq (env "ATLAS_REDACT_MAPS") "1") }}
+
 helmfiles:
   - path: templates/helmfile.all.yaml.gotmpl
     values:

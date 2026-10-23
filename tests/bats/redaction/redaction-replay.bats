@@ -354,3 +354,34 @@ JSON
   [ "$status" -eq 0 ]
   [ "$(cat "$release_dir/secret.yaml")" = "$first_pass" ]
 }
+
+# ── ATLAS_REDACT_MAPS: maps through the carrier, no post-renderer ───────────
+# The atlas CLI renders unredacted and redacts the tree itself with these
+# maps (no argument-length limit, max06/atlas#90).
+
+_redact_maps_build() {
+  local root; root="$(cd "$REPO_ROOT" && pwd)"
+  ATLAS_REDACT_MAPS=1 helmfile -f "$root/tests/helmfile.yaml.gotmpl" build --allow-no-matching-release \
+    --selector "cluster=cluster1,deploymentName=deployment20" 2>/dev/null
+}
+
+@test "redact-maps: the carrier state holds the same map the post-renderer dumps" {
+  local carrier
+  carrier="$(_redact_maps_build | yq -N -o=json 'select(.renderedvalues.atlasRedactMaps.deploymentName == "deployment20") | .renderedvalues.atlasRedactMaps.releases["app-multiline-tplsops"]')"
+  [ -n "$carrier" ]
+  diff <(jq -S . <<<"$carrier") <(jq -S . "$SIDEDUMP_DIR/cluster1/deployment20/app-multiline-tplsops.json")
+}
+
+@test "redact-maps: the carrier names cluster and deployment, lists every release, and no post-renderer is wired" {
+  local out; out="$(_redact_maps_build)"
+  [ "$(yq -N 'select(.renderedvalues.atlasRedactMaps.deploymentName == "deployment20") | .renderedvalues.atlasRedactMaps.cluster' <<<"$out")" = "cluster1" ]
+  # a release without secrets still has an (empty) entry: its presence tells the CLI the release exists
+  [ "$(yq -N 'select(.renderedvalues.atlasRedactMaps.deploymentName == "deployment1") | .renderedvalues.atlasRedactMaps.releases | has("app1")' <<<"$out")" = "true" ]
+  ! grep -q 'postRenderer' <<<"$out"
+}
+
+@test "redact-maps: the capability is listed in the discovery map" {
+  local root; root="$(cd "$REPO_ROOT" && pwd)"
+  ATLAS_DISCOVERY_MAP=1 helmfile -f "$root/tests/helmfile.yaml.gotmpl" build --allow-no-matching-release 2>/dev/null \
+    | yq -N 'select(.renderedvalues.atlasDiscovery != null) | .renderedvalues.atlasDiscovery.capabilities[]' | grep -qx redactMaps
+}

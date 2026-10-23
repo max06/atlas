@@ -174,3 +174,43 @@ body() { sed -n '/^body<<ATLAS_EOF$/,/^ATLAS_EOF$/{ /^body<<ATLAS_EOF$/d; /^ATLA
   [ "$status" -ne 0 ]
   [[ "$stderr" == *"baseline"* ]]
 }
+
+# render_side <label> [REDACT_IN_CLI] — the step-wise render of the fixture
+# repo's HEAD (`review ci action render`), redacted by the post-renderer
+# (default) or in the CLI.
+render_side() {
+  ( cd "$FIXTURE_REPO" && env -u GITHUB_ACTIONS INPUT_MODE=render INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl \
+      INPUT_SNAPSHOT_LABEL="$1" INPUT_REDACT_IN_CLI="${2:-false}" "$ATLAS_CLI" review ci action render )
+}
+
+@test "review action: redaction in the CLI gives the same manifests as the post-renderer" {
+  # Same tree, two redactions: the helm post-renderer (yq rewrites every
+  # document) and the CLI (maps from ATLAS_REDACT_MAPS, Go scrubber). Byte
+  # equality is not expected (formatting), semantic equality per file is.
+  run render_side plugin
+  [ "$status" -eq 0 ]
+  run render_side cli true
+  [ "$status" -eq 0 ]
+  local plugin="$RUNNER_TEMP/plugin-snapshot" cli="$RUNNER_TEMP/cli-snapshot"
+  [ -d "$plugin" ] && [ -d "$cli" ]
+  # the same files on both sides
+  diff <(cd "$plugin" && find . -name '*.yaml' | sort) <(cd "$cli" && find . -name '*.yaml' | sort)
+  # every file equal as parsed YAML (multi-document, keys sorted). The test
+  # chart serializes .Values.atlas, so the mode switches themselves differ
+  # (redactSecrets on with the post-renderer, off in the CLI path) and are
+  # dropped from the comparison; no real chart reads them.
+  local f n=0
+  local normalize='walk(if type == "object" then del(.redactSecrets, .redactMaps) else . end)'
+  while IFS= read -r f; do
+    n=$((n+1))
+    diff <(yq -o=json -I=0 eval-all '[.]' "$plugin/$f" | jq -S "$normalize") \
+         <(yq -o=json -I=0 eval-all '[.]' "$cli/$f" | jq -S "$normalize") \
+      || { echo "differs: $f"; return 1; }
+  done < <(cd "$plugin" && find . -name '*.yaml' | sort)
+  [ "$n" -gt 10 ]
+  # the redaction happened: no plaintext secret of the fixtures, markers present
+  ! grep -rq 'AKIAIOSFODNN7EXAMPLE' "$cli"
+  grep -rq 'REDACTED' "$cli"
+  # the CLI path wrote one map per release, as the post-renderer dumps them
+  [ -f "$RUNNER_TEMP/cli-redact-maps/cluster1/deployment20/app-multiline-tplsops.json" ]
+}

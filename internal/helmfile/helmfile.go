@@ -22,7 +22,7 @@ import (
 // Owned lists the ATLAS_* variables the CLI sets from flags.
 var Owned = []string{
 	"ATLAS_FILTER_CLUSTER", "ATLAS_FILTER_DEPLOYMENT_NAME", "ATLAS_SKIP_SECRETS",
-	"ATLAS_REDACT_SECRETS", "ATLAS_DISCOVERY_MAP", "ATLAS_SIDEDUMP_MAP_DIR",
+	"ATLAS_REDACT_SECRETS", "ATLAS_DISCOVERY_MAP", "ATLAS_SIDEDUMP_MAP_DIR", "ATLAS_REDACT_MAPS",
 }
 
 func owned(kv string) (string, bool) {
@@ -43,6 +43,7 @@ type Options struct {
 	SkipSecrets  bool     // ATLAS_SKIP_SECRETS=true
 	Redact       bool     // ATLAS_REDACT_SECRETS=true
 	DiscoveryMap bool     // ATLAS_DISCOVERY_MAP=1
+	RedactMaps   bool     // ATLAS_REDACT_MAPS=1 (maps through the carrier state, no post-renderer)
 	SidedumpDir  string   // ATLAS_SIDEDUMP_MAP_DIR
 }
 
@@ -63,6 +64,9 @@ func (o Options) Env() []string {
 	}
 	if o.DiscoveryMap {
 		env = append(env, "ATLAS_DISCOVERY_MAP=1")
+	}
+	if o.RedactMaps {
+		env = append(env, "ATLAS_REDACT_MAPS=1")
 	}
 	if o.SidedumpDir != "" {
 		env = append(env, "ATLAS_SIDEDUMP_MAP_DIR="+o.SidedumpDir)
