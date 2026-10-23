@@ -72,4 +72,18 @@ if $decrypt; then
   fi
 fi
 
+# Pull explicitly when the image is not local: a branch that pins an image
+# without a build for this machine's architecture (an older tag, before the
+# multi-arch images) fails here with "no matching manifest". Say what to do
+# instead of letting helmfile crash under emulation.
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  if ! pull_output="$(docker pull -q "$image" 2>&1)"; then
+    echo "$pull_output" >&2
+    if grep -qi 'no matching manifest' <<<"$pull_output"; then
+      echo "atlas: the image $image has no build for this machine ($(uname -m)). Your branch pins an older atlas image; merge or rebase onto the default branch to get the current pin, or set ATLAS_IMAGE." >&2
+    fi
+    exit 125
+  fi
+fi
+
 exec docker run "${args[@]}" "$image" "$@"
