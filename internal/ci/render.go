@@ -857,8 +857,10 @@ func writeJSON(path string, v any) error {
 
 // pinPattern matches the consumer's reference to the review: the root action
 // (`uses: max06/atlas@<ref>`), the one-step action or the deprecated reusable
-// workflow.
-var pinPattern = regexp.MustCompile(`uses:\s*max06/atlas(?:/\.github/(?:workflows/snapshot-review\.yml|actions/atlas-review))?@(\S+)`)
+// workflow. Only a `uses:` key at the start of a line counts (with its list
+// dash), so the same text inside a comment or a description does not; the
+// reference ends at whitespace, a quote or a backtick.
+var pinPattern = regexp.MustCompile("(?m)^[ \t]*-?[ \t]*uses:[ \t]*['\"]?max06/atlas(?:/\\.github/(?:workflows/snapshot-review\\.yml|actions/atlas-review))?@([^\\s'\"`]+)")
 
 // WorkflowPin is the ref the repository in dir pins the review workflow to
 // (its .github/workflows/*.yml|yaml), "" when none is found.

@@ -387,9 +387,12 @@ fi
 # Parses the caller's workflow files for the reference to the review: the root
 # action (max06/atlas@<ref>), the one-step action or the deprecated reusable
 # workflow.
-REF=$(grep -hoE 'uses:[[:space:]]*max06/atlas(/\.github/(workflows/snapshot-review\.yml|actions/atlas-review))?@[^[:space:]]+' \
+# Only a `uses:` key at the start of a line counts (with its list dash): the
+# same text in a comment does not. The reference ends at whitespace, a quote
+# or a backtick.
+REF=$(grep -hE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*['"'"'"]?max06/atlas(/\.github/(workflows/snapshot-review\.yml|actions/atlas-review))?@' \
   .github/workflows/*.y*ml 2>/dev/null | \
-  sed -E 's/.*@([^[:space:]]+).*/\1/' | \
+  sed -E 's/^[^@]*@([^[:space:]'"'"'"`]+).*/\1/' | \
   head -1) || true
 echo "workflow_pin=${REF:-}" >> "$GITHUB_OUTPUT"
 echo "${SIDE_LABEL^} ATLAS pin: ${REF:-<not detected>}"
