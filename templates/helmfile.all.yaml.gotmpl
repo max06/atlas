@@ -309,6 +309,7 @@ helmfiles:
             - skipSecrets       # ATLAS_SKIP_SECRETS
             - multiValueFilter  # comma lists in ATLAS_FILTER_*
             - redactSecrets     # ATLAS_REDACT_SECRETS
+            - redactMaps        # ATLAS_REDACT_MAPS (maps through a carrier state, no post-renderer)
           deploymentsRoot: {{ $.Values.atlas.deploymentDefinitions }}
           templatesRoot: {{ $.Values.atlas.appTemplates }}
           pairs:

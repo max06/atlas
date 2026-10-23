@@ -47,12 +47,18 @@ type RenderConfig struct {
 	// Keyless renders with ATLAS_SKIP_SECRETS instead of ATLAS_REDACT_SECRETS:
 	// no SOPS file is decrypted, secret values stay ENC[...] and are compared
 	// as they are. No redaction maps are captured.
-	Keyless  bool
-	Timeout  time.Duration // per helmfile call (HELMFILE_TIMEOUT seconds, default 900)
-	Parallel int           // concurrent helmfile calls (RENDER_PARALLEL, default: CPUs)
-	Helmfile string        // helmfile binary
-	Outputs  gha.Outputs
-	Log      io.Writer
+	Keyless bool
+	// RedactInCLI: the replacement maps come from a `helmfile build` in
+	// ATLAS_REDACT_MAPS mode (written into SidedumpDir), the render runs
+	// unredacted, and the CLI scrubs the rendered tree with the maps. No helm
+	// post-renderer, so no argument-length limit on the maps. Needs an ATLAS
+	// with the redactMaps capability.
+	RedactInCLI bool
+	Timeout     time.Duration // per helmfile call (HELMFILE_TIMEOUT seconds, default 900)
+	Parallel    int           // concurrent helmfile calls (RENDER_PARALLEL, default: CPUs)
+	Helmfile    string        // helmfile binary
+	Outputs     gha.Outputs
+	Log         io.Writer
 }
 
 // RenderConfigFromEnv reads the render.sh environment.
@@ -175,6 +181,9 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		c.Dir = "."
 	}
 	res := RenderResult{FilterSupported: true}
+	if c.RedactInCLI && c.SidedumpDir == "" {
+		c.SidedumpDir = filepath.Join(c.Temp, c.Label+"-redact-maps")
+	}
 	// helmfile runs in Dir: every path it gets must be absolute
 	for _, p := range []*string{&c.Temp, &c.SidedumpDir} {
 		if *p != "" {
@@ -252,6 +261,27 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		s.extraArgs = append(s.extraArgs, "--allow-failed-releases")
 	}
 
+	// Redaction in the CLI, step 1: the replacement maps. The templates
+	// compute them as for the post-renderer and hand them out through a
+	// carrier state; one build of the side (filtered to the selection in a
+	// subset render) collects them all.
+	if c.RedactInCLI {
+		s.phase("redaction maps (helmfile build)")
+		clusters, deployments := s.pairFilters()
+		var stream bytes.Buffer
+		if err := s.run(s.Timeout, helmfile.Options{RedactMaps: true, Clusters: clusters, Deployments: deployments}, &stream, "build", "--allow-no-matching-release"); err != nil {
+			s.log.Annotate(s.level, "Redaction maps failed on %s (helmfile build)", s.sideName)
+			s.stderrTail()
+			res.Status = "error"
+			return res, c.Outputs.Set("status", "error")
+		}
+		n, err := WriteRedactMaps(stream.Bytes(), c.SidedumpDir)
+		if err != nil {
+			return res, err
+		}
+		s.log.Printf("redaction maps: %d release(s)", n)
+	}
+
 	var renderErr error
 	var mode string
 	var rendered int
@@ -322,6 +352,33 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 			}
 			res.SidedumpDir = c.SidedumpDir
 			_ = out.Set("sidedump_dir", c.SidedumpDir)
+		}
+	}
+	// Redaction in the CLI, step 2: scrub the rendered tree with its own
+	// maps (every release has one after the backfill above: the structural
+	// Secret pass runs for all of them). A release the scrubber could not
+	// handle keeps plaintext: its files are removed, so nothing of it reaches
+	// the diff, and the side reports the failure.
+	if c.RedactInCLI {
+		if _, err := os.Stat(s.snapshot); err == nil {
+			statuses, err := snapshot.Scrub(s.snapshot, c.SidedumpDir, s.pairs, s.Log)
+			if err != nil {
+				return res, err
+			}
+			for _, st := range statuses {
+				if st.Status != "no-map" && st.Status != "unscrubbed" {
+					continue
+				}
+				s.log.Annotate(s.level, "Redaction of %s on %s: %s — its rendered files are dropped", st.Release, s.sideName, st.Status)
+				if err := os.RemoveAll(filepath.Join(s.snapshot, filepath.FromSlash(st.Release))); err != nil {
+					return res, err
+				}
+				if status == "success" {
+					status = "error"
+					res.Status = status
+					_ = out.Set("status", status)
+				}
+			}
 		}
 	}
 	if c.MergeFallback {
@@ -709,19 +766,54 @@ func pairsOf(entries []listEntry) []string {
 
 // probe tests whether CLI --selector reaches the release-level commonLabels:
 // renderOptions are the helmfile options of one render call: redaction with
-// captured maps, or, keyless, no decryption at all.
+// captured maps, or, keyless, no decryption at all, or, with the redaction
+// in the CLI, a plain decrypting render (the CLI scrubs the tree afterwards).
 func (s *renderSide) renderOptions(clusters, deployments []string) helmfile.Options {
 	if s.Keyless {
 		return helmfile.Options{Clusters: clusters, Deployments: deployments, SkipSecrets: true}
 	}
+	if s.RedactInCLI {
+		return helmfile.Options{Clusters: clusters, Deployments: deployments}
+	}
 	return helmfile.Options{Clusters: clusters, Deployments: deployments, Redact: true, SidedumpDir: s.SidedumpDir}
+}
+
+// pairFilters are the stage-1 filters of a subset render (nil for a full
+// render): the clusters and deployment names of the pairs file. The cross
+// product over-selects; the extra pairs' maps are unused.
+func (s *renderSide) pairFilters() (clusters, deployments []string) {
+	if s.PairsFile == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(s.PairsFile)
+	if err != nil {
+		return nil, nil
+	}
+	seenC, seenD := map[string]bool{}, map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		cluster, dep, ok := strings.Cut(strings.TrimSpace(line), "|")
+		if !ok {
+			continue
+		}
+		if !seenC[cluster] {
+			seenC[cluster] = true
+			clusters = append(clusters, cluster)
+		}
+		if !seenD[dep] {
+			seenD[dep] = true
+			deployments = append(deployments, dep)
+		}
+	}
+	sort.Strings(clusters)
+	sort.Strings(deployments)
+	return clusters, deployments
 }
 
 // a selector matching nothing must list zero releases. Consumers pinned to an
 // ATLAS with hardcoded sub-helmfile selectors fail it.
 func (s *renderSide) probe(total int) bool {
 	var stdout bytes.Buffer
-	_ = s.exec(300*time.Second, helmfile.Options{Redact: !s.Keyless, SkipSecrets: s.Keyless}, &stdout, nil, "list",
+	_ = s.exec(300*time.Second, helmfile.Options{Redact: !s.Keyless && !s.RedactInCLI, SkipSecrets: s.Keyless}, &stdout, nil, "list",
 		"--selector", "cluster=__atlas_probe_nonexistent__", "--output", "json", "--allow-no-matching-release")
 	count := 0
 	if out := bytes.TrimSpace(stdout.Bytes()); len(out) > 0 {

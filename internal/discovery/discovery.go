@@ -50,6 +50,7 @@ const (
 	CapabilitySkipSecrets      = "skipSecrets"      // ATLAS_SKIP_SECRETS
 	CapabilityMultiValueFilter = "multiValueFilter" // comma lists in ATLAS_FILTER_*
 	CapabilityRedactSecrets    = "redactSecrets"    // ATLAS_REDACT_SECRETS
+	CapabilityRedactMaps       = "redactMaps"       // ATLAS_REDACT_MAPS: maps through a carrier state, no post-renderer
 )
 
 // Has reports whether the tree's ATLAS lists capability c. A nil map (ATLAS

@@ -45,3 +45,51 @@ func TestErrorExcerptFallsBackToTail(t *testing.T) {
 		t.Fatalf("missing file: %q", got)
 	}
 }
+
+func TestWriteRedactMapsWritesSidedumpLayout(t *testing.T) {
+	stream := []byte(`filepath: a
+releases: []
+renderedvalues:
+  atlasDiscovery:
+    version: 2
+---
+filepath: b
+releases: []
+renderedvalues:
+  atlasRedactMaps:
+    version: 1
+    cluster: group1/cluster2
+    deploymentName: deployment20
+    releases:
+      app-with-secrets:
+        AKIAIOSFODNN7EXAMPLE: REDACTED
+        "42": 0
+      app-plain: {}
+---
+filepath: c
+releases:
+  - name: x
+`)
+	dir := t.TempDir()
+	n, err := WriteRedactMaps(stream, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("releases written = %d, want 2", n)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "group1", "cluster2", "deployment20", "app-with-secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"AKIAIOSFODNN7EXAMPLE":"REDACTED"`) || !strings.Contains(string(data), `"42":0`) {
+		t.Fatalf("map content: %s", data)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "group1", "cluster2", "deployment20", "app-plain.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "{}" {
+		t.Fatalf("empty map: %q", data)
+	}
+}

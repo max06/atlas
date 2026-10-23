@@ -48,7 +48,8 @@ setup_file() {
 }
 
 @test "discovery map: header lists the runtime capabilities" {
-  [ "$(jq -c '.capabilities | sort' "$MAP_JSON")" = '["multiValueFilter","redactSecrets","skipSecrets"]' ]
+  # Additive list: a new switch appends its name here (redactMaps: ATLAS_REDACT_MAPS, #90).
+  [ "$(jq -c '.capabilities | sort' "$MAP_JSON")" = '["multiValueFilter","redactMaps","redactSecrets","skipSecrets"]' ]
 }
 
 @test "discovery map: the no-match probe carries the capabilities too" {

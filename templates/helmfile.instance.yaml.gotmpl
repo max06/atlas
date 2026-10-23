@@ -170,6 +170,10 @@ Purpose:
   {{- end }}
 {{- end }}
 
+{{- /* Redaction maps per release (ATLAS_REDACT_MAPS mode): collected in the
+     release loop, emitted through the carrier state at the end. */ -}}
+{{- $redactMaps := dict }}
+
 {{- range $release := $template.releases }}
   {{- /* Reject user-set postRenderer up front. ATLAS owns the post-renderer
        slot for its redaction pipeline; helm 4 does not chain post-renderers,
@@ -308,11 +312,23 @@ Purpose:
        Synthetic Release: at state-build time we don't have helmfile's
        real .Release object, so build a minimal stand-in carrying the two
        fields the loader actually reads (Name + Namespace). */ -}}
-  {{- if $.Values.atlas.redactSecrets }}
+  {{- /* $replMap is declared outside the if: a Go template variable declared
+       inside a block ends with the block. */ -}}
+  {{- $replMap := dict }}
+  {{- if or $.Values.atlas.redactSecrets $.Values.atlas.redactMaps }}
     {{- $relCtx := dict "Name" $release.name "Namespace" ($release | get "namespace" "") }}
     {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" false) | fromYaml }}
     {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" true) | fromYaml }}
-    {{- $replMap := index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
+    {{- $replMap = index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
+  {{- end }}
+  {{- if $.Values.atlas.redactMaps }}
+    {{- /* ATLAS_REDACT_MAPS: no post-renderer. The map leaves the state
+         through the carrier (see EMIT), where no argument-length limit
+         applies; the atlas CLI redacts the rendered tree with it. The map
+         is collected for every release, an empty one included: its presence
+         tells the CLI the release exists on this side. */ -}}
+    {{- $_ := set $redactMaps $release.name $replMap }}
+  {{- else if $.Values.atlas.redactSecrets }}
     {{- /* The post-renderer is wired even when the replacement map is empty:
          besides map-based value replacement it structurally redacts every
          v1/Secret resource's data/stringData (chart-generated certs,
@@ -384,4 +400,18 @@ Purpose:
      Helmfile's gotmpl parser scopes variables per ---doc, so emitting
      everything in one doc keeps $template in scope. */ -}}
 {{- $_ := set $template "environments" (dict "default" (dict "values" (list (dict "atlas" .Values.atlas)))) }}
+{{- /* ATLAS_REDACT_MAPS: hand the replacement maps out through the static,
+     release-less carrier state (the discovery map uses the same one), so
+     `helmfile build` prints them as that state's rendered values:
+     atlasRedactMaps.{version, cluster, deploymentName, releases{<name>: map}}.
+     A sub-helmfile entry carries values of any size; a post-renderer
+     argument is capped by the kernel at 128 KiB. */ -}}
+{{- if .Values.atlas.redactMaps }}
+  {{- $carrier := dict "path" "helmfile.discovery-map.yaml" "values" (list (dict "atlasRedactMaps" (dict
+        "version" 1
+        "cluster" .Values.atlas.deployment.cluster
+        "deploymentName" .Values.atlas.deployment.deploymentName
+        "releases" $redactMaps))) }}
+  {{- $_ := set $template "helmfiles" (append ($template | get "helmfiles" list) $carrier) }}
+{{- end }}
 {{ $template | toYaml }}

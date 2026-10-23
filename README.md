@@ -547,6 +547,13 @@ ATLAS_REDACT_SECRETS=true helmfile template
 
 ---
 
+### Where the redaction runs
+
+Two transports exist for the per-release replacement maps the templates compute:
+
+- **`ATLAS_REDACT_SECRETS=true`**: the map travels to the `atlas-redact` helm post-renderer as one base64 argument, which redacts the manifests inside `helm template`. A single argument is capped by the kernel at 128 KiB: a release whose secret-derived content is large (a virtual-cluster definition that embeds a registration manifest) fails with `argument list too long`.
+- **`ATLAS_REDACT_MAPS=1`**: no post-renderer. Every app instance hands its maps out through a release-less carrier state, so `helmfile build --allow-no-matching-release` prints them as that state's rendered values (`atlasRedactMaps.{cluster, deploymentName, releases{<name>: map}}`), with no size limit. The CI review uses this mode when the templates list the `redactMaps` capability: it collects the maps, renders unredacted, and redacts the rendered tree itself (the same Go scrubber that replays maps over an older baseline: structural Secret markers, then the map). Older templates fall back to the post-renderer.
+
 ## CI / Review
 
 ATLAS reviews a pull request by rendering what the merge would deploy and what the target branch deploys today, and posts the manifest diff as a PR comment. The review is a GitHub action: `uses: max06/atlas@<release>` in a job you own.

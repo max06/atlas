@@ -108,9 +108,12 @@ func RenderAction(ctx context.Context, binary string, log io.Writer) error {
 			MapFile:       input("MAP_FILE"),
 			MergeFallback: input("MERGE_FALLBACK") == "true",
 			SopsAgeKey:    input("SOPS_AGE_KEY"),
-			Helmfile:      binary,
-			Outputs:       out,
-			Log:           log,
+			// redaction in the CLI (maps from a helmfile build in
+			// ATLAS_REDACT_MAPS mode) instead of the helm post-renderer
+			RedactInCLI: input("REDACT_IN_CLI") == "true",
+			Helmfile:    binary,
+			Outputs:     out,
+			Log:         log,
 		}
 		var err error
 		if c.Timeout, c.Parallel, err = renderTuning(); err != nil {
