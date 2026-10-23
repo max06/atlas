@@ -383,11 +383,13 @@ if [ "${MERGE_FALLBACK:-}" = "true" ]; then
   echo "merge_fallback=true" >> "$GITHUB_OUTPUT"
 fi
 
-# ── Detect workflow pin ─────────────────────────────────────────────────────
-# Parses the caller's workflow file for the ATLAS review workflow ref.
-REF=$(grep -hE 'uses:[[:space:]]*max06/atlas/\.github/workflows/snapshot-review\.yml@' \
+# ── Detect the ATLAS review reference ───────────────────────────────────────
+# Parses the caller's workflow files for the reference to the review: the root
+# action (max06/atlas@<ref>), the one-step action or the deprecated reusable
+# workflow.
+REF=$(grep -hoE 'uses:[[:space:]]*max06/atlas(/\.github/(workflows/snapshot-review\.yml|actions/atlas-review))?@[^[:space:]]+' \
   .github/workflows/*.y*ml 2>/dev/null | \
-  sed -E 's/.*snapshot-review\.yml@([^[:space:]]+).*/\1/' | \
+  sed -E 's/.*@([^[:space:]]+).*/\1/' | \
   head -1) || true
 echo "workflow_pin=${REF:-}" >> "$GITHUB_OUTPUT"
 echo "${SIDE_LABEL^} ATLAS pin: ${REF:-<not detected>}"

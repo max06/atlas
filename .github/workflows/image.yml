@@ -59,6 +59,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=ref,event=branch
+            # the release tag as it is (v1.2.3): the root action derives the image from github.action_ref
+            type=ref,event=tag
             type=sha,prefix=sha-,enable=${{ github.ref_type == 'branch' && github.event_name != 'pull_request' }}
             type=ref,event=pr
 

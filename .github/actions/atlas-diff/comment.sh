@@ -107,50 +107,36 @@ if [ "$MERGE_FALLBACK" = "true" ]; then
   emit ''
 fi
 
-# ── Workflow version check (security-relevant) ──
-# Scenarios (in priority order):
-#   @main                    → silent (always gets security fixes)
-#   @SHA matching main HEAD  → silent (equivalent to @main)
+# ── ATLAS review reference ──
+# How the caller references the review (root action max06/atlas@<ref>, or the
+# deprecated reusable workflow). A release reference is the recommendation: it
+# pins the action, the CLI and the image to one version.
+#   @latest release          → silent
 #   pin changed by PR        → neutral note (regardless of old/new version)
-#   @SHA not matching main   → warning (pinned to unknown commit)
-#   @latest-tag              → note: on latest, but @main recommended for auto-fixes
-#   @old-tag                 → warning: behind latest, may miss security mitigations
+#   @SHA                     → silent (a commit is a valid pin)
+#   @main                    → note: the development branch, pin a release
+#   @older release           → note: a newer release exists
 #   not detected             → silent (don't false-alarm on renamed/forked workflows)
 is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
 
-if [ -n "$WORKFLOW_PIN_MERGE" ] && [ "$WORKFLOW_PIN_MERGE" != "main" ]; then
-  # SHA matching main HEAD is equivalent to @main — skip all messaging
-  if is_sha "$WORKFLOW_PIN_MERGE" && [ -n "$LATEST_MAIN_SHA" ] \
-     && [ "$WORKFLOW_PIN_MERGE" = "$LATEST_MAIN_SHA" ]; then
-    : # silent — current main commit
-  else
-    PIN_CHANGED=false
-    [ -n "$WORKFLOW_PIN_TARGET" ] && [ "$WORKFLOW_PIN_TARGET" != "$WORKFLOW_PIN_MERGE" ] && PIN_CHANGED=true
+if [ -n "$WORKFLOW_PIN_MERGE" ] && ! is_sha "$WORKFLOW_PIN_MERGE"; then
+  PIN_CHANGED=false
+  [ -n "$WORKFLOW_PIN_TARGET" ] && [ "$WORKFLOW_PIN_TARGET" != "$WORKFLOW_PIN_MERGE" ] && PIN_CHANGED=true
 
-    if [ "$PIN_CHANGED" = true ]; then
-      emit '> [!NOTE]'
-      emit "> This PR changes the ATLAS workflow pin: \`@${WORKFLOW_PIN_TARGET}\` → \`@${WORKFLOW_PIN_MERGE}\`."
-      emit ''
-    fi
+  if [ "$PIN_CHANGED" = true ]; then
+    emit '> [!NOTE]'
+    emit "> This PR changes the ATLAS review reference: \`@${WORKFLOW_PIN_TARGET}\` → \`@${WORKFLOW_PIN_MERGE}\`."
+    emit ''
+  fi
 
-    if is_sha "$WORKFLOW_PIN_MERGE"; then
-      # SHA that doesn't match main HEAD
-      if [ "$PIN_CHANGED" = false ]; then
-        emit '> [!WARNING]'
-        emit "> Workflow pinned to a commit SHA (\`${WORKFLOW_PIN_MERGE:0:7}\`) that does not match the current \`main\` branch. This pin may miss secret-leak mitigations added in newer commits."
-        emit ''
-      fi
-    elif [ -n "$LATEST_ATLAS_TAG" ]; then
-      if [ "$WORKFLOW_PIN_MERGE" = "$LATEST_ATLAS_TAG" ]; then
-        emit '> [!NOTE]'
-        emit "> Workflow pinned to the latest release (\`@${WORKFLOW_PIN_MERGE}\`). Using \`@main\` is recommended to receive secret-leak mitigations automatically."
-        emit ''
-      elif [ "$PIN_CHANGED" = false ]; then
-        emit '> [!WARNING]'
-        emit "> Workflow pinned to \`@${WORKFLOW_PIN_MERGE}\`, latest is \`@${LATEST_ATLAS_TAG}\`. Older versions may miss secret-leak mitigations added in newer releases."
-        emit ''
-      fi
-    fi
+  if [ "$WORKFLOW_PIN_MERGE" = "main" ]; then
+    emit '> [!NOTE]'
+    emit "> The review runs from \`max06/atlas@main\`, the development branch. Pin a release (\`@${LATEST_ATLAS_TAG:-v<version>}\`) for reproducible reviews."
+    emit ''
+  elif [ -n "$LATEST_ATLAS_TAG" ] && [ "$WORKFLOW_PIN_MERGE" != "$LATEST_ATLAS_TAG" ] && [ "$PIN_CHANGED" = false ]; then
+    emit '> [!NOTE]'
+    emit "> The review is pinned to \`@${WORKFLOW_PIN_MERGE}\`; the latest release is \`@${LATEST_ATLAS_TAG}\`."
+    emit ''
   fi
 fi
 
@@ -243,8 +229,8 @@ fi
   echo '## ATLAS Review Summary'
   echo ''
 
-  # Workflow pin detection table
-  echo '### Workflow pin detection'
+  # ATLAS review reference table
+  echo '### ATLAS review reference'
   echo ''
   echo '| Source | Pin |'
   echo '| --- | --- |'

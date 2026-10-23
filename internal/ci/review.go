@@ -31,9 +31,13 @@ type ReviewConfig struct {
 	LatestTag, LatestMainSHA, RunURL string
 
 	SopsAgeKey, SopsAgeKeyFile string
-	Helmfile                   string
-	Timeout                    time.Duration
-	Parallel                   int
+	// Keyless: no SOPS file is decrypted on either side (ATLAS_SKIP_SECRETS);
+	// secret values stay ENC[...] and are compared as they are, nothing is
+	// redacted or replayed. Both sides need an ATLAS with that capability.
+	Keyless  bool
+	Helmfile string
+	Timeout  time.Duration
+	Parallel int
 
 	// InPlace renders in the checkout itself, switching it between the two
 	// commits (and back to Head at the end) — the CI checkout, as the
@@ -125,6 +129,17 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	if maps["pr"] != "" {
 		headMap, _ = ReadMap(maps["pr"])
 	}
+	if c.Keyless {
+		for _, side := range []struct {
+			label string
+			m     *discovery.Map
+		}{{"baseline", baseMap}, {"merge result", headMap}} {
+			if side.m == nil || !side.m.Has(discovery.CapabilitySkipSecrets) {
+				return fmt.Errorf("keyless review: the ATLAS pinned on the %s side cannot render without decrypting (no %q capability; ATLAS v0.8.0 or later)", side.label, discovery.CapabilitySkipSecrets)
+			}
+		}
+		l.Printf("keyless review: SOPS files are not decrypted, secret values are compared encrypted")
+	}
 
 	// ── classification ──────────────────────────────────────────────────────
 	var cls *classify.Result
@@ -153,17 +168,20 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		rc := RenderConfig{
 			HelmfilePath: c.Entry, Dir: ws, Label: label, Temp: temp, Blocking: blocking,
 			MapFile: maps[label], SopsAgeKey: c.SopsAgeKey, SopsAgeKeyFile: c.SopsAgeKeyFile,
+			Keyless: c.Keyless,
 			Timeout: c.Timeout, Parallel: c.Parallel, Helmfile: c.Helmfile,
 			Outputs: scratch, Log: c.Log,
 		}
 		if subset {
 			rc.PairsFile = filepath.Join(classifyDir, "pairs-"+label+".txt")
 		}
-		if label == "pr" {
+		if label == "pr" && !c.Keyless {
 			rc.SidedumpDir = filepath.Join(temp, "sidedump-maps")
 			if err := os.MkdirAll(rc.SidedumpDir, 0o755); err != nil {
 				return RenderResult{}, err
 			}
+		}
+		if label == "pr" {
 			rc.MergeFallback = c.MergeFallback
 		}
 		return Render(ctx, rc)
@@ -182,6 +200,7 @@ func Review(ctx context.Context, c ReviewConfig) error {
 
 	// ── compare + comment ───────────────────────────────────────────────────
 	in := CompareInput{
+		Keyless:     c.Keyless,
 		BaselineDir: baseline.SnapshotDir, PRDir: pr.SnapshotDir, SidedumpDir: pr.SidedumpDir,
 		BaselineStatus: baseline.Status, PRStatus: pr.Status,
 		BaselineStderr: baseline.StderrLog, PRStderr: pr.StderrLog,
@@ -233,6 +252,7 @@ func ReviewAction(ctx context.Context, binary string, log io.Writer) error {
 		RunURL:         input("RUN_URL"),
 		SopsAgeKey:     input("SOPS_AGE_KEY"),
 		SopsAgeKeyFile: os.Getenv("SOPS_AGE_KEY_FILE"),
+		Keyless:        input("KEYLESS") == "true",
 		Helmfile:       binary,
 		InPlace:        os.Getenv("GITHUB_ACTIONS") != "" && input("IN_PLACE") != "false",
 		Timeout:        timeout,
