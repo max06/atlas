@@ -48,8 +48,9 @@ setup_file() {
 }
 
 @test "discovery map: header lists the runtime capabilities" {
-  # Additive list: a new switch appends its name here (redactMaps: ATLAS_REDACT_MAPS, #90).
-  [ "$(jq -c '.capabilities | sort' "$MAP_JSON")" = '["multiValueFilter","redactMaps","redactSecrets","skipSecrets"]' ]
+  # Additive list: a new switch appends its name here (redactMaps: ATLAS_REDACT_MAPS, #90;
+  # childRender: ATLAS_DEPLOYMENT + ATLAS_DEPLOYMENT_BASE, child-render.bats).
+  [ "$(jq -c '.capabilities | sort' "$MAP_JSON")" = '["childRender","multiValueFilter","redactMaps","redactSecrets","skipSecrets"]' ]
 }
 
 @test "discovery map: the no-match probe carries the capabilities too" {

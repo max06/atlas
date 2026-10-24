@@ -111,9 +111,6 @@ the template directory. Non-string entries (inline maps) are passed through.
   see the identical parsed definition.
 */ -}}
 {{- define "atlas.deployment.definition" -}}
-{{- if not (isFile .Values.atlas.deployment.deploymentPath) }}
-  {{- fail (printf "Deployment file not found: %s" .Values.atlas.deployment.deploymentPath) }}
-{{- end }}
 {{- $synthRelease := dict "Name" "" "Namespace" "" }}
 {{- /* Callers that already walked the hierarchy (discovery map mode needs it
      for the template render too) pass it as "hierarchy" to skip a second
@@ -137,7 +134,62 @@ the template directory. Non-string entries (inline maps) are passed through.
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Release" $synthRelease }}
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
-{{- tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx }}
+{{- tpl (include "atlas.deployment.source" .) $ctx }}
+{{- end -}}
+
+{{- /*
+  atlas.child.deploymentPath — the deployment.yaml path of a child render.
+
+  A child render (ATLAS_DEPLOYMENT set, see atlas.deployment.source) has no
+  deployment.yaml on disk. Its deploymentPath is
+  <cwd>/<ATLAS_DEPLOYMENT_BASE>/deployment.yaml: a path that may not exist,
+  but whose directory is the base of the deployment-level files
+  (values.yaml, values.yaml.gotmpl, values.sops.yaml). The values loader
+  reads that directory through `dir deploymentPath`, as for a file-based
+  deployment. Thus a child whose base is the directory of an existing
+  deployment renders exactly like that deployment.
+
+  Input:  dict with "Values" (needs .Values.atlas.cwd)
+  Output: the absolute path, or "" when ATLAS_DEPLOYMENT_BASE is unset.
+*/ -}}
+{{- define "atlas.child.deploymentPath" -}}
+{{- with env "ATLAS_DEPLOYMENT_BASE" | trim | trimSuffix "/" }}
+  {{- clean (printf "%s/%s/deployment.yaml" $.Values.atlas.cwd .) }}
+{{- end }}
+{{- end -}}
+
+{{- /*
+  atlas.deployment.source — the raw (untemplated) text of one deployment
+  definition.
+
+  File-based deployments: the content of .Values.atlas.deployment.deploymentPath.
+
+  Child render: when the environment variable ATLAS_DEPLOYMENT holds a
+  definition (YAML or JSON, the same content a deployment.yaml would have)
+  and the current deploymentPath is the child path (atlas.child.deploymentPath),
+  the definition comes from the variable instead of the file system. The
+  atlas plugin in Argo CD passes it as plugin env; a parent deployment
+  renders the child Application with it (recursive ATLAS).
+
+  Why the variable is read here, at every stage, and not passed through
+  .Values.atlas: .Values.atlas reaches the charts. A definition in it would
+  change the values of every child render, and a child render must be
+  identical to the render of the same deployment from a file.
+
+  Input:  dict with "Values" (.Values.atlas.deployment.deploymentPath, .Values.atlas.cwd)
+  Output: the definition text. Fails when a file-based definition is missing.
+*/ -}}
+{{- define "atlas.deployment.source" -}}
+{{- $deploymentPath := .Values.atlas.deployment.deploymentPath }}
+{{- $childDefinition := env "ATLAS_DEPLOYMENT" }}
+{{- if and $childDefinition (eq $deploymentPath (include "atlas.child.deploymentPath" .)) }}
+  {{- $childDefinition }}
+{{- else }}
+  {{- if not (isFile $deploymentPath) }}
+    {{- fail (printf "Deployment file not found: %s" $deploymentPath) }}
+  {{- end }}
+  {{- readFile $deploymentPath }}
+{{- end }}
 {{- end -}}
 
 {{- /*

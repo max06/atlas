@@ -117,7 +117,9 @@ Purpose:
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== DEPLOYMENT.YAML — find this instance for namespace override ====================== */ -}}
-{{- $deploymentRendered := tpl (readFile .Values.atlas.deployment.deploymentPath) $ctx | fromYaml }}
+{{- /* atlas.deployment.source: the file, or the ATLAS_DEPLOYMENT definition
+     of a child render (_functions.tpl). */ -}}
+{{- $deploymentRendered := tpl (include "atlas.deployment.source" (dict "Values" .Values)) $ctx | fromYaml }}
 {{- $thisInstance := dict }}
 {{- range $app := $deploymentRendered.apps }}
   {{- $instanceName := $app.template }}

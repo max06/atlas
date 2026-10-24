@@ -254,7 +254,9 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
      2. instance-level values (merged below, after template values)
      3. enriching $ctx with instance inline values so the template's tpl
         call can resolve expressions like {{ .Values.targetPort }} */ -}}
-{{- $deploymentRendered := tpl (readFile $deploymentPath) $ctx | fromYaml }}
+{{- /* atlas.deployment.source: the file, or the ATLAS_DEPLOYMENT definition
+     of a child render (_functions.tpl). */ -}}
+{{- $deploymentRendered := tpl (include "atlas.deployment.source" (dict "Values" .Values)) $ctx | fromYaml }}
 {{- $thisInstance := dict }}
 {{- $instanceName := .Values.atlas.instance.name }}
 {{- $needsMunge := ne $instanceName .Values.atlas.instance.template }}

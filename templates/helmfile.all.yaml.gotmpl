@@ -80,6 +80,41 @@
 {{- $filterClusters    := $filter | get "cluster"        list }}
 {{- $filterDeployments := $filter | get "deploymentName" list }}
 
+{{- /* CHILD RENDER (recursive ATLAS)
+     ATLAS_DEPLOYMENT holds one deployment definition (the content a
+     deployment.yaml would have). A parent deployment renders an Argo CD
+     Application that calls the atlas plugin with it; the plugin env also
+     names the target cluster (ATLAS_FILTER_CLUSTER), the deployment name
+     (ATLAS_FILTER_DEPLOYMENT_NAME) and the directory of the deployment-level
+     files (ATLAS_DEPLOYMENT_BASE, repo-relative).
+
+     A child render skips the discovery (STEP 1 and STEP 2): the pair is
+     given, and no deployment.yaml exists on disk for it. Everything after
+     this point is unchanged: the pair goes through helmfile.single, the
+     instance fan-out and the values loader like any discovered pair. The
+     stages read the definition through atlas.deployment.source
+     (_functions.tpl), which knows the child path. */ -}}
+{{- $clusters := dict }}
+{{- $childDefinition := env "ATLAS_DEPLOYMENT" }}
+{{- if $childDefinition }}
+  {{- if not (and (eq (len $filterClusters) 1) (eq (len $filterDeployments) 1)) }}
+    {{- fail "child render (ATLAS_DEPLOYMENT): ATLAS_FILTER_CLUSTER and ATLAS_FILTER_DEPLOYMENT_NAME must name exactly one cluster and one deployment" }}
+  {{- end }}
+  {{- $childCluster := first $filterClusters }}
+  {{- $childDeploymentName := first $filterDeployments }}
+  {{- $childPath := include "atlas.child.deploymentPath" (dict "Values" $.Values) }}
+  {{- if not $childPath }}
+    {{- fail "child render (ATLAS_DEPLOYMENT): ATLAS_DEPLOYMENT_BASE must name the directory of the deployment-level files (repo-relative)" }}
+  {{- end }}
+  {{- if not (hasPrefix (printf "%s/" $repoRoot) $childPath) }}
+    {{- fail (printf "child render (ATLAS_DEPLOYMENT): ATLAS_DEPLOYMENT_BASE leaves the repository: %s" (env "ATLAS_DEPLOYMENT_BASE")) }}
+  {{- end }}
+  {{- if not (isDir (printf "%s/%s" $deploymentsDir $childCluster)) }}
+    {{- fail (printf "child render (ATLAS_DEPLOYMENT): cluster %q not found under %s" $childCluster $.Values.atlas.deploymentDefinitions) }}
+  {{- end }}
+  {{- $_ := set $clusters $childCluster (list (dict "deploymentName" $childDeploymentName "path" $childPath)) }}
+{{- else }}
+
 # STEP 1: DISCOVER ALL CLUSTERS
 # Identify all directories with an "apps" subdirectory. Only leaf clusters
 # (no child "apps" directories) are collected as deployment targets. When
@@ -88,7 +123,6 @@
 {{- $clustersPattern := printf "%s/**/apps" $deploymentsDir }}
 {{- $clustersRaw := include "glob" $clustersPattern | fromJson }}
 
-{{- $clusters := dict }}
 {{- $leafNamesSeen := dict }}
 
 {{- range $clustersRaw }}
@@ -167,6 +201,8 @@
   {{- end }}
 
   {{- $_ := set $clusters $cluster $collectedDeployments -}}
+{{- end }}
+
 {{- end }}
 
 {{- /* Discovery dump: the full clusters/deployments dict as comment lines.
@@ -310,6 +346,7 @@ helmfiles:
             - multiValueFilter  # comma lists in ATLAS_FILTER_*
             - redactSecrets     # ATLAS_REDACT_SECRETS
             - redactMaps        # ATLAS_REDACT_MAPS (maps through a carrier state, no post-renderer)
+            - childRender       # ATLAS_DEPLOYMENT + ATLAS_DEPLOYMENT_BASE (recursive ATLAS)
           deploymentsRoot: {{ $.Values.atlas.deploymentDefinitions }}
           templatesRoot: {{ $.Values.atlas.appTemplates }}
           pairs:
