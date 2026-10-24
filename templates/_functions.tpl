@@ -169,6 +169,45 @@ the template directory. Non-string entries (inline maps) are passed through.
 {{- end -}}
 
 {{- /*
+  atlas.cluster.deployments — the deployments of one cluster.
+
+  Collects <level>/apps/<name>/deployment.yaml from every level above and at the
+  cluster: global, each group level (outer first, atlas.cluster.groups), the
+  cluster. When the same deployment name appears at several levels, the most
+  specific one wins (later levels override earlier ones).
+
+  The discovery (helmfile.all.yaml.gotmpl, STEP 2) and templates use this one
+  helper. A structure template (for example the cluster root of a static
+  ApplicationSet) calls it to render one Application per deployment; the
+  result never goes into .Values.atlas, so charts see no difference.
+
+  Input:  dict with
+            "Values"   needs .Values.atlas.cwd and .Values.atlas.deploymentDefinitions
+            "cluster"  the cluster path
+  Output: JSON {"v": [{"deploymentName": <name>, "path": <absolute deployment.yaml>}, ...]},
+          sorted by name.
+*/ -}}
+{{- define "atlas.cluster.deployments" -}}
+{{- $deploymentsDir := printf "%s/%s" .Values.atlas.cwd .Values.atlas.deploymentDefinitions }}
+{{- $levels := list "" }}
+{{- range $groupPath := (include "atlas.cluster.groups" .cluster | fromJson).v }}
+  {{- $levels = append $levels (printf "%s/" $groupPath) }}
+{{- end }}
+{{- $levels = append $levels (printf "%s/" .cluster) }}
+{{- $byName := dict }}
+{{- range $level := $levels }}
+  {{- range (include "glob" (printf "%s/%sapps/*/deployment.yaml" $deploymentsDir $level) | fromJson) }}
+    {{- $_ := set $byName (. | dir | base) . }}
+  {{- end }}
+{{- end }}
+{{- $deployments := list }}
+{{- range $name := keys $byName | sortAlpha }}
+  {{- $deployments = append $deployments (dict "deploymentName" $name "path" (index $byName $name)) }}
+{{- end }}
+{{- dict "v" $deployments | toJson }}
+{{- end -}}
+
+{{- /*
   atlas.child.deploymentPath — the deployment.yaml path of a child render.
 
   A child render (ATLAS_DEPLOYMENT set, see atlas.deployment.source) has no

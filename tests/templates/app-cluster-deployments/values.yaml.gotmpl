@@ -1,0 +1,1 @@
+clusterDeployments: {{ (include "atlas.cluster.deployments" (dict "Values" .Values "cluster" .Values.atlas.deployment.cluster) | fromJson).v | toJson }}

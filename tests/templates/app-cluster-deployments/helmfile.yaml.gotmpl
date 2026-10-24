@@ -1,0 +1,8 @@
+# Probe for atlas.cluster.deployments: a structure template calls the helper
+# from its values file (cluster-deployments.bats).
+releases:
+  - name: app-cluster-deployments
+    chart: "{{ .Values.atlas.cwd }}/charts/chart1"
+    namespace: test
+    values:
+      - values.yaml.gotmpl
