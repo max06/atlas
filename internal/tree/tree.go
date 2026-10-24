@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -227,4 +229,37 @@ func (r Result) Summary() []string {
 	}
 	sort.Strings(lines)
 	return lines
+}
+
+// ReadManifests concatenates every *.yaml / *.yml file below dir into one
+// multi-document stream, in a stable order. A missing dir is an empty stream.
+func ReadManifests(dir string) ([]byte, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && (strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	var out bytes.Buffer
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		out.WriteString("---\n")
+		out.Write(b)
+		out.WriteString("\n")
+	}
+	return out.Bytes(), nil
 }

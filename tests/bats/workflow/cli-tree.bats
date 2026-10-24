@@ -95,3 +95,50 @@ _tree() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"ARGOCD_ENV_ATLAS_DEPLOYMENT_BASE is not"* ]]
 }
+
+# _tree_repo builds a git repository from fixtures-tree (deployments, the
+# test templates and charts) with one base commit; prints its path.
+_tree_repo() {
+  local root repo
+  root="$(_repo_root)"
+  repo="${BATS_TEST_TMPDIR}/tree-repo"
+  mkdir -p "$repo"
+  cp -r "$root/tests/fixtures-tree" "$repo/deployments"
+  cp -r "$root/tests/templates" "$root/tests/charts" "$repo/"
+  cat > "$repo/helmfile.yaml.gotmpl" <<EOT
+helmfiles:
+  - path: ${root}/helmfile.yaml.gotmpl
+    values:
+      - atlas:
+          cwd: {{ exec "pwd" (list) | trim }}
+          appTemplates: templates
+          deploymentDefinitions: deployments
+EOT
+  git -C "$repo" init -q -b main
+  git -C "$repo" add -A
+  git -C "$repo" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -qm base
+  echo "$repo"
+}
+
+@test "review: a change two levels deep in a parent shows the grandchild release" {
+  local repo base
+  repo="$(_tree_repo)"
+  base="$(git -C "$repo" rev-parse HEAD)"
+  sed -i 's/^                      - template: app1$/                      - template: app1\n                        values:\n                          - fromGrandkid: changed/' "$repo/deployments/c1/apps/parent/values.yaml"
+  run --separate-stderr "$ATLAS_CLI" -C "$repo" review diff --base "$base"
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"classify: mode=subset"* ]]
+  [[ "$stderr" == *"review: 3 child render(s)"* ]]
+  [ "$output" = $'changed  c1/nested/app-children\nchanged  c1/parent/app-children\nchanged  c2/grandkid/app1' ]
+}
+
+@test "review ci render: child renders are pairs of the side" {
+  local tmp="${BATS_TEST_TMPDIR}/ci"
+  mkdir -p "$tmp"
+  ( cd "$(_repo_root)/tests" && GITHUB_OUTPUT="$tmp/out" HELMFILE_PATH=helmfile.tree.yaml.gotmpl SNAPSHOT_LABEL=pr RENDER_TEMP="$tmp" \
+      "$ATLAS_CLI" review ci render >/dev/null 2>&1 )
+  [ "$(grep '^status=' "$tmp/out")" = "status=success" ]
+  [ "$(grep '^rendered_pairs=' "$tmp/out")" = "rendered_pairs=5" ]
+  [ "$(sort "$tmp/pr-pairs.txt" | tr '\n' ' ')" = "c1|kid c1|nested c1|parent c1|web c2|grandkid " ]
+  [ -f "$tmp/pr-snapshot/c2/grandkid/app1/chart1/templates/configmap.yaml" ]
+}

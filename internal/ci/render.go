@@ -300,6 +300,14 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		res.Status = "error"
 		return res, nil // outputs written, nothing rendered
 	}
+	// Recursive ATLAS: the child Applications the render contains render too
+	// (internal/tree), into the same tree and before the redaction steps.
+	if renderErr == nil {
+		s.phase("child renders (recursive ATLAS)")
+		n, childErr := s.children()
+		rendered += n
+		renderErr = childErr
+	}
 	status := "success"
 	if renderErr != nil {
 		status = "error"

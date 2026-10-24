@@ -19,6 +19,7 @@ import (
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/gitrev"
 	"github.com/max06/atlas/internal/helmfile"
+	"github.com/max06/atlas/internal/tree"
 )
 
 // Spec says which revisions to compare.
@@ -222,6 +223,10 @@ const (
 type RenderResult struct {
 	Base, Head string
 	BaseErr    error
+	// ChildPairs: "<cluster>|<deployment>" of the child renders (recursive
+	// ATLAS) of both sides. Compare needs them next to the discovered pairs
+	// to find the release directories of the children.
+	ChildPairs []string
 }
 
 // Render renders both sides into outDir/base and outDir/head. With a subset
@@ -255,7 +260,19 @@ func (s *Session) Render(ctx context.Context, c *Classification, outDir string, 
 				pairs = c.SelectedBaseline
 			}
 		}
+		var sideMap *discovery.Map
+		if c != nil {
+			sideMap = c.HeadMap
+			if side == Base {
+				sideMap = c.BaseMap
+			}
+		}
 		err := s.renderSide(ctx, dir, pairs, opts)
+		if err == nil {
+			var children []string
+			children, err = s.renderChildren(ctx, dir, opts, sideMap)
+			res.ChildPairs = append(res.ChildPairs, children...)
+		}
 		if err != nil && side == Base {
 			res.Base, res.BaseErr = StatusError, err
 			continue
@@ -322,4 +339,66 @@ func (s *Session) renderSide(ctx context.Context, dir string, pairs *[]string, o
 	}
 	wg.Wait()
 	return errors.Join(errs...)
+}
+
+// renderChildren renders the child Applications (recursive ATLAS) that the
+// side's render in dir contains, down to the leaves (internal/tree), into
+// the same dir. m is the side's discovery map (nil: discovered here); its
+// pairs are the deployments on disk for the tree's name check. Only children
+// of rendered parents are found: in a subset review a child renders when its
+// parent is selected.
+func (s *Session) renderChildren(ctx context.Context, dir string, opts RenderOptions, m *discovery.Map) ([]string, error) {
+	flat, err := tree.ReadManifests(dir)
+	if err != nil {
+		return nil, err
+	}
+	apps, err := tree.Apps(flat)
+	if err != nil {
+		return nil, err
+	}
+	hasCalls := false
+	for _, a := range apps {
+		hasCalls = hasCalls || a.Call != nil
+	}
+	if !hasCalls {
+		return nil, nil
+	}
+	if m == nil {
+		r, log := s.runner()
+		if m, err = discovery.Discover(ctx, r); err != nil {
+			return nil, withLog(fmt.Errorf("render tree: discovery: %w", err), log)
+		}
+	}
+	if !m.Has(discovery.CapabilityChildRender) {
+		return nil, fmt.Errorf("render tree: the pinned ATLAS (%s) cannot render children (no childRender capability)", s.Entry)
+	}
+	onDisk := make([]string, 0, len(m.Pairs))
+	for _, p := range m.Pairs {
+		onDisk = append(onDisk, p.Cluster+"/"+p.DeploymentName)
+	}
+	render := func(c tree.Call) ([]byte, error) {
+		o := helmfile.Options{SkipSecrets: opts.SkipSecrets, Redact: opts.Redact,
+			Clusters: []string{c.Cluster}, Deployments: []string{c.Deployment},
+			Definition: c.Definition, DefinitionBase: c.Base, Parents: c.Parents}
+		a := append(helmfile.TemplateArgs(), "--output-dir", dir, "--output-dir-template", helmfile.OutputDirTemplate,
+			"--selector", "cluster="+c.Cluster+",deploymentName="+c.Deployment)
+		r, log := s.runner()
+		if err := withLog(r.Run(ctx, o, io.Discard, a...), log); err != nil {
+			return nil, err
+		}
+		return tree.ReadManifests(filepath.Join(dir, filepath.FromSlash(c.Cluster), c.Deployment))
+	}
+	res, err := tree.Walk(flat, onDisk, render)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(s.Log, "review: %d child render(s)\n", len(res.Calls))
+	for _, line := range res.Summary() {
+		fmt.Fprintf(s.Log, "  %s\n", line)
+	}
+	pairs := make([]string, 0, len(res.Calls))
+	for _, c := range res.Calls {
+		pairs = append(pairs, c.Cluster+"|"+c.Deployment)
+	}
+	return pairs, nil
 }

@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/helmfile"
@@ -82,35 +80,5 @@ func renderOnce(ctx context.Context, r helmfile.Runner, opts helmfile.Options, a
 	if err := r.Run(ctx, opts, os.Stdout, args...); err != nil {
 		return nil, err
 	}
-	return readManifests(filepath.Join(outputDir, sub))
-}
-
-// readManifests concatenates every *.yaml / *.yml file below dir as one
-// multi-document stream, in a stable order.
-func readManifests(dir string) ([]byte, error) {
-	var files []string
-	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && (strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml")) {
-			files = append(files, p)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(files)
-	var out bytes.Buffer
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return nil, err
-		}
-		out.WriteString("---\n")
-		out.Write(b)
-		out.WriteString("\n")
-	}
-	return out.Bytes(), nil
+	return tree.ReadManifests(filepath.Join(outputDir, sub))
 }

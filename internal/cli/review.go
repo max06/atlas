@@ -228,6 +228,7 @@ releases that differ. --patch prints the file diffs as well.
 					}
 				}
 			}
+			pairs = append(pairs, res.ChildPairs...)
 			changes, err := review.Compare(filepath.Join(outDir, "base"), filepath.Join(outDir, "head"), pairs)
 			if err != nil {
 				return err
