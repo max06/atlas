@@ -21,6 +21,7 @@ func newRenderCmd(g *globalFlags) *cobra.Command {
 		sel       selection
 		outputDir string
 		argocd    bool
+		tree      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "render [-- extra helmfile template args]",
@@ -35,7 +36,16 @@ ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE is set. The plugin server runs
 several renders at once: each Application gets its own HOME and helm/helmfile
 state under $XDG_CACHE_HOME/apps/<app>, and HELMFILE_CACHE_CLEANUP=true
 (sidecar env or plugin env) drops the cached remote states first — needed
-when the entry pins ATLAS to a branch.`,
+when the entry pins ATLAS to a branch.
+
+--tree renders like Argo CD builds the tree: every Application in the output
+that calls the atlas plugin with ATLAS_DEPLOYMENT (a child of a parent
+deployment) is rendered too, with its plugin environment, down to the leaves.
+Applications without ATLAS_DEPLOYMENT render a deployment.yaml and are part
+of the normal render already. Children land in the same layout
+(<dir>/<cluster>/<child>/<release>). The run fails on two Applications with
+one namespace/name, on a child with the cluster and name of a deployment on
+disk, and on a cycle.`,
 		RunE: func(cmd *cobra.Command, extra []string) error {
 			r, err := g.runner()
 			if err != nil {
@@ -74,6 +84,12 @@ when the entry pins ATLAS to a branch.`,
 			if outputDir != "" {
 				args = append(args, "--output-dir", outputDir, "--output-dir-template", helmfile.OutputDirTemplate)
 			}
+			if tree {
+				if argocd {
+					return fmt.Errorf("--tree and --argocd exclude each other: in Argo CD every child is an Application of its own")
+				}
+				return renderTree(cmd.Context(), r, sel, append(args, extra...), extra, outputDir)
+			}
 			if err := r.Run(cmd.Context(), sel.options(argocd), os.Stdout, append(args, extra...)...); err != nil {
 				return sel.explain(cmd.Context(), r, err)
 			}
@@ -83,6 +99,7 @@ when the entry pins ATLAS to a branch.`,
 	sel.register(cmd, "render", true)
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "o", "", "write one directory per release instead of stdout")
 	cmd.Flags().BoolVar(&argocd, "argocd", false, "Argo CD plugin mode (filter + namespace from the plugin environment)")
+	cmd.Flags().BoolVar(&tree, "tree", false, "also render the child Applications (recursive ATLAS) the render contains, down to the leaves")
 	return cmd
 }
 
@@ -96,6 +113,17 @@ func (s *selection) fromArgoCD() error {
 	if len(s.clusters) == 0 || len(s.deployments) == 0 {
 		return fmt.Errorf("--argocd: an Application renders exactly one cluster and deployment; set ARGOCD_ENV_ATLAS_FILTER_CLUSTER and ARGOCD_ENV_ATLAS_FILTER_DEPLOYMENT_NAME")
 	}
+	// A child Application (recursive ATLAS) carries its definition in the
+	// plugin env. Without this mapping it would render as a file-based
+	// deployment, or fail because no deployment.yaml exists.
+	if def := os.Getenv("ARGOCD_ENV_ATLAS_DEPLOYMENT"); def != "" {
+		s.definition = def
+		s.definitionBase = os.Getenv("ARGOCD_ENV_ATLAS_DEPLOYMENT_BASE")
+		if s.definitionBase == "" {
+			return fmt.Errorf("--argocd: ARGOCD_ENV_ATLAS_DEPLOYMENT is set, ARGOCD_ENV_ATLAS_DEPLOYMENT_BASE is not")
+		}
+	}
+	s.parents = splitList(os.Getenv("ARGOCD_ENV_ATLAS_PARENTS"))
 	return nil
 }
 

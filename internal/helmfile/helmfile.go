@@ -23,6 +23,7 @@ import (
 var Owned = []string{
 	"ATLAS_FILTER_CLUSTER", "ATLAS_FILTER_DEPLOYMENT_NAME", "ATLAS_SKIP_SECRETS",
 	"ATLAS_REDACT_SECRETS", "ATLAS_DISCOVERY_MAP", "ATLAS_SIDEDUMP_MAP_DIR", "ATLAS_REDACT_MAPS",
+	"ATLAS_DEPLOYMENT", "ATLAS_DEPLOYMENT_BASE", "ATLAS_PARENTS",
 }
 
 func owned(kv string) (string, bool) {
@@ -45,6 +46,13 @@ type Options struct {
 	DiscoveryMap bool     // ATLAS_DISCOVERY_MAP=1
 	RedactMaps   bool     // ATLAS_REDACT_MAPS=1 (maps through the carrier state, no post-renderer)
 	SidedumpDir  string   // ATLAS_SIDEDUMP_MAP_DIR
+
+	// Child render (recursive ATLAS): one deployment definition from the
+	// environment instead of a deployment.yaml. Needs exactly one cluster and
+	// one deployment in the filter.
+	Definition     string   // ATLAS_DEPLOYMENT (deployment.yaml content)
+	DefinitionBase string   // ATLAS_DEPLOYMENT_BASE (directory of the deployment-level files)
+	Parents        []string // ATLAS_PARENTS (comma list, outer first)
 }
 
 // Env returns the ATLAS_* variables for these options.
@@ -70,6 +78,12 @@ func (o Options) Env() []string {
 	}
 	if o.SidedumpDir != "" {
 		env = append(env, "ATLAS_SIDEDUMP_MAP_DIR="+o.SidedumpDir)
+	}
+	if o.Definition != "" {
+		env = append(env, "ATLAS_DEPLOYMENT="+o.Definition, "ATLAS_DEPLOYMENT_BASE="+o.DefinitionBase)
+	}
+	if len(o.Parents) > 0 {
+		env = append(env, "ATLAS_PARENTS="+strings.Join(o.Parents, ","))
 	}
 	return env
 }

@@ -1,0 +1,9 @@
+# Minimal parent template (recursive ATLAS): one Argo CD Application per
+# entry of `children`, each calling the atlas plugin with ATLAS_DEPLOYMENT.
+# Used by tests/bats/workflow/cli-tree.bats.
+releases:
+  - name: app-children
+    chart: "{{ .Values.atlas.cwd }}/charts/raw"
+    namespace: argocd
+    values:
+      - values.yaml.gotmpl

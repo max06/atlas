@@ -51,6 +51,7 @@ const (
 	CapabilityMultiValueFilter = "multiValueFilter" // comma lists in ATLAS_FILTER_*
 	CapabilityRedactSecrets    = "redactSecrets"    // ATLAS_REDACT_SECRETS
 	CapabilityRedactMaps       = "redactMaps"       // ATLAS_REDACT_MAPS: maps through a carrier state, no post-renderer
+	CapabilityChildRender      = "childRender"      // ATLAS_DEPLOYMENT + ATLAS_DEPLOYMENT_BASE (recursive ATLAS)
 )
 
 // Has reports whether the tree's ATLAS lists capability c. A nil map (ATLAS

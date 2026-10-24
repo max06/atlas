@@ -1,0 +1,9 @@
+# Test entry for cli-tree.bats: like helmfile.yaml.gotmpl, with the fixture
+# root fixtures-tree-collision (the CLI's own discovery reads the entry, not flags).
+helmfiles:
+  - path: ../helmfile.yaml.gotmpl
+    values:
+      - atlas:
+          cwd: {{ exec "pwd" (list) | trim }}
+          appTemplates: templates
+          deploymentDefinitions: fixtures-tree-collision

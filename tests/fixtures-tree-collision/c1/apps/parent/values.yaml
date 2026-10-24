@@ -1,0 +1,6 @@
+children:
+  - name: web
+    cluster: c1
+    definition:
+      apps:
+        - template: app1

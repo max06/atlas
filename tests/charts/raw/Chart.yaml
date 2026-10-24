@@ -1,0 +1,4 @@
+apiVersion: v2
+name: raw
+description: Renders .Values.resources as they are (test chart for parent templates).
+version: 0.1.0

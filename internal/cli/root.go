@@ -40,6 +40,10 @@ type selection struct {
 	// lenient: output never shows values (inspect without --values) — an
 	// ATLAS without keyless support may decrypt, nothing reaches the output.
 	lenient bool
+	// child render context (--argocd: from the Application's plugin env)
+	definition     string
+	definitionBase string
+	parents        []string
 }
 
 // register adds the flags; verb names the command in the help texts
@@ -62,7 +66,8 @@ func (s selection) keyless(argocd bool) bool {
 }
 
 func (s selection) options(argocd bool) helmfile.Options {
-	return helmfile.Options{Clusters: s.clusters, Deployments: s.deployments, SkipSecrets: s.keyless(argocd), Redact: s.redact}
+	return helmfile.Options{Clusters: s.clusters, Deployments: s.deployments, SkipSecrets: s.keyless(argocd), Redact: s.redact,
+		Definition: s.definition, DefinitionBase: s.definitionBase, Parents: s.parents}
 }
 
 // prepare validates the flags against the tree's ATLAS before a render:
