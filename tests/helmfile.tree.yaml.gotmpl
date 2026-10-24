@@ -7,3 +7,4 @@ helmfiles:
           cwd: {{ exec "pwd" (list) | trim }}
           appTemplates: templates
           deploymentDefinitions: fixtures-tree
+          macroParentTemplate: app-macro-parent

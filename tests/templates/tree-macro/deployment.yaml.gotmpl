@@ -1,0 +1,9 @@
+# Test macro (cli-tree.bats): two components; "other" is delegated to c2.
+apps:
+  - template: app1
+    name: kid
+    values:
+      - marker: {{ .Values.marker | quote }}
+  - template: app1
+    name: other
+    destination: c2

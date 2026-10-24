@@ -30,7 +30,10 @@ type Map struct {
 	Capabilities    []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 	DeploymentsRoot string   `json:"deploymentsRoot" yaml:"deploymentsRoot"`
 	TemplatesRoot   string   `json:"templatesRoot" yaml:"templatesRoot"`
-	Pairs           []Pair   `json:"pairs" yaml:"pairs"`
+	// MacroParentTemplate: the structure template of deployments with
+	// macros (atlas.macroParentTemplate of the entry; "" = none).
+	MacroParentTemplate string `json:"macroParentTemplate,omitempty" yaml:"macroParentTemplate,omitempty"`
+	Pairs               []Pair `json:"pairs" yaml:"pairs"`
 }
 
 // Pair is one (cluster, deployment) the tree renders.
@@ -42,6 +45,9 @@ type Pair struct {
 	DeploymentPath string   `json:"deploymentPath" yaml:"deploymentPath"`
 	Templates      []string `json:"templates" yaml:"templates"`
 	Charts         []string `json:"charts,omitempty" yaml:"charts,omitempty"`
+	// Components: the components of a deployment with macros
+	// (<deployment>-<entry>), rendered as children.
+	Components []string `json:"components,omitempty" yaml:"components,omitempty"`
 }
 
 // Runtime switches an ATLAS version can list in the map header. An ATLAS

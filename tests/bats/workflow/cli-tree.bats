@@ -4,13 +4,14 @@
 # repository like Argo CD builds it, and `--argocd` renders one child
 # Application from its plugin environment.
 #
-# Fixture root tests/fixtures-tree (entry tests/helmfile.tree.yaml.gotmpl):
+# Fixture root tests/fixtures-tree (entry tests/helmfile.tree.yaml.gotmpl,
+# macroParentTemplate app-macro-parent):
 #   c1/apps/web       on-disk deployment (app1)
-#   c1/apps/parent    parent (template app-children) with two children:
-#     kid             c1, app1
-#     nested          c1, app-children again, with one child:
-#       grandkid      c2, app1
-# tests/fixtures-tree-collision: the parent has a child named like c1/web.
+#   c1/apps/parent    deploymentTemplates: tree-macro → components
+#     parent-kid      app1 (macro value marker)
+#     parent-other    app1, destination c2 (rendered with the hierarchy of c1)
+# tests/fixtures-tree-collision: a static child (template app-children) named
+# like c1/web — the name check fires before the declaration check.
 #
 # Uses $ATLAS_CLI when set, else builds the binary; without either the file
 # is skipped.
@@ -36,18 +37,18 @@ _tree() {
 @test "tree: renders the children down to the leaves" {
   run _tree tree --tree -o "$OUT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"atlas: tree: 3 child render(s)"* ]]
-  [[ "$output" == *"c2/grandkid (via parent -> nested -> grandkid)"* ]]
-  [ -f "$OUT/c1/kid/app1/chart1/templates/configmap.yaml" ]
-  [ -f "$OUT/c1/nested/app-children/raw/templates/resources.yaml" ]
-  [ -f "$OUT/c2/grandkid/app1/chart1/templates/configmap.yaml" ]
+  [[ "$output" == *"atlas: tree: 2 child render(s)"* ]]
+  [[ "$output" == *"c1/parent-other (via parent -> parent-other)"* ]]
+  [ -f "$OUT/c1/parent/app-macro-parent/raw/templates/resources.yaml" ]
+  [ -f "$OUT/c1/parent-kid/kid-app1/chart1/templates/configmap.yaml" ]
+  [ -f "$OUT/c1/parent-other/other-app1/chart1/templates/configmap.yaml" ]
 }
 
-@test "tree: a child gets the hierarchy of its own cluster" {
+@test "tree: a delegated component keeps the hierarchy of its deployment's cluster" {
   run _tree tree --tree -o "$OUT"
   [ "$status" -eq 0 ]
-  run yq '.data.values.atlas.deployment | .cluster + "/" + .deploymentName' "$OUT/c2/grandkid/app1/chart1/templates/configmap.yaml"
-  [ "$output" = "c2/grandkid" ]
+  run yq '.data.values.atlas.deployment | .cluster + "/" + .deploymentName' "$OUT/c1/parent-other/other-app1/chart1/templates/configmap.yaml"
+  [ "$output" = "c1/parent-other" ]
 }
 
 @test "tree: without --tree only the discovered deployments render" {
@@ -55,13 +56,13 @@ _tree() {
   [ "$status" -eq 0 ]
   [ -d "$OUT/c1/parent" ]
   [ -d "$OUT/c1/web" ]
-  [ ! -e "$OUT/c1/kid" ]
+  [ ! -e "$OUT/c1/parent-kid" ]
 }
 
 @test "tree: stdout mode prints the child manifests too" {
   run bash -c "'$ATLAS_CLI' -C '$(_repo_root)/tests' -f helmfile.tree.yaml.gotmpl render --tree 2>/dev/null | yq -N 'select(.kind == \"ConfigMap\") | .data.values.atlas.deployment.deploymentName' | sort | tr '\n' ' '"
   [ "$status" -eq 0 ]
-  [ "$output" = "grandkid kid web " ]
+  [ "$output" = "parent-kid parent-other web " ]
 }
 
 @test "tree: a child with the name of a deployment on disk fails" {
@@ -113,6 +114,7 @@ helmfiles:
           cwd: {{ exec "pwd" (list) | trim }}
           appTemplates: templates
           deploymentDefinitions: deployments
+          macroParentTemplate: app-macro-parent
 EOT
   git -C "$repo" init -q -b main
   git -C "$repo" add -A
@@ -120,16 +122,31 @@ EOT
   echo "$repo"
 }
 
-@test "review: a change two levels deep in a parent shows the grandchild release" {
+@test "review: a changed macro value shows the component and its Application in the parent" {
   local repo base
   repo="$(_tree_repo)"
   base="$(git -C "$repo" rev-parse HEAD)"
-  sed -i 's/^                      - template: app1$/                      - template: app1\n                        values:\n                          - fromGrandkid: changed/' "$repo/deployments/c1/apps/parent/values.yaml"
+  sed -i 's/marker: from-macro/marker: changed/' "$repo/deployments/c1/apps/parent/deployment.yaml"
   run --separate-stderr "$ATLAS_CLI" -C "$repo" review diff --base "$base"
   [ "$status" -eq 0 ]
   [[ "$stderr" == *"classify: mode=subset"* ]]
-  [[ "$stderr" == *"review: 3 child render(s)"* ]]
-  [ "$output" = $'changed  c1/nested/app-children\nchanged  c1/parent/app-children\nchanged  c2/grandkid/app1' ]
+  [[ "$stderr" == *"review: 2 child render(s)"* ]]
+  # the component that uses the value, and the parent's Application of it
+  # (its plugin env carries the expanded definition); parent-other is unchanged
+  [ "$output" = $'changed  c1/parent-kid/kid-app1\nchanged  c1/parent/app-macro-parent' ]
+}
+
+@test "tree: a static child that no macro declares fails" {
+  local repo
+  repo="$(_tree_repo)"
+  cat > "$repo/deployments/c1/apps/parent/deployment.yaml" <<'EOT'
+apps:
+  - template: app-children
+EOT
+  printf 'children:\n  - name: stray\n    cluster: c1\n    definition:\n      apps:\n        - template: app1\n' > "$repo/deployments/c1/apps/parent/values.yaml"
+  run "$ATLAS_CLI" -C "$repo" render --tree -o "$OUT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"child c1/stray (application argo-c1/stray) is not declared"* ]]
 }
 
 @test "review ci render: child renders are pairs of the side" {
@@ -138,7 +155,7 @@ EOT
   ( cd "$(_repo_root)/tests" && GITHUB_OUTPUT="$tmp/out" HELMFILE_PATH=helmfile.tree.yaml.gotmpl SNAPSHOT_LABEL=pr RENDER_TEMP="$tmp" \
       "$ATLAS_CLI" review ci render >/dev/null 2>&1 )
   [ "$(grep '^status=' "$tmp/out")" = "status=success" ]
-  [ "$(grep '^rendered_pairs=' "$tmp/out")" = "rendered_pairs=5" ]
-  [ "$(sort "$tmp/pr-pairs.txt" | tr '\n' ' ')" = "c1|kid c1|nested c1|parent c1|web c2|grandkid " ]
-  [ -f "$tmp/pr-snapshot/c2/grandkid/app1/chart1/templates/configmap.yaml" ]
+  [ "$(grep '^rendered_pairs=' "$tmp/out")" = "rendered_pairs=4" ]
+  [ "$(sort "$tmp/pr-pairs.txt" | tr '\n' ' ')" = "c1|parent c1|parent-kid c1|parent-other c1|web " ]
+  [ -f "$tmp/pr-snapshot/c1/parent-other/other-app1/chart1/templates/configmap.yaml" ]
 }

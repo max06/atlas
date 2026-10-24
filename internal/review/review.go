@@ -372,10 +372,6 @@ func (s *Session) renderChildren(ctx context.Context, dir string, opts RenderOpt
 	if !m.Has(discovery.CapabilityChildRender) {
 		return nil, fmt.Errorf("render tree: the pinned ATLAS (%s) cannot render children (no childRender capability)", s.Entry)
 	}
-	onDisk := make([]string, 0, len(m.Pairs))
-	for _, p := range m.Pairs {
-		onDisk = append(onDisk, p.Cluster+"/"+p.DeploymentName)
-	}
 	render := func(c tree.Call) ([]byte, error) {
 		o := helmfile.Options{SkipSecrets: opts.SkipSecrets, Redact: opts.Redact,
 			Clusters: []string{c.Cluster}, Deployments: []string{c.Deployment},
@@ -388,7 +384,7 @@ func (s *Session) renderChildren(ctx context.Context, dir string, opts RenderOpt
 		}
 		return tree.ReadManifests(filepath.Join(dir, filepath.FromSlash(c.Cluster), c.Deployment))
 	}
-	res, err := tree.Walk(flat, onDisk, render)
+	res, err := tree.WalkWith(flat, tree.RulesFromMap(m), render)
 	if err != nil {
 		return nil, err
 	}

@@ -1,2 +1,4 @@
-apps:
-  - template: app-children
+deploymentTemplates:
+  - template: tree-macro
+    values:
+      marker: from-macro

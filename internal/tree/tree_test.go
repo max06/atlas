@@ -152,3 +152,42 @@ func TestWalkFailsBeyondMaxDepth(t *testing.T) {
 		t.Fatalf("want depth error, got %v", err)
 	}
 }
+
+func TestRulesAcceptDeclaredAndStructureChildren(t *testing.T) {
+	flat := app("argo-c1", "svc", "c1", "svc", "apps: [{template: parent}]", "root") +
+		app("argo-c1", "svc-db", "c1", "svc-db", "apps: [{template: cnpg}]", "root")
+	table := map[string]string{"svc": "", "svc-db": configMap}
+	var seen []string
+	rules := Rules{Check: true, Declared: []string{"c1/svc-db"}, StructureTemplate: "parent"}
+	if _, err := WalkWith([]byte(flat), rules, fake(table, &seen)); err != nil {
+		t.Fatalf("declared component and structure node must pass: %v", err)
+	}
+	if strings.Join(seen, " ") != "c1/svc c1/svc-db" {
+		t.Errorf("renders: %v", seen)
+	}
+}
+
+func TestRulesRejectUndeclaredChild(t *testing.T) {
+	flat := app("argo-c1", "kid", "c1", "kid", "apps: [{template: app1}]", "root")
+	var seen []string
+	_, err := WalkWith([]byte(flat), Rules{Check: true, StructureTemplate: "parent"}, fake(map[string]string{"kid": configMap}, &seen))
+	if err == nil || !strings.Contains(err.Error(), "child c1/kid") || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("want undeclared error, got %v", err)
+	}
+	if len(seen) != 0 {
+		t.Errorf("an undeclared child must not render: %v", seen)
+	}
+}
+
+func TestRulesStructureNodeWithMacrosIsNoStructureNode(t *testing.T) {
+	r := Rules{Check: true, StructureTemplate: "parent"}
+	if r.allowed(Call{Cluster: "c1", Deployment: "x", Definition: "apps: [{template: parent}]\ndeploymentTemplates: [{template: m}]"}) {
+		t.Error("a definition with deploymentTemplates must not count as a pure structure node")
+	}
+	if r.allowed(Call{Cluster: "c1", Deployment: "x", Definition: "apps: [{template: parent}, {template: app1}]"}) {
+		t.Error("a definition with other templates must not count as a pure structure node")
+	}
+	if !(Rules{}).allowed(Call{Cluster: "c1", Deployment: "x", Definition: "apps: [{template: app1}]"}) {
+		t.Error("without Check every child is allowed")
+	}
+}

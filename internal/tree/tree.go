@@ -30,6 +30,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/max06/atlas/internal/discovery"
 )
 
 // MaxDepth limits the nesting of child renders.
@@ -155,6 +157,54 @@ type Result struct {
 //   - a child render calls itself again with the same context (cycle), or
 //     the nesting exceeds MaxDepth child renders.
 func Walk(flat []byte, onDisk []string, render RenderFunc) (Result, error) {
+	return WalkWith(flat, Rules{OnDisk: onDisk}, render)
+}
+
+// Rules are the checks of a tree run besides the ones Walk always makes.
+type Rules struct {
+	OnDisk []string // discovered pairs, "cluster/deployment"
+	// Check: a virtual child must be declared. It is accepted only when it
+	// is a component of a deployment with macros (Declared, from the
+	// discovery map) or a pure structure node: a definition whose apps all
+	// use StructureTemplate (for example a unit parent). Its own children
+	// are then on disk or declared, so the review sees every child.
+	Check             bool
+	Declared          []string // "cluster/component"
+	StructureTemplate string
+}
+
+func (r Rules) allowed(c Call) bool {
+	if !r.Check {
+		return true
+	}
+	for _, d := range r.Declared {
+		if d == c.Cluster+"/"+c.Deployment {
+			return true
+		}
+	}
+	if r.StructureTemplate == "" {
+		return false
+	}
+	var def struct {
+		Apps []struct {
+			Template string `yaml:"template"`
+		} `yaml:"apps"`
+		Macros []any `yaml:"deploymentTemplates"`
+	}
+	if yaml.Unmarshal([]byte(c.Definition), &def) != nil || len(def.Apps) == 0 || len(def.Macros) > 0 {
+		return false
+	}
+	for _, a := range def.Apps {
+		if a.Template != r.StructureTemplate {
+			return false
+		}
+	}
+	return true
+}
+
+// WalkWith is Walk with Rules.
+func WalkWith(flat []byte, rules Rules, render RenderFunc) (Result, error) {
+	onDisk := rules.OnDisk
 	var res Result
 	pairs := map[string]bool{}
 	for _, p := range onDisk {
@@ -203,6 +253,9 @@ func Walk(flat []byte, onDisk []string, render RenderFunc) (Result, error) {
 		}
 		if pairs[pair] {
 			return res, fmt.Errorf("render tree: child %s (application %s) has the cluster and name of a deployment on disk — rename the child", pair, call.App)
+		}
+		if !rules.allowed(call) {
+			return res, fmt.Errorf("render tree: child %s (application %s) is not declared — virtual children come from macros (deploymentTemplates) or are pure structure nodes, so the review sees them", pair, call.App)
 		}
 		if len(next.ancestry) >= MaxDepth {
 			return res, fmt.Errorf("render tree: %s is nested more than %d levels deep: %s", pair, MaxDepth, strings.Join(append(append([]string{}, call.Parents...), call.Deployment), " -> "))
@@ -262,4 +315,24 @@ func ReadManifests(dir string) ([]byte, error) {
 		out.WriteString("\n")
 	}
 	return out.Bytes(), nil
+}
+
+// RulesFromMap builds the rules of a tree run from the discovery map of the
+// side: the discovered pairs, the components of deployments with macros and
+// the structure template. The check is on when the side's ATLAS can render
+// children (an older ATLAS has no macros to declare them).
+func RulesFromMap(m *discovery.Map) Rules {
+	var r Rules
+	if m == nil {
+		return r
+	}
+	for _, p := range m.Pairs {
+		r.OnDisk = append(r.OnDisk, p.Cluster+"/"+p.DeploymentName)
+		for _, c := range p.Components {
+			r.Declared = append(r.Declared, p.Cluster+"/"+c)
+		}
+	}
+	r.StructureTemplate = m.MacroParentTemplate
+	r.Check = m.Has(discovery.CapabilityChildRender)
+	return r
 }

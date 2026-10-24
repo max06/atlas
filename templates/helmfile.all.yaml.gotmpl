@@ -343,6 +343,13 @@
         {{- $_ := set $pair "deploymentPath" ($deployment.path | trimPrefix (printf "%s/" $repoRoot)) }}
         {{- $_ := set $pair "templates" ($templates | uniq | sortAlpha) }}
         {{- $_ := set $pair "charts" ($charts | uniq | sortAlpha) }}
+        {{- /* components of a deployment with macros: the only virtual children
+             the render tree accepts besides pure structure nodes */ -}}
+        {{- if $expanded.macro }}
+          {{- $componentNames := list }}
+          {{- range $component := $expanded.components }}{{- $componentNames = append $componentNames $component.name }}{{- end }}
+          {{- $_ := set $pair "components" $componentNames }}
+        {{- end }}
         {{- $pairs = append $pairs $pair }}
       {{- end }}
     {{- end }}
@@ -368,6 +375,9 @@ helmfiles:
             - childRender       # ATLAS_DEPLOYMENT + ATLAS_DEPLOYMENT_BASE (recursive ATLAS)
           deploymentsRoot: {{ $.Values.atlas.deploymentDefinitions }}
           templatesRoot: {{ $.Values.atlas.appTemplates }}
+          {{- with ($.Values.atlas | get "macroParentTemplate" "") }}
+          macroParentTemplate: {{ . }}
+          {{- end }}
           pairs:
             {{- if $pairs }}
             {{- $pairs | toYaml | nindent 12 }}

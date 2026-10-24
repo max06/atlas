@@ -2,8 +2,12 @@ package ci
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/max06/atlas/internal/discovery"
 
 	"github.com/max06/atlas/internal/tree"
 )
@@ -26,9 +30,17 @@ func (s *renderSide) children() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	onDisk := make([]string, 0, len(s.pairs))
+	rules := tree.Rules{}
 	for _, p := range s.pairs {
-		onDisk = append(onDisk, strings.Replace(p, "|", "/", 1))
+		rules.OnDisk = append(rules.OnDisk, strings.Replace(p, "|", "/", 1))
+	}
+	// The declaration check needs the side's discovery map (components of
+	// deployments with macros). Without one, only the name checks run.
+	if m := s.sideMap(); m != nil {
+		mapRules := tree.RulesFromMap(m)
+		rules.Declared, rules.StructureTemplate, rules.Check = mapRules.Declared, mapRules.StructureTemplate, mapRules.Check
+	} else {
+		s.log.Printf("child renders on %s: no discovery map, children are not checked for a declaration", s.sideName)
 	}
 	render := func(c tree.Call) ([]byte, error) {
 		opts := s.renderOptions([]string{c.Cluster}, []string{c.Deployment})
@@ -53,7 +65,7 @@ func (s *renderSide) children() (int, error) {
 		s.pairs = append(s.pairs, c.Cluster+"|"+c.Deployment)
 		return tree.ReadManifests(filepath.Join(s.snapshot, filepath.FromSlash(c.Cluster), c.Deployment))
 	}
-	res, err := tree.Walk(flat, onDisk, render)
+	res, err := tree.WalkWith(flat, rules, render)
 	if err != nil {
 		s.log.Annotate(s.level, "Render tree on %s: %v", s.sideName, err)
 		return len(res.Calls), err
@@ -65,4 +77,21 @@ func (s *renderSide) children() (int, error) {
 		}
 	}
 	return len(res.Calls), nil
+}
+
+// sideMap reads the side's discovery map (RENDER_MAP_FILE), nil when there is
+// none or it does not parse.
+func (s *renderSide) sideMap() *discovery.Map {
+	if s.MapFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.MapFile)
+	if err != nil {
+		return nil
+	}
+	var m discovery.Map
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	return &m
 }

@@ -40,10 +40,6 @@ func renderTree(ctx context.Context, r helmfile.Runner, sel selection, args, ext
 	if !m.Has(discovery.CapabilityChildRender) {
 		return fmt.Errorf("the ATLAS version this repository pins (%s) cannot render children (no childRender capability) — update the pin", r.File)
 	}
-	var onDisk []string
-	for _, p := range m.Pairs {
-		onDisk = append(onDisk, p.Cluster+"/"+p.DeploymentName)
-	}
 	render := func(c tree.Call) ([]byte, error) {
 		opts := sel.options(false)
 		opts.Clusters, opts.Deployments = []string{c.Cluster}, []string{c.Deployment}
@@ -54,7 +50,7 @@ func renderTree(ctx context.Context, r helmfile.Runner, sel selection, args, ext
 		}
 		return renderOnce(ctx, r, opts, append(childArgs, extra...), outputDir, filepath.Join(c.Cluster, c.Deployment))
 	}
-	res, err := tree.Walk(flat, onDisk, render)
+	res, err := tree.WalkWith(flat, tree.RulesFromMap(m), render)
 	if err != nil {
 		return err
 	}
