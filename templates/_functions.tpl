@@ -138,6 +138,37 @@ the template directory. Non-string entries (inline maps) are passed through.
 {{- end -}}
 
 {{- /*
+  atlas.cluster.groups — the group levels above one cluster, outer first.
+
+  A cluster path is group/.../group/leaf. Every directory on the way from the
+  root to the cluster is a group level: it can hold group.values.* files and
+  an apps/ directory whose deployments all clusters below it inherit.
+
+    "region/eu/c1" -> ["region", "region/eu"]
+    "group1/c2"    -> ["group1"]
+    "c3"           -> []
+
+  Before nested groups, ATLAS used `dir <cluster>` as the one group level
+  ("region/eu"). For one group level both give the same result.
+
+  Input:  the cluster path (string)
+  Output: JSON {"v": [<group path>, ...]}; callers read .v after fromJson.
+*/ -}}
+{{- define "atlas.cluster.groups" -}}
+{{- $groupPaths := list }}
+{{- $prefix := "" }}
+{{- range $part := (splitList "/" .) | initial }}
+  {{- if $prefix }}
+    {{- $prefix = printf "%s/%s" $prefix $part }}
+  {{- else }}
+    {{- $prefix = $part }}
+  {{- end }}
+  {{- $groupPaths = append $groupPaths $prefix }}
+{{- end }}
+{{- dict "v" $groupPaths | toJson }}
+{{- end -}}
+
+{{- /*
   atlas.child.deploymentPath — the deployment.yaml path of a child render.
 
   A child render (ATLAS_DEPLOYMENT set, see atlas.deployment.source) has no

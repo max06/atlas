@@ -1,0 +1,3 @@
+# Marker: this directory is a cluster. It has no apps/ directory of its own.
+apiVersion: atlas.io/v1alpha1
+kind: Cluster

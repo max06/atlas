@@ -116,39 +116,65 @@
 {{- else }}
 
 # STEP 1: DISCOVER ALL CLUSTERS
-# Identify all directories with an "apps" subdirectory. Only leaf clusters
-# (no child "apps" directories) are collected as deployment targets. When
-# atlas.filter.cluster is set, non-matching clusters are dropped here so the
-# per-cluster deployment scans in STEP 2 don't run for them.
-{{- $clustersPattern := printf "%s/**/apps" $deploymentsDir }}
-{{- $clustersRaw := include "glob" $clustersPattern | fromJson }}
-
-{{- $leafNamesSeen := dict }}
-
-{{- range $clustersRaw }}
-  {{- $clusterPath := . | trimPrefix (printf "%s/" $deploymentsDir) | dir }}
-
+# Two detection rules, both active (a consumer can move one cluster at a time):
+#   marker: a directory with a cluster.yaml file is a cluster.
+#   legacy: a directory with an apps/ subdirectory is a cluster when no other
+#           cluster candidate is below it (else it is a group).
+# Groups can nest to any depth. When atlas.filter.cluster is set,
+# non-matching clusters are dropped here so the per-cluster deployment scans
+# in STEP 2 don't run for them.
+{{- $relativePath := printf "%s/" $deploymentsDir }}
+{{- $candidates := dict }}
+{{- range (include "glob" (printf "%s/**/apps" $deploymentsDir) | fromJson) }}
+  {{- $candidatePath := . | trimPrefix $relativePath | dir }}
   {{- /* "" would be an empty match; "." is the global apps/ dir itself
        (trimPrefix+dir collapse it to the current dir) — in a repo with
        global deployments but no clusters yet it would otherwise register
        as a pseudo-cluster and produce a nonsense render target. */ -}}
-  {{- if and (ne $clusterPath "") (ne $clusterPath ".") }}
-    {{- $childPattern := printf "%s/%s/*/apps" $deploymentsDir $clusterPath }}
-    {{- $hasChildren := include "glob" $childPattern | fromJson }}
-    {{- $isLeaf := eq (len $hasChildren) 0 }}
-    {{- if $isLeaf }}
-      {{- /* Leaf-name bookkeeping runs BEFORE the stage-1 filter so a
-           filtered (per-app ArgoCD) render still validates the whole
-           repo — name collisions are a global problem and must not
-           hide behind atlas.filter.cluster. */ -}}
-      {{- $leafName := $clusterPath | base }}
-      {{- $seenAt := $leafNamesSeen | get $leafName list }}
-      {{- $_ := set $leafNamesSeen $leafName (append $seenAt $clusterPath) }}
+  {{- if and (ne $candidatePath "") (ne $candidatePath ".") }}
+    {{- $_ := set $candidates $candidatePath "legacy" }}
+  {{- end }}
+{{- end }}
+{{- range (include "glob" (printf "%s/**/cluster.yaml" $deploymentsDir) | fromJson) }}
+  {{- $markerPath := . | trimPrefix $relativePath | dir }}
+  {{- if or (eq $markerPath ".") (eq $markerPath "") }}
+    {{- fail (printf "cluster discovery: cluster.yaml at the root of %s — the root holds global values, a cluster is a directory below it" $.Values.atlas.deploymentDefinitions) }}
+  {{- end }}
+  {{- if has "apps" (splitList "/" $markerPath) }}
+    {{- fail (printf "cluster discovery: %s/cluster.yaml is inside an apps/ directory — apps/ holds deployments only" $markerPath) }}
+  {{- end }}
+  {{- $_ := set $candidates $markerPath "marker" }}
+{{- end }}
+
+{{- $leafNamesSeen := dict }}
+
+{{- range $candidatePath := keys $candidates | sortAlpha }}
+  {{- $rule := index $candidates $candidatePath }}
+  {{- /* A candidate is a leaf when no other candidate is below it, at any
+       depth (a marker cluster needs no apps/ directory, so a check one
+       level down would miss it). */ -}}
+  {{- $below := list }}
+  {{- range $otherPath := keys $candidates }}
+    {{- if hasPrefix (printf "%s/" $candidatePath) $otherPath }}
+      {{- $below = append $below $otherPath }}
     {{- end }}
-    {{- $clusterMatches := or (not $filterClusters) (has $clusterPath $filterClusters) }}
-    {{- if and $isLeaf $clusterMatches }}
-      {{- $_ := set $clusters $clusterPath (list) }}
-    {{- end }}
+  {{- end }}
+  {{- $isLeaf := eq (len $below) 0 }}
+  {{- if and (eq $rule "marker") (not $isLeaf) }}
+    {{- fail (printf "cluster discovery: %s has a cluster.yaml, but clusters are below it: %s — a cluster cannot contain clusters" $candidatePath (join ", " ($below | sortAlpha))) }}
+  {{- end }}
+  {{- if $isLeaf }}
+    {{- /* Leaf-name bookkeeping runs BEFORE the stage-1 filter so a
+         filtered (per-app ArgoCD) render still validates the whole
+         repo — name collisions are a global problem and must not
+         hide behind atlas.filter.cluster. */ -}}
+    {{- $leafName := $candidatePath | base }}
+    {{- $seenAt := $leafNamesSeen | get $leafName list }}
+    {{- $_ := set $leafNamesSeen $leafName (append $seenAt $candidatePath) }}
+  {{- end }}
+  {{- $clusterMatches := or (not $filterClusters) (has $candidatePath $filterClusters) }}
+  {{- if and $isLeaf $clusterMatches }}
+    {{- $_ := set $clusters $candidatePath (list) }}
   {{- end }}
 {{- end }}
 
@@ -162,10 +188,28 @@
   {{- end }}
 {{- end }}
 
+{{- /* Convention: a deployment.yaml lives in an apps/ directory
+     (<level>/apps/<name>/deployment.yaml). The discovery finds no other
+     deployment.yaml, so a file outside apps/ would be ignored without a
+     word. Checked in renders without a filter (review, CLI): an Argo CD
+     render of one app must not pay for a second walk of the whole tree. */ -}}
+{{- if not (or $filterClusters $filterDeployments) }}
+  {{- $misplaced := list }}
+  {{- range (include "glob" (printf "%s/**/deployment.yaml" $deploymentsDir) | fromJson) }}
+    {{- $definitionPath := . | trimPrefix $relativePath }}
+    {{- if ne ($definitionPath | dir | dir | base) "apps" }}
+      {{- $misplaced = append $misplaced $definitionPath }}
+    {{- end }}
+  {{- end }}
+  {{- if $misplaced }}
+    {{- fail (printf "deployment discovery: deployment.yaml outside an apps/ directory (expected <level>/apps/<name>/deployment.yaml): %s" (join ", " ($misplaced | sortAlpha))) }}
+  {{- end }}
+{{- end }}
+
 # STEP 2: COLLECT DEPLOYMENTS FOR EACH CLUSTER
-# For each leaf cluster, gather deployments from:
+# For each leaf cluster, gather deployments from every level above it:
 # 1. Global level (applied to all).
-# 2. Group level (if in a group).
+# 2. Each group level, outer first (atlas.cluster.groups).
 # 3. Cluster-specific level.
 
 {{- range $cluster := keys $clusters | sortAlpha }}
@@ -176,8 +220,7 @@
   {{- $globalDeployments := include "glob" $globalPattern | fromJson }}
   {{- $collectedDeploymentsRaw = concat $collectedDeploymentsRaw $globalDeployments }}
 
-  {{- $groupPath := $cluster | dir }}
-  {{- if ne $groupPath "." }}
+  {{- range $groupPath := (include "atlas.cluster.groups" $cluster | fromJson).v }}
     {{- $groupPattern := printf "%s/%s/apps/*/deployment.yaml" $deploymentsDir $groupPath }}
     {{- $groupDeployments := include "glob" $groupPattern | fromJson }}
     {{- $collectedDeploymentsRaw = concat $collectedDeploymentsRaw $groupDeployments }}
@@ -189,7 +232,8 @@
 
   {{- /* Dedup: when the same deployment name appears at multiple hierarchy levels
          (e.g., group and cluster), the most specific definition wins.
-         Collection order is global → group → cluster, so later entries override. */}}
+         Collection order is global → groups (outer first) → cluster, so later
+         entries override. */}}
   {{- $seen := dict }}
   {{- range $collectedDeploymentsRaw }}
     {{- $name := . | dir | base }}

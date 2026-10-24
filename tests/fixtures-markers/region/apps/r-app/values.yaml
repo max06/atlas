@@ -1,0 +1,3 @@
+# The own directory of an inherited deployment wins over the cluster files,
+# although it is above the cluster in the tree.
+ownDirWins: r-app-dir

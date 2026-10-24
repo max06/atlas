@@ -156,8 +156,10 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
     (printf "%s/global.values.yaml"        $hierarchyDir)
     (printf "%s/global.values.yaml.gotmpl" $hierarchyDir)
 }}
-{{- if contains "/" $cluster }}
-  {{- $groupName := dir $cluster }}
+{{- /* Every group level between the root and the cluster, outer first
+     (atlas.cluster.groups): an inner group wins over an outer one. With one
+     group level this is the single group of a cluster, as before. */ -}}
+{{- range $groupName := (include "atlas.cluster.groups" $cluster | fromJson).v }}
   {{- $hierarchyFiles = concat $hierarchyFiles (list
       (printf "%s/%s/group.values.sops.yaml"   $hierarchyDir $groupName)
       (printf "%s/%s/group.values.yaml"        $hierarchyDir $groupName)

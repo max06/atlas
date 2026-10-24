@@ -1,0 +1,2 @@
+apiVersion: atlas.io/v1alpha1
+kind: Cluster
