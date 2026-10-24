@@ -138,6 +138,159 @@ the template directory. Non-string entries (inline maps) are passed through.
 {{- end -}}
 
 {{- /*
+  atlas.deployment.expanded — a deployment definition with its macros expanded.
+
+  A macro (deploymentTemplate) is a template directory with a
+  deployment.yaml.gotmpl instead of a helmfile.yaml.gotmpl. A deployment uses
+  it under the key deploymentTemplates:
+
+    deploymentTemplates:
+      - template: web-service
+        values: {name: shop, dbConnectionPoolSize: 200}   # a map or a list of maps
+
+  The macro file renders (Go template) with the state-build hierarchy of the
+  pair (no secrets) and the macro values on top (.Values.<key>). It returns
+  an apps list. Each entry becomes one component of the deployment:
+
+    apps:
+      - template: cnpg-cluster
+        name: db                 # entry name; default: base name of the template
+        destination: mgmt        # optional: Argo CD destination of the component
+        needs: [other-entry]     # optional: order inside the deployment
+        values: [...]
+
+  Entries of the deployment's own apps list come after the macro entries and
+  become components as well. A component is named <deployment>-<entry name>.
+  It renders as a child (recursive ATLAS) with a definition of its one app and
+  the deployment's settings, and the deployment directory as its base.
+
+  A deployment with macros renders, in its own Application, only the parent
+  template (.Values.atlas.macroParentTemplate, set by the consumer's entry): a
+  structure template that reads the components (atlas.deployment.components)
+  and renders their Applications.
+
+  Input:  dict with "Values" (atlas sub-context with atlas.deployment.*),
+          optional "hierarchy" (state-build hierarchy, as for
+          atlas.deployment.definition)
+  Output: JSON {
+            "definition": <the parsed deployment.yaml>,
+            "macro":      true when the deployment uses deploymentTemplates,
+            "macros":     [<macro template names>],
+            "renderApps": [<apps this render instantiates>],
+            "allApps":    [<every app the deployment and its components use>],
+            "components": [{"name", "entry", "destination", "needs"}]
+          }
+*/ -}}
+{{- define "atlas.deployment.expanded" -}}
+{{- $synthRelease := dict "Name" "" "Namespace" "" }}
+{{- $hierarchy := dict }}
+{{- if hasKey . "hierarchy" }}
+  {{- $hierarchy = .hierarchy }}
+{{- else }}
+  {{- $hierarchy = include "atlas.hierarchy.merged" (dict
+      "Values"      .Values
+      "Release"     $synthRelease
+      "redact"      false
+      "skipSecrets" true
+  ) | fromYaml }}
+{{- end }}
+{{- $definition := include "atlas.deployment.definition" (dict "Values" .Values "hierarchy" $hierarchy) | fromYaml }}
+{{- $macroUses := $definition | get "deploymentTemplates" list }}
+{{- $ownApps := $definition | get "apps" list }}
+{{- if not $macroUses }}
+  {{- dict "definition" $definition "macro" false "macros" (list) "renderApps" $ownApps "allApps" $ownApps "components" (list) | toJson }}
+{{- else }}
+  {{- $deploymentName := .Values.atlas.deployment.deploymentName }}
+  {{- $parentTemplate := .Values.atlas | get "macroParentTemplate" "" }}
+  {{- if not $parentTemplate }}
+    {{- fail (printf "deployment %s uses deploymentTemplates, but the entry helmfile sets no atlas.macroParentTemplate (the structure template that renders the components)" $deploymentName) }}
+  {{- end }}
+  {{- $entries := list }}
+  {{- $macroNames := list }}
+  {{- range $use := $macroUses }}
+    {{- $macroName := required (printf "deployment %s: deploymentTemplates[].template" $deploymentName) ($use | get "template" "") }}
+    {{- $macroNames = append $macroNames $macroName }}
+    {{- $macroFile := printf "%s/%s/%s/deployment.yaml.gotmpl" $.Values.atlas.cwd $.Values.atlas.appTemplates $macroName }}
+    {{- if not (isFile $macroFile) }}
+      {{- fail (printf "deployment %s: macro %s not found (expected %s)" $deploymentName $macroName $macroFile) }}
+    {{- end }}
+    {{- /* macro values: a map, or a list of maps merged in order */ -}}
+    {{- $macroValues := dict }}
+    {{- $rawValues := $use | get "values" dict }}
+    {{- if kindIs "slice" $rawValues }}
+      {{- range $part := $rawValues }}{{- $macroValues = mergeOverwrite $macroValues (deepCopy $part) }}{{- end }}
+    {{- else }}
+      {{- $macroValues = deepCopy $rawValues }}
+    {{- end }}
+    {{- $macroCtx := mergeOverwrite (deepCopy $.Values) (deepCopy $hierarchy) (deepCopy $macroValues) }}
+    {{- $_ := set $macroCtx "Release" $synthRelease }}
+    {{- $_ := set $macroCtx "Values" (deepCopy $macroCtx) }}
+    {{- $expansion := tpl (readFile $macroFile) $macroCtx | fromYaml }}
+    {{- $entries = concat $entries ($expansion | get "apps" list) }}
+  {{- end }}
+  {{- $entries = concat $entries $ownApps }}
+  {{- /* entry names: name, else the base name of the template; unique */ -}}
+  {{- $entryNames := list }}
+  {{- range $entry := $entries }}
+    {{- $entryName := $entry | get "name" (base ($entry | get "template" "")) }}
+    {{- if has $entryName $entryNames }}
+      {{- fail (printf "deployment %s: two macro entries with the name %q — set name on one of them" $deploymentName $entryName) }}
+    {{- end }}
+    {{- $entryNames = append $entryNames $entryName }}
+  {{- end }}
+  {{- $components := list }}
+  {{- $allApps := list (dict "template" $parentTemplate) }}
+  {{- range $entry := $entries }}
+    {{- $entryName := $entry | get "name" (base ($entry | get "template" "")) }}
+    {{- $needs := list }}
+    {{- range $need := ($entry | get "needs" list) }}
+      {{- if not (has $need $entryNames) }}
+        {{- fail (printf "deployment %s: entry %s needs %q, which is no entry of this deployment" $deploymentName $entryName $need) }}
+      {{- end }}
+      {{- $needs = append $needs (printf "%s-%s" $deploymentName $need) }}
+    {{- end }}
+    {{- $app := omit $entry "destination" "needs" }}
+    {{- $allApps = append $allApps $app }}
+    {{- $components = append $components (dict "name" (printf "%s-%s" $deploymentName $entryName) "entry" $app "destination" ($entry | get "destination" "") "needs" $needs) }}
+  {{- end }}
+  {{- dict "definition" $definition "macro" true "macros" $macroNames "renderApps" (list (dict "template" $parentTemplate)) "allApps" $allApps "components" $components | toJson }}
+{{- end }}
+{{- end -}}
+
+{{- /*
+  atlas.deployment.components — the components of a deployment with macros,
+  for its parent template (a structure template).
+
+  Each component is ready for a child render: cluster and base are the
+  deployment's (the component keeps the hierarchy of its cluster, whatever its
+  destination), the definition holds the one app and the deployment's
+  settings.
+
+  Input:  dict with "Values" (atlas sub-context of the deployment)
+  Output: JSON {"v": [{"name", "cluster", "base", "definition" (YAML text),
+          "destination", "needs"}, ...]}; [] for a deployment without macros.
+*/ -}}
+{{- define "atlas.deployment.components" -}}
+{{- $expanded := include "atlas.deployment.expanded" (dict "Values" .Values) | fromJson }}
+{{- $base := dir .Values.atlas.deployment.deploymentPath | trimPrefix (printf "%s/" .Values.atlas.cwd) }}
+{{- $settings := $expanded.definition | get "settings" dict }}
+{{- $out := list }}
+{{- range $component := $expanded.components }}
+  {{- $componentSettings := deepCopy $settings }}
+  {{- if $component.needs }}{{- $_ := set $componentSettings "needs" $component.needs }}{{- end }}
+  {{- $childDefinition := dict "apps" (list $component.entry) "settings" $componentSettings }}
+  {{- $out = append $out (dict
+        "name"        $component.name
+        "cluster"     $.Values.atlas.deployment.cluster
+        "base"        $base
+        "definition"  ($childDefinition | toYaml)
+        "destination" $component.destination
+        "needs"       $component.needs) }}
+{{- end }}
+{{- dict "v" $out | toJson }}
+{{- end -}}
+
+{{- /*
   atlas.cluster.groups — the group levels above one cluster, outer first.
 
   A cluster path is group/.../group/leaf. Every directory on the way from the

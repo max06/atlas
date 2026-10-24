@@ -45,11 +45,15 @@ Output:
      _functions.tpl for the why: `{{ .Values.<hierarchyKey> }}` in apps[]
      fields, skipSecrets, synthetic .Release). The discovery map mode of
      helmfile.all.yaml.gotmpl uses the same helper, so both see one parse. */ -}}
-{{- $deploymentDefinition := include "atlas.deployment.definition" (dict "Values" .Values) | fromYaml }}
+{{- /* atlas.deployment.expanded (_functions.tpl): the definition with its
+     macros expanded. renderApps = the apps of this render; for a deployment
+     with deploymentTemplates that is only its parent template, the
+     components render as children of their own. */ -}}
+{{- $expanded := include "atlas.deployment.expanded" (dict "Values" .Values) | fromJson }}
 
 {{- /* ====================== INSTANCE FAN-OUT ====================== */ -}}
 helmfiles:
-{{- range $instance := $deploymentDefinition.apps }}
+{{- range $instance := $expanded.renderApps }}
   {{- /* Resolve instance name (defaults to template name when not explicitly set). */ -}}
   {{- $instanceName := $instance.template }}
   {{- if hasKey $instance "name" }}

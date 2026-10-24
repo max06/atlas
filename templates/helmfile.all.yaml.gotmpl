@@ -296,10 +296,14 @@
               "redact"      false
               "skipSecrets" true
         ) | fromYaml }}
-        {{- $definition := include "atlas.deployment.definition" (dict "Values" $pairValues "hierarchy" $pairHierarchy) | fromYaml }}
-        {{- $templates := list }}
+        {{- /* allApps: with macros, the parent template and the apps of every
+             component, so a change to any of them selects the deployment
+             (its components render as children); the macro templates are
+             edges as well. */ -}}
+        {{- $expanded := include "atlas.deployment.expanded" (dict "Values" $pairValues "hierarchy" $pairHierarchy) | fromJson }}
+        {{- $templates := $expanded.macros }}
         {{- $charts := list }}
-        {{- range $app := ($definition | get "apps" list) }}
+        {{- range $app := $expanded.allApps }}
           {{- $templateName := $app | get "template" "" }}
           {{- $templates = append $templates $templateName }}
           {{- /* Local charts: render the app template for this instance

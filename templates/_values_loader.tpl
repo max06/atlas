@@ -263,7 +263,7 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
 {{- $instanceName := .Values.atlas.instance.name }}
 {{- $needsMunge := ne $instanceName .Values.atlas.instance.template }}
 {{- $nameStyle := "prefix" }}
-{{- range $app := $deploymentRendered.apps }}
+{{- range $app := ($deploymentRendered | get "apps" list) }}
   {{- $iName := $app.template }}
   {{- if hasKey $app "name" }}{{- $iName = $app.name }}{{- end }}
   {{- if and (eq $app.template $.Values.atlas.instance.template) (eq $iName $instanceName) }}

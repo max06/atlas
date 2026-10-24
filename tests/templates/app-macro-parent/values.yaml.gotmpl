@@ -1,0 +1,27 @@
+{{- $parents := list }}
+{{- with env "ATLAS_PARENTS" }}{{- $parents = splitList "," . }}{{- end }}
+{{- $parents = append $parents .Values.atlas.deployment.deploymentName }}
+resources:
+{{- range $component := (include "atlas.deployment.components" (dict "Values" .Values) | fromJson).v }}
+  - apiVersion: argoproj.io/v1alpha1
+    kind: Application
+    metadata:
+      name: {{ $component.name }}
+      namespace: argo-{{ base $component.cluster }}
+      annotations:
+        atlas.io/needs: {{ $component.needs | join "," | quote }}
+    spec:
+      project: default
+      destination: {name: {{ $component.destination | default (base $component.cluster) }}, namespace: {{ $component.name }}}
+      source:
+        repoURL: https://example.invalid/consumer
+        targetRevision: main
+        path: .
+        plugin:
+          env:
+            - {name: ATLAS_FILTER_CLUSTER, value: {{ $component.cluster | quote }}}
+            - {name: ATLAS_FILTER_DEPLOYMENT_NAME, value: {{ $component.name | quote }}}
+            - {name: ATLAS_DEPLOYMENT, value: {{ $component.definition | quote }}}
+            - {name: ATLAS_DEPLOYMENT_BASE, value: {{ $component.base | quote }}}
+            - {name: ATLAS_PARENTS, value: {{ $parents | join "," | quote }}}
+{{- end }}

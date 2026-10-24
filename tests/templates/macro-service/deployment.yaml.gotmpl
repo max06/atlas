@@ -1,0 +1,16 @@
+# Test macro (cli-macro.bats): three components from one deployment.
+apps:
+  - template: app1
+    name: db
+    values:
+      - poolSize: {{ .Values.dbConnectionPoolSize | default 50 }}
+        serviceName: {{ .Values.name | quote }}
+        fromHierarchy: {{ .Values.level | default "none" | quote }}
+  - template: app1
+    name: app
+    needs: [db]
+    values:
+      - serviceName: {{ .Values.name | quote }}
+  - template: app1
+    name: project
+    destination: mgmt

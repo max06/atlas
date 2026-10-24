@@ -121,7 +121,7 @@ Purpose:
      of a child render (_functions.tpl). */ -}}
 {{- $deploymentRendered := tpl (include "atlas.deployment.source" (dict "Values" .Values)) $ctx | fromYaml }}
 {{- $thisInstance := dict }}
-{{- range $app := $deploymentRendered.apps }}
+{{- range $app := ($deploymentRendered | get "apps" list) }}
   {{- $instanceName := $app.template }}
   {{- if hasKey $app "name" }}
     {{- $instanceName = $app.name }}

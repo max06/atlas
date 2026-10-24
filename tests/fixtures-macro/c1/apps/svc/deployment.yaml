@@ -1,0 +1,7 @@
+deploymentTemplates:
+  - template: macro-service
+    values:
+      name: shop
+      dbConnectionPoolSize: 200
+settings:
+  namespace: svc

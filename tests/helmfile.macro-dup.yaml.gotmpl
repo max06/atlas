@@ -1,0 +1,9 @@
+# Test entry for cli-macro.bats (fixture root fixtures-macro-dup).
+helmfiles:
+  - path: ../helmfile.yaml.gotmpl
+    values:
+      - atlas:
+          cwd: {{ exec "pwd" (list) | trim }}
+          appTemplates: templates
+          deploymentDefinitions: fixtures-macro-dup
+          macroParentTemplate: app-macro-parent

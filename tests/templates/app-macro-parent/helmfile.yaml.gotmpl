@@ -1,0 +1,8 @@
+# Test parent template of macro deployments (cli-macro.bats): one Argo CD
+# Application per component (atlas.deployment.components).
+releases:
+  - name: app-macro-parent
+    chart: "{{ .Values.atlas.cwd }}/charts/raw"
+    namespace: argocd
+    values:
+      - values.yaml.gotmpl
