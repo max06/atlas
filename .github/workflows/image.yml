@@ -17,7 +17,6 @@ on:
       - cmd/**
       - internal/**
       - .github/actions/**
-      - contrib/argocd-cmp/**
       - .github/workflows/image.yml
   push:
     tags: ["v*"]
@@ -29,7 +28,6 @@ on:
       - cmd/**
       - internal/**
       - .github/actions/**
-      - contrib/argocd-cmp/**
       - .github/workflows/image.yml
   workflow_dispatch:
 
