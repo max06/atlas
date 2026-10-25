@@ -29,6 +29,7 @@ func (f *revFlags) register(cmd *cobra.Command) {
 	fl.StringVar(&f.spec.Head, "head", "", "revision to review (default: the working tree, incl. uncommitted and untracked files)")
 	fl.StringVar(&f.spec.Remote, "remote", "origin", "remote for the default base")
 	fl.BoolVar(&f.spec.NoMerge, "no-merge", false, "compare --base and --head directly instead of base vs merge result (CI: the platform already merged)")
+	fl.BoolVar(&f.spec.SingleEngine, "single-engine", false, "render both sides with this atlas, also when a side's atlas.yaml pins another engine (shows content changes, hides what an engine change does)")
 }
 
 func newReviewCmd(g *globalFlags) *cobra.Command {
@@ -61,6 +62,7 @@ func openSession(cmd *cobra.Command, g *globalFlags, f revFlags) (*review.Sessio
 	if repo.Shallow(cmd.Context()) && !f.spec.NoMerge {
 		fmt.Fprintln(os.Stderr, "atlas: shallow clone — a local merge needs history; CI should pass both commits with --no-merge")
 	}
+	f.spec.Engine = Version
 	s, err := review.Open(cmd.Context(), repo, entry, f.spec, os.Stderr)
 	if err != nil {
 		return nil, err

@@ -21,6 +21,9 @@ type CommentInput struct {
 
 	WorkflowPinTarget, WorkflowPinMerge string
 	LatestTag, LatestMainSHA            string
+	// Engine pins (atlas.yaml) per side; "" = no atlas.yaml. Each side
+	// rendered with its own engine.
+	EngineTarget, EngineMerge string
 
 	DiffTotal, DiffReleases int
 	DiffTruncated           bool
@@ -79,6 +82,7 @@ func Comment(in CommentInput) string {
 	}
 
 	pinMessages(&l, in)
+	engineMessages(&l, in)
 
 	// security messaging (selector probe)
 	switch {
@@ -185,6 +189,25 @@ func pinMessages(l *lines, in CommentInput) {
 	}
 }
 
+// engineMessages notes an engine pin change: each side rendered with the
+// engine it pins, so the diff includes what the engine change does.
+func engineMessages(l *lines, in CommentInput) {
+	if in.EngineTarget == in.EngineMerge {
+		return
+	}
+	pin := func(s string) string {
+		if s == "" {
+			return "none"
+		}
+		return "`" + s + "`"
+	}
+	note := "> This PR changes the ATLAS engine (atlas.yaml): " + pin(in.EngineTarget) + " → " + pin(in.EngineMerge) + "."
+	if in.BaselineStatus == "success" && in.PRStatus == "success" {
+		note += " Each side rendered with its own engine, so the diff includes what the engine change does."
+	}
+	l.emit("> [!NOTE]", note, "")
+}
+
 func orDefault(s, d string) string {
 	if s == "" {
 		return d
@@ -208,6 +231,8 @@ func Summary(in CommentInput) string {
 		"| Target branch | "+cell(in.WorkflowPinTarget)+" |",
 		"| Merge result | "+cell(in.WorkflowPinMerge)+" |",
 		"| Upstream latest release | "+cell(in.LatestTag)+" |",
+		"| Engine of the target branch (atlas.yaml) | "+cell(in.EngineTarget)+" |",
+		"| Engine of the merge result (atlas.yaml) | "+cell(in.EngineMerge)+" |",
 		"")
 	if strings.TrimSpace(in.SummaryBlocks) != "" {
 		l.emit("### Manifest diff", "")

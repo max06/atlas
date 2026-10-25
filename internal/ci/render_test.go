@@ -1,9 +1,12 @@
 package ci
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/max06/atlas/internal/gha"
 )
 
 // The reference check reads the consumer's workflow files: a `uses:` key
@@ -37,5 +40,33 @@ func TestWorkflowPinIgnoresComments(t *testing.T) {
 	}
 	if got := WorkflowPin(dir); got != "" {
 		t.Fatalf("WorkflowPin = %q, want empty", got)
+	}
+}
+
+// The key file reaches helmfile through the render's own environment, also
+// when the caller (the review) wrote the file and the process environment
+// has no SOPS_AGE_KEY_FILE — the CI case.
+func TestSopsKeyEnv(t *testing.T) {
+	t.Setenv("SOPS_AGE_KEY_FILE", "")
+	tmp := t.TempDir()
+	log := gha.Log{W: io.Discard}
+
+	env, err := sopsKeyEnv(RenderConfig{Temp: tmp, SopsAgeKeyFile: "/keys/review.txt"}, log)
+	if err != nil || len(env) != 1 || env[0] != "SOPS_AGE_KEY_FILE=/keys/review.txt" {
+		t.Errorf("given key file: %v, %v", env, err)
+	}
+	env, err = sopsKeyEnv(RenderConfig{Temp: tmp, SopsAgeKey: "AGE-SECRET-KEY-1TEST"}, log)
+	want := "SOPS_AGE_KEY_FILE=" + filepath.Join(tmp, "sops-age-key.txt")
+	if err != nil || len(env) != 1 || env[0] != want {
+		t.Errorf("key from input: %v, %v", env, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(tmp, "sops-age-key.txt")); string(data) != "AGE-SECRET-KEY-1TEST" {
+		t.Errorf("key file content %q", data)
+	}
+	if env, _ := sopsKeyEnv(RenderConfig{Temp: tmp, SopsAgeKeyFile: "/keys/review.txt", Keyless: true}, log); env != nil {
+		t.Errorf("keyless: %v", env)
+	}
+	if env, _ := sopsKeyEnv(RenderConfig{Temp: tmp}, log); env != nil {
+		t.Errorf("no key: %v", env)
 	}
 }

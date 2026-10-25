@@ -25,6 +25,20 @@ func newReviewCICmd(g *globalFlags) *cobra.Command {
 		// purpose (render.sh contract): no "ignoring ATLAS_*" warning
 		PersistentPreRun: func(*cobra.Command, []string) {},
 	}
+	var sideRequest, sideResult string
+	side := &cobra.Command{
+		Use:   "side",
+		Short: "Run one per-side review step from a request file (side contract, for reviews across engine versions)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return ci.SideFiles(cmd.Context(), sideRequest, sideResult, g.helmfile, Version, os.Stdout)
+		},
+	}
+	side.Flags().StringVar(&sideRequest, "request", "", "request file (JSON)")
+	side.Flags().StringVar(&sideResult, "result", "", "result file to write (JSON)")
+	_ = side.MarkFlagRequired("request")
+	_ = side.MarkFlagRequired("result")
+	cmd.AddCommand(side)
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "discover <output.json>",
@@ -148,7 +162,7 @@ func newReviewActionCmd(g *globalFlags) *cobra.Command {
 			Short: "atlas-review: the whole review in one step (both sides from the checkout)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return ci.ReviewAction(cmd.Context(), g.helmfile, os.Stdout)
+				return ci.ReviewAction(cmd.Context(), g.helmfile, Version, os.Stdout)
 			},
 		},
 		&cobra.Command{

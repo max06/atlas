@@ -38,7 +38,7 @@ args=(
 )
 # Values come from this process's environment (--env NAME), not from the
 # command line, so the SOPS key never shows in a process list.
-for name in INPUT_HELMFILE_PATH INPUT_BASE INPUT_SUBSET_MODE INPUT_DIFF_MODE INPUT_SOPS_AGE_KEY INPUT_KEYLESS \
+for name in INPUT_HELMFILE_PATH INPUT_BASE INPUT_SUBSET_MODE INPUT_DIFF_MODE INPUT_SOPS_AGE_KEY INPUT_KEYLESS INPUT_ENGINE_REPOSITORY \
             INPUT_MERGE_FALLBACK INPUT_LATEST_ATLAS_TAG INPUT_LATEST_MAIN_SHA INPUT_RUN_URL INPUT_IN_PLACE \
             RENDER_PARALLEL HELMFILE_TIMEOUT RUNNER_DEBUG ACTIONS_STEP_DEBUG \
             GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID GITHUB_SHA GITHUB_REF GITHUB_EVENT_NAME; do
@@ -46,5 +46,13 @@ for name in INPUT_HELMFILE_PATH INPUT_BASE INPUT_SUBSET_MODE INPUT_DIFF_MODE INP
     args+=(--env "$name")
   fi
 done
+
+# A side that pins another engine renders in that release's image, started
+# by the review as a sibling container through the docker socket (the same
+# same-path mounts make the paths valid there too).
+socket=/var/run/docker.sock
+if [ -S "$socket" ]; then
+  args+=(--volume "${socket}:${socket}" --group-add "$(stat -c %g "$socket")")
+fi
 
 exec docker "${args[@]}" "$IMAGE" review ci action review

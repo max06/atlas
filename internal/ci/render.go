@@ -163,17 +163,41 @@ func Render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	return res, err
 }
 
+// sopsKeyEnv returns the environment that points sops at the key: the key
+// from the action input goes to a file first. A given key file is exported
+// too — it may come from the review (side request), not from this process's
+// environment.
+func sopsKeyEnv(c RenderConfig, log gha.Log) ([]string, error) {
+	if c.Keyless {
+		return nil, nil
+	}
+	keyFile := c.SopsAgeKeyFile
+	if keyFile == "" && c.SopsAgeKey != "" {
+		keyFile = filepath.Join(c.Temp, "sops-age-key.txt")
+		if err := os.WriteFile(keyFile, []byte(c.SopsAgeKey), 0o600); err != nil {
+			return nil, err
+		}
+		log.Printf("SOPS key file: %d bytes", len(c.SopsAgeKey))
+	}
+	if keyFile == "" {
+		return nil, nil
+	}
+	return []string{"SOPS_AGE_KEY_FILE=" + keyFile}, nil
+}
+
 // RenderResult is what a render reports (the render.sh step outputs).
+//
+// It is also part of the side result (SideContract): the JSON names are fixed.
 type RenderResult struct {
-	Status          string // success / error / missing
-	SnapshotDir     string
-	Mode            string // full / subset
-	RenderedPairs   int
-	FilterSupported bool
-	SidedumpDir     string // "" unless redaction maps were captured
-	WorkflowPin     string
-	Pairs           []string // "<cluster>|<deployment>" pairs rendered (also in <Temp>/<Label>-pairs.txt)
-	StderrLog       string
+	Status          string   `json:"status"` // success / error / missing
+	SnapshotDir     string   `json:"snapshotDir"`
+	Mode            string   `json:"mode"` // full / subset
+	RenderedPairs   int      `json:"renderedPairs"`
+	FilterSupported bool     `json:"filterSupported"`
+	SidedumpDir     string   `json:"sidedumpDir,omitempty"` // "" unless redaction maps were captured
+	WorkflowPin     string   `json:"workflowPin,omitempty"`
+	Pairs           []string `json:"pairs,omitempty"` // "<cluster>|<deployment>" pairs rendered (also in <Temp>/<Label>-pairs.txt)
+	StderrLog       string   `json:"stderrLog,omitempty"`
 }
 
 func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
@@ -223,15 +247,11 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		return res, err
 	}
 
-	// SOPS key from the action input → a file sops reads
-	if !c.Keyless && c.SopsAgeKeyFile == "" && c.SopsAgeKey != "" {
-		keyFile := filepath.Join(c.Temp, "sops-age-key.txt")
-		if err := os.WriteFile(keyFile, []byte(c.SopsAgeKey), 0o600); err != nil {
-			return res, err
-		}
-		s.extraEnv = append(s.extraEnv, "SOPS_AGE_KEY_FILE="+keyFile)
-		s.log.Printf("SOPS key file: %d bytes", len(c.SopsAgeKey))
+	keyEnv, err := sopsKeyEnv(c, s.log)
+	if err != nil {
+		return res, err
 	}
+	s.extraEnv = append(s.extraEnv, keyEnv...)
 
 	s.phase(fmt.Sprintf("start (%d parallel helmfile calls)", s.Parallel))
 	stopHeartbeat := s.heartbeat()

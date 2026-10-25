@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/max06/atlas/internal/classify"
+	"github.com/max06/atlas/internal/config"
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/gitrev"
 	"github.com/max06/atlas/internal/helmfile"
@@ -27,6 +28,12 @@ type Spec struct {
 	Head    string // "" = working tree (incl. uncommitted + untracked files)
 	Remote  string // remote for the default base (default "origin")
 	NoMerge bool   // compare Base and Head directly (CI: the platform already merged)
+	// Engine is the version of this binary. A local review renders both
+	// sides with it, so a side that pins another engine minor in atlas.yaml
+	// stops the review: the diff would hide what the engine change does.
+	// SingleEngine renders such sides anyway (content changes only).
+	Engine       string
+	SingleEngine bool
 }
 
 // Session holds the resolved revisions and the shared workspace.
@@ -41,11 +48,14 @@ type Session struct {
 	// Workspace is the ONE directory both sides are exported into, one after
 	// the other: rendered values embed the checkout path (atlas.cwd).
 	Workspace string
+
+	Engine       string // Spec.Engine
+	SingleEngine bool
 }
 
 // Open resolves the revisions of spec.
 func Open(ctx context.Context, repo *gitrev.Repo, entry string, spec Spec, log io.Writer) (*Session, error) {
-	s := &Session{Repo: repo, Entry: entry, Log: log}
+	s := &Session{Repo: repo, Entry: entry, Log: log, Engine: spec.Engine, SingleEngine: spec.SingleEngine}
 	remote := spec.Remote
 	if remote == "" {
 		remote = "origin"
@@ -189,6 +199,9 @@ func (s *Session) discover(ctx context.Context, side Side) (*discovery.Map, erro
 	if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil {
 		return nil, fmt.Errorf("%s: %w", s.Entry, ErrNoEntry)
 	}
+	if err := s.checkEngine(side); err != nil {
+		return nil, err
+	}
 	r, log := s.runner()
 	m, err := discovery.Discover(ctx, r)
 	if err != nil {
@@ -198,6 +211,25 @@ func (s *Session) discover(ctx context.Context, side Side) (*discovery.Map, erro
 		fmt.Fprintf(s.Log, "review: %s side has discovery map v%d (< v%d): chart edges unknown\n", side, m.Version, discovery.MinVersion)
 	}
 	return m, nil
+}
+
+// checkEngine stops a review whose side pins another engine minor than this
+// binary. A build without a release version is the engine under test and
+// renders every side.
+func (s *Session) checkEngine(side Side) error {
+	root, err := config.Load(s.Workspace)
+	if errors.Is(err, config.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s side: %w", side, err)
+	}
+	own, ok := config.EngineOfVersion(s.Engine)
+	pin := root.Spec.Engine
+	if !ok || s.SingleEngine || (own.Major == pin.Major && own.Minor == pin.Minor) {
+		return nil
+	}
+	return fmt.Errorf("the %s side pins engine %s, this atlas is %s: a local review renders both sides with one engine, so the diff would not show what the engine change does (the CI review renders each side with its own engine). Pass --single-engine to compare the content with this atlas", side, pin, s.Engine)
 }
 
 // RenderOptions control the renders of a review.
