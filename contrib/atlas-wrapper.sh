@@ -7,7 +7,7 @@
 #
 # Image version, first match wins:
 #   1. ATLAS_IMAGE                  full image reference, e.g. to test a branch build
-#   2. atlas.yaml `engine:`         at the repository root (atlas-next pin)
+#   2. atlas.yaml `spec.engine:`    at the repository root (the engine pin)
 #   3. ATLAS_DEFAULT_TAG below
 #
 # The repository is mounted at its own absolute path and the CLI runs in the
@@ -34,7 +34,8 @@ image="${ATLAS_IMAGE:-}"
 if [ -z "$image" ]; then
   tag=""
   if [ -f "$repo/atlas.yaml" ]; then
-    tag="$(sed -n 's/^engine:[[:space:]]*["'\'']\{0,1\}\([^"'\''[:space:]#]*\).*/\1/p' "$repo/atlas.yaml" | head -n1)"
+    # spec.engine is the only "engine:" key in the file; atlas validates the rest.
+    tag="$(sed -n 's/^[[:space:]]\{1,\}engine:[[:space:]]*["'\'']\{0,1\}\([^"'\''[:space:]#]*\).*/\1/p' "$repo/atlas.yaml" | head -n1)"
   fi
   image="$ATLAS_REPOSITORY:${tag:-$ATLAS_DEFAULT_TAG}"
 fi

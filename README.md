@@ -426,7 +426,7 @@ atlas review diff --format markdown          # the PR comment the review workflo
 atlas doctor                                 # helm / helmfile / git versions
 ```
 
-**Container image and wrapper.** `ghcr.io/max06/atlas:<version>` carries the CLI plus the toolchain it is tested with (helm, helmfile, kustomize, sops, the redaction plugin). Copy [`contrib/atlas-wrapper.sh`](contrib/atlas-wrapper.sh) into a consumer repository as `bin/atlas`; it needs only docker and git. The wrapper mounts the repository at its own absolute path, runs as your uid, keeps charts and helmfile states in the named volume `atlas-cache`, and passes `SOPS_AGE_KEY_FILE` only with `--decrypt`/`--redact`. `ATLAS_IMAGE=<ref>` runs another build (for example a branch test image); otherwise the tag comes from `engine:` in `atlas.yaml`, then from the wrapper's default. A moving atlas ref in the entry helmfile (a branch) stays cached in the volume: `docker volume rm atlas-cache` refreshes it.
+**Container image and wrapper.** `ghcr.io/max06/atlas:<version>` carries the CLI plus the toolchain it is tested with (helm, helmfile, kustomize, sops, the redaction plugin). Copy [`contrib/atlas-wrapper.sh`](contrib/atlas-wrapper.sh) into a consumer repository as `bin/atlas`; it needs only docker and git. The wrapper mounts the repository at its own absolute path, runs as your uid, keeps charts and helmfile states in the named volume `atlas-cache`, and passes `SOPS_AGE_KEY_FILE` only with `--decrypt`/`--redact`. `ATLAS_IMAGE=<ref>` runs another build (for example a branch test image); otherwise the tag comes from `spec.engine` in [`atlas.yaml`](#atlasyaml-the-engine-pin), then from the wrapper's default. A moving atlas ref in the entry helmfile (a branch) stays cached in the volume: `docker volume rm atlas-cache` refreshes it.
 
 `-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`). `-c` takes the full cluster path or the leaf name; an unknown cluster or deployment fails with the nearest known names.
 
@@ -449,6 +449,93 @@ Both sides are exported into one workspace path in turn, because rendered values
 **The CI review is the CLI.** The review workflow runs `atlas review ci action review` in the atlas image (action `atlas-review`). The steps of the former bash pipeline are subcommands of `atlas review ci` (`render`, `discover`, `scrub`, `replay`, `diff`, `shadow`, `comment`) with the same environment contract as the scripts; the scripts under `.github/actions/*/` remain as the reference implementation of the workflow tests.
 
 `atlas render --argocd` runs as the Argo CD config management plugin: the filter comes from `ARGOCD_ENV_ATLAS_FILTER_CLUSTER` / `ARGOCD_ENV_ATLAS_FILTER_DEPLOYMENT_NAME`, and releases render into `ARGOCD_APP_NAMESPACE` unless `ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE` is set.
+
+## atlas.yaml: the engine pin
+
+`atlas.yaml` at the root of the tree (the Argo CD source path) pins the engine that renders the tree. Each branch has its own copy. To test another engine, change the pin in a PR or in your working tree.
+
+```yaml
+apiVersion: atlas.io/v1alpha1
+kind: Root
+spec:
+  engine: "0.13"              # engine minor: "<major>.<minor>", a quoted string
+  templateDir: templates      # optional, default "templates"
+  deploymentDir: deployments  # optional, default "deployments"
+```
+
+Rules:
+
+- `engine` must be a quoted string. An unquoted `1.10` is the float `1.1` for every YAML reader, and it would select a different engine. atlas rejects it.
+- Only `apiVersion`, `kind`, `metadata` and `spec` are permitted at the top level. An unknown key is an error, so a misspelled key cannot fall back to a default silently.
+- `templateDir` and `deploymentDir` are relative paths inside the tree. At this time the entry helmfile still sets the directories (`atlas.appTemplates`, `atlas.deploymentDefinitions`). atlas validates the two keys but does not use them yet.
+
+The pin selects:
+
+- the image of the developer wrapper (`bin/atlas`), and
+- the Argo CD plugin that renders the Applications of the tree (next section).
+
+A tree without `atlas.yaml` renders as before, through the plugin that the consumer has installed.
+
+### Argo CD: plugin selection by discovery
+
+Each engine minor runs as its own config management plugin sidecar, `atlas-v<major>-<minor>`. The image writes this plugin config itself (`atlas cmp config`). Applications do not name a plugin. The repo-server asks each sidecar in turn, and the discovery of each sidecar runs `atlas cmp match`. This command reads `atlas.yaml` in the source path and matches only in the sidecar of the pinned engine.
+
+Argo CD behaviour that the contract depends on (Argo CD 3.4 and 3.5):
+
+- Without `spec.source.plugin.name`, the repo-server asks the sidecars in alphabetical order of their socket names. The first match wins. If two sidecars match, Argo CD gives no error. Thus the matches must exclude each other.
+- A match is exit code 0 and output on stdout. A non-zero exit code is an error of this sidecar only, and the repo-server continues with the next sidecar. When no sidecar matches, the Application shows the error of the last sidecar that it asked. Thus `atlas cmp match` gives the same error in every sidecar.
+- Each discovery call sends the source path as an archive to the sidecar. Each sidecar that does not match adds one archive for each manifest generation. Keep the number of sidecars small (normally two during an upgrade).
+
+| Part | Requirement |
+|---|---|
+| `atlas.yaml` | at the root of the Application source path, valid against the schema above |
+| atlas sidecar | the image `ghcr.io/max06/atlas:<release>` with its built-in plugin config; one sidecar for each engine minor in use |
+| your own helmfile plugin (trees without `atlas.yaml`) | discovery `atlas cmp match --legacy`. Install it **before** the first atlas sidecar: a discovery that matches every helmfile tree also matches the trees of the atlas sidecars |
+| ApplicationSet / Application | no `plugin.name`; plugin `env` as before; add `/atlas.yaml` to `argocd.argoproj.io/manifest-generate-paths` |
+
+`atlas cmp match` gives these results:
+
+| `atlas.yaml` | atlas sidecar of the pinned minor | other atlas sidecars | `--legacy` |
+|---|---|---|---|
+| does not exist | no match | no match | match |
+| pins an installed minor | match | no match | no match |
+| pins a minor without a sidecar | error: names the pin and the installed plugins | same error | same error |
+| invalid (unquoted engine, unknown key, YAML error) | error with the reason | same error | same error |
+
+A sidecar for one engine minor (repo-server patch):
+
+```yaml
+- name: atlas-v0-13
+  image: ghcr.io/max06/atlas:0.13.0
+  command: [/var/run/argocd/argocd-cmp-server]
+  securityContext: {runAsNonRoot: true, runAsUser: 999}
+  env:
+    - {name: SOPS_AGE_KEY_FILE, value: /sops/age/keys.txt}
+  volumeMounts:
+    - {mountPath: /var/run/argocd, name: var-files}
+    - {mountPath: /home/argocd/cmp-server/plugins, name: plugins}
+    - {mountPath: /cache, name: atlas-v0-13-cache}   # emptyDir
+    - {mountPath: /sops/age, name: age-secret-keys}
+```
+
+Your own helmfile plugin needs the `atlas` binary for its discovery. The binary is static: an init container copies it from the atlas image into a shared volume. Then replace the `discover` block of the plugin config (for example with a ConfigMap mounted over `/home/argocd/cmp-server/config/plugin.yaml`):
+
+```yaml
+initContainers:
+  - name: atlas-bin
+    image: ghcr.io/max06/atlas:0.13.0
+    command: [cp, /usr/local/bin/atlas, /atlas-bin/atlas]
+    volumeMounts: [{mountPath: /atlas-bin, name: atlas-bin}]   # emptyDir
+# plugin config of your helmfile plugin:
+spec:
+  discover:
+    find:
+      command: [/atlas-bin/atlas, cmp, match, --legacy]
+```
+
+Upgrade order for a new engine minor: install the new sidecar → change the pin on a test branch → change the pin on the other branches → remove the old sidecar when no branch pins it. To roll back, revert the pin.
+
+A build without a release version (branch images) gets the plugin `atlas-dev` without discovery: only Applications that name it with `plugin.name` use it. `atlas cmp config --engine <minor>` writes a config with discovery for such a build (tests).
 
 ---
 
