@@ -204,6 +204,7 @@ type CompareInput struct {
 	MergeFallback                   bool
 	BaselineFilter, PRFilter        bool // selector probe per side
 	PinTarget, PinMerge             string
+	EngineTarget, EngineMerge       string // atlas.yaml pins per side ("" = none)
 	LatestTag, LatestMainSHA        string
 	DiffMode                        string // dyff / classic
 	SubsetMode                      string // off / shadow / on
@@ -281,6 +282,8 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 		PRFilter:          in.PRFilter,
 		WorkflowPinTarget: in.PinTarget,
 		WorkflowPinMerge:  in.PinMerge,
+		EngineTarget:      in.EngineTarget,
+		EngineMerge:       in.EngineMerge,
 		LatestTag:         in.LatestTag,
 		LatestMainSHA:     in.LatestMainSHA,
 		DiffTotal:         d.Result.Resources(),

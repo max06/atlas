@@ -52,6 +52,10 @@ inputs:
     description: SOPS age private key for *.values.sops.yaml files (a secret)
     required: false
     default: ""
+  engine-repository:
+    description: 'Image repository of pinned engines. A side whose atlas.yaml pins another engine minor than this action renders in "<engine-repository>:<pin>" (a sibling container through the docker socket). Comes from the workflow file, thus from the base branch with pull_request_target. Default "ghcr.io/max06/atlas".'
+    required: false
+    default: "ghcr.io/max06/atlas"
   keyless:
     description: '"true": render without decrypting SOPS files on either side; secret values stay ENC[...] and are compared encrypted. No key needed. Default "false".'
     required: false
@@ -132,6 +136,12 @@ outputs:
   shadow_missed:
     description: Changed deployments outside the classifier's selection
     value: ${{ steps.review.outputs.shadow_missed }}
+  engine_baseline:
+    description: Who rendered the baseline — "self" (this action) or the image of its atlas.yaml pin
+    value: ${{ steps.review.outputs.engine_baseline }}
+  engine_pr:
+    description: Who rendered the merge result — "self" or the image of its atlas.yaml pin
+    value: ${{ steps.review.outputs.engine_pr }}
   head:
     description: Commit reviewed (the merge result, or `head`)
     value: ${{ steps.revisions.outputs.head }}
@@ -221,6 +231,7 @@ runs:
         INPUT_DIFF_MODE: ${{ inputs.diff-mode }}
         INPUT_SOPS_AGE_KEY: ${{ inputs.sops-age-key }}
         INPUT_KEYLESS: ${{ inputs.keyless }}
+        INPUT_ENGINE_REPOSITORY: ${{ inputs.engine-repository }}
         INPUT_MERGE_FALLBACK: ${{ steps.revisions.outputs.merge_fallback }}
         INPUT_LATEST_ATLAS_TAG: ${{ steps.latest.outputs.tag }}
         INPUT_LATEST_MAIN_SHA: ${{ steps.latest.outputs.main_sha }}

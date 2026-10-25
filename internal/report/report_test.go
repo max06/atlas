@@ -107,3 +107,23 @@ func TestCommentPins(t *testing.T) {
 		t.Fatal("footer")
 	}
 }
+
+func TestCommentEngines(t *testing.T) {
+	base := CommentInput{BaselineStatus: "success", PRStatus: "success", DiffStatus: "no-changes", BaselineFilter: true, PRFilter: true}
+	in := base
+	in.EngineTarget, in.EngineMerge = "0.13", "0.13"
+	if body := Comment(in); strings.Contains(body, "[!NOTE]") {
+		t.Fatalf("the same engine on both sides is silent:\n%s", body)
+	}
+	in.EngineTarget, in.EngineMerge = "0.13", "0.14"
+	if body := Comment(in); !strings.Contains(body, "changes the ATLAS engine (atlas.yaml): `0.13` → `0.14`") {
+		t.Fatalf("engine change note missing:\n%s", body)
+	}
+	in.EngineTarget = ""
+	if body := Comment(in); !strings.Contains(body, "(atlas.yaml): none → `0.14`") {
+		t.Fatalf("first pin note missing:\n%s", body)
+	}
+	if s := Summary(in); !strings.Contains(s, "| Engine of the merge result (atlas.yaml) | `0.14` |") || !strings.Contains(s, "| Engine of the target branch (atlas.yaml) | — |") {
+		t.Fatalf("summary engine rows missing:\n%s", s)
+	}
+}

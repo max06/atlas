@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/max06/atlas/internal/classify"
+	"github.com/max06/atlas/internal/config"
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/gha"
 	"github.com/max06/atlas/internal/gitrev"
@@ -44,6 +45,13 @@ type ReviewConfig struct {
 	// step-wise workflow did. Otherwise both commits are exported into a
 	// workspace under Temp and the checkout is never touched.
 	InPlace bool
+
+	// Version is this binary's version. A side whose atlas.yaml pins another
+	// engine minor renders in that release's image, EngineRepository:<pin>
+	// (SideContract); the repository comes from the reviewing side, never
+	// from the tree under review.
+	Version          string
+	EngineRepository string
 
 	Temp    string // work directory (RUNNER_TEMP)
 	Outputs gha.Outputs
@@ -95,9 +103,33 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	ws := filepath.Join(temp, "atlas-review", "tree")
 	export := func(rev string) error { return repo.Export(ctx, rev, ws) }
 	if c.InPlace {
-		ws = repo.Dir
+		if ws, err = filepath.Abs(repo.Dir); err != nil {
+			return err
+		}
 		export = func(rev string) error { return repo.Checkout(ctx, rev) }
 		defer func() { _ = repo.Checkout(context.WithoutCancel(ctx), head) }()
+	}
+	// The key goes to a file once: a side rendered by another engine reads
+	// it from there (it never travels in a side request).
+	if !c.Keyless && c.SopsAgeKeyFile == "" && c.SopsAgeKey != "" {
+		c.SopsAgeKeyFile = filepath.Join(temp, "sops-age-key.txt")
+		if err := os.WriteFile(c.SopsAgeKeyFile, []byte(c.SopsAgeKey), 0o600); err != nil {
+			return err
+		}
+		l.Printf("SOPS key file: %d bytes", len(c.SopsAgeKey))
+	}
+
+	// Each side renders with the engine its atlas.yaml pins: this binary or
+	// the release image of the pin (side.go). A baseline that cannot name
+	// its engine does not block (the PR may be the fix); the PR side does.
+	engines := map[string]sideEngine{}
+	engineErr := map[string]error{}
+	runSide := func(label string, req SideRequest) (SideResult, error) {
+		req.Contract, req.Label, req.Dir, req.Entry, req.Temp = SideContract, label, ws, c.Entry, temp
+		if e := engines[label]; e.Image != "" {
+			return dockerSide(ctx, e.Image, req, c.Log)
+		}
+		return RunSide(ctx, req, c.Helmfile, c.Version, c.Log)
 	}
 
 	// ── discovery maps ──────────────────────────────────────────────────────
@@ -107,20 +139,39 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		if err := export(side.rev); err != nil {
 			return err
 		}
+		e, err := engineFor(ws, c.Version, c.EngineRepository)
+		if err != nil {
+			if side.label == "pr" {
+				return fmt.Errorf("merge result: %w", err)
+			}
+			engineErr[side.label] = err
+			l.Annotate("warning", "The baseline's %s is invalid (%v) — the baseline counts as not rendered.", config.FileName, err)
+			continue
+		}
+		engines[side.label] = e
+		l.Printf("engine of the %s: %s (%s)", side.label, e, e.Note)
+		_ = c.Outputs.Set("engine_"+side.label, firstNonEmpty(e.Image, "self"))
 		file := filepath.Join(temp, side.label+"-map.json")
-		err := Discover(ctx, ws, c.Entry, c.Helmfile, file, c.Log)
-		var exit *ExitError
-		switch {
-		case err == nil:
-			maps[side.label] = file
-		case errors.As(err, &exit) && exit.Code == 2:
-			l.Printf("%s", exit.Msg)
-			l.Annotate("notice", "No discovery map on the %s side — the pinned ATLAS predates ATLAS_DISCOVERY_MAP; falling back to a full render.", side.label)
-		case errors.As(err, &exit):
-			l.Printf("%s", exit.Msg)
-			l.Annotate("warning", "Discovery map failed on the %s side — falling back to a full render (the render reports the actual error).", side.label)
-		default:
+		res, err := runSide(side.label, SideRequest{Step: "discover", MapFile: file})
+		if err != nil && side.label == "baseline" && e.Image != "" {
+			// the baseline's engine cannot serve (an old release, no image):
+			// the PR may be the change away from it
+			engineErr[side.label] = err
+			l.Annotate("warning", "The baseline's engine cannot render it (%v) — the baseline counts as not rendered.", err)
+			continue
+		}
+		if err != nil {
 			return err
+		}
+		switch res.MapStatus {
+		case "ok":
+			maps[side.label] = file
+		case "unsupported":
+			l.Printf("%s", res.MapMessage)
+			l.Annotate("notice", "No discovery map on the %s side — the pinned ATLAS predates ATLAS_DISCOVERY_MAP; falling back to a full render.", side.label)
+		default:
+			l.Printf("%s", res.MapMessage)
+			l.Annotate("warning", "Discovery map failed on the %s side — falling back to a full render (the render reports the actual error).", side.label)
 		}
 	}
 	if maps["baseline"] != "" {
@@ -134,6 +185,9 @@ func Review(ctx context.Context, c ReviewConfig) error {
 			label string
 			m     *discovery.Map
 		}{{"baseline", baseMap}, {"merge result", headMap}} {
+			if side.label == "baseline" && engineErr["baseline"] != nil {
+				continue // not rendered at all
+			}
 			if side.m == nil || !side.m.Has(discovery.CapabilitySkipSecrets) {
 				return fmt.Errorf("keyless review: the ATLAS pinned on the %s side cannot render without decrypting (no %q capability; ATLAS v0.8.0 or later)", side.label, discovery.CapabilitySkipSecrets)
 			}
@@ -160,17 +214,23 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	subset := c.SubsetMode == "on" && cls != nil && cls.Mode == "subset"
 
 	// ── renders ─────────────────────────────────────────────────────────────
-	scratch := gha.Outputs{Path: filepath.Join(temp, "render-outputs")}
 	side := func(label, rev string, blocking bool) (RenderResult, error) {
+		if err := engineErr[label]; err != nil {
+			stderr := filepath.Join(temp, label+"-stderr.log")
+			if werr := os.WriteFile(stderr, []byte(err.Error()+"\n"), 0o644); werr != nil {
+				return RenderResult{}, werr
+			}
+			// nothing rendered, so nothing can leak (no filter warning)
+			return RenderResult{Status: "error", Mode: "full", StderrLog: stderr, FilterSupported: true}, nil
+		}
 		if err := export(rev); err != nil {
 			return RenderResult{}, err
 		}
-		rc := RenderConfig{
-			HelmfilePath: c.Entry, Dir: ws, Label: label, Temp: temp, Blocking: blocking,
-			MapFile: maps[label], SopsAgeKey: c.SopsAgeKey, SopsAgeKeyFile: c.SopsAgeKeyFile,
-			Keyless: c.Keyless,
-			Timeout: c.Timeout, Parallel: c.Parallel, Helmfile: c.Helmfile,
-			Outputs: scratch, Log: c.Log,
+		rc := SideRequest{
+			Step: "render", Blocking: blocking,
+			MapFile: maps[label], SopsAgeKeyFile: c.SopsAgeKeyFile,
+			Keyless:        c.Keyless,
+			TimeoutSeconds: int(c.Timeout / time.Second), Parallel: c.Parallel,
 		}
 		if subset {
 			rc.PairsFile = filepath.Join(classifyDir, "pairs-"+label+".txt")
@@ -202,7 +262,11 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		if label == "pr" {
 			rc.MergeFallback = c.MergeFallback
 		}
-		return Render(ctx, rc)
+		res, err := runSide(label, rc)
+		if res.Render == nil {
+			return RenderResult{}, err
+		}
+		return *res.Render, err
 	}
 	pr, err := side("pr", head, true)
 	if err != nil {
@@ -225,6 +289,7 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		MergeFallback:  c.MergeFallback,
 		BaselineFilter: baseline.FilterSupported, PRFilter: pr.FilterSupported,
 		PinTarget: baseline.WorkflowPin, PinMerge: pr.WorkflowPin,
+		EngineTarget: engines["baseline"].Pin, EngineMerge: engines["pr"].Pin,
 		LatestTag: c.LatestTag, LatestMainSHA: c.LatestMainSHA,
 		DiffMode: firstNonEmpty(c.DiffMode, "dyff"), SubsetMode: c.SubsetMode, RenderMode: firstNonEmpty(pr.Mode, "full"),
 		Classify: cls, HelmfilePath: c.Entry, RunURL: c.RunURL, Temp: temp,
@@ -251,7 +316,7 @@ func short(id string) string {
 
 // ReviewAction is the atlas-review action: the whole review in one step,
 // from the INPUT_* environment.
-func ReviewAction(ctx context.Context, binary string, log io.Writer) error {
+func ReviewAction(ctx context.Context, binary, version string, log io.Writer) error {
 	sharedCaches()
 	trustCheckout()
 	timeout, parallel, err := renderTuning()
@@ -259,25 +324,27 @@ func ReviewAction(ctx context.Context, binary string, log io.Writer) error {
 		return err
 	}
 	return Review(ctx, ReviewConfig{
-		Repo:           ".",
-		Entry:          firstNonEmpty(input("HELMFILE_PATH"), "helmfile.yaml.gotmpl"),
-		Base:           input("BASE"),
-		SubsetMode:     subsetMode(input("SUBSET_MODE"), log),
-		DiffMode:       firstNonEmpty(input("DIFF_MODE"), "dyff"),
-		MergeFallback:  input("MERGE_FALLBACK") == "true",
-		LatestTag:      input("LATEST_ATLAS_TAG"),
-		LatestMainSHA:  input("LATEST_MAIN_SHA"),
-		RunURL:         input("RUN_URL"),
-		SopsAgeKey:     input("SOPS_AGE_KEY"),
-		SopsAgeKeyFile: os.Getenv("SOPS_AGE_KEY_FILE"),
-		Keyless:        input("KEYLESS") == "true",
-		Helmfile:       binary,
-		InPlace:        os.Getenv("GITHUB_ACTIONS") != "" && input("IN_PLACE") != "false",
-		Timeout:        timeout,
-		Parallel:       parallel,
-		Temp:           firstNonEmpty(os.Getenv("RUNNER_TEMP"), "/tmp"),
-		Outputs:        gha.FromEnv(),
-		Log:            log,
+		Repo:             ".",
+		Entry:            firstNonEmpty(input("HELMFILE_PATH"), "helmfile.yaml.gotmpl"),
+		Base:             input("BASE"),
+		SubsetMode:       subsetMode(input("SUBSET_MODE"), log),
+		DiffMode:         firstNonEmpty(input("DIFF_MODE"), "dyff"),
+		MergeFallback:    input("MERGE_FALLBACK") == "true",
+		LatestTag:        input("LATEST_ATLAS_TAG"),
+		LatestMainSHA:    input("LATEST_MAIN_SHA"),
+		RunURL:           input("RUN_URL"),
+		SopsAgeKey:       input("SOPS_AGE_KEY"),
+		SopsAgeKeyFile:   os.Getenv("SOPS_AGE_KEY_FILE"),
+		Keyless:          input("KEYLESS") == "true",
+		Helmfile:         binary,
+		Version:          version,
+		EngineRepository: input("ENGINE_REPOSITORY"),
+		InPlace:          os.Getenv("GITHUB_ACTIONS") != "" && input("IN_PLACE") != "false",
+		Timeout:          timeout,
+		Parallel:         parallel,
+		Temp:             firstNonEmpty(os.Getenv("RUNNER_TEMP"), "/tmp"),
+		Outputs:          gha.FromEnv(),
+		Log:              log,
 	})
 }
 

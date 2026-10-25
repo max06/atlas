@@ -164,16 +164,18 @@ func Render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 }
 
 // RenderResult is what a render reports (the render.sh step outputs).
+//
+// It is also part of the side result (SideContract): the JSON names are fixed.
 type RenderResult struct {
-	Status          string // success / error / missing
-	SnapshotDir     string
-	Mode            string // full / subset
-	RenderedPairs   int
-	FilterSupported bool
-	SidedumpDir     string // "" unless redaction maps were captured
-	WorkflowPin     string
-	Pairs           []string // "<cluster>|<deployment>" pairs rendered (also in <Temp>/<Label>-pairs.txt)
-	StderrLog       string
+	Status          string   `json:"status"` // success / error / missing
+	SnapshotDir     string   `json:"snapshotDir"`
+	Mode            string   `json:"mode"` // full / subset
+	RenderedPairs   int      `json:"renderedPairs"`
+	FilterSupported bool     `json:"filterSupported"`
+	SidedumpDir     string   `json:"sidedumpDir,omitempty"` // "" unless redaction maps were captured
+	WorkflowPin     string   `json:"workflowPin,omitempty"`
+	Pairs           []string `json:"pairs,omitempty"` // "<cluster>|<deployment>" pairs rendered (also in <Temp>/<Label>-pairs.txt)
+	StderrLog       string   `json:"stderrLog,omitempty"`
 }
 
 func render(ctx context.Context, c RenderConfig) (RenderResult, error) {

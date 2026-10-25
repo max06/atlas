@@ -471,7 +471,8 @@ Rules:
 
 The pin selects:
 
-- the image of the developer wrapper (`bin/atlas`), and
+- the image of the developer wrapper (`bin/atlas`),
+- the engine that renders each side of a review ([Reviews across engine versions](#reviews-across-engine-versions)), and
 - the Argo CD plugin that renders the Applications of the tree (next section).
 
 A tree without `atlas.yaml` renders as before, through the plugin that the consumer has installed.
@@ -721,6 +722,7 @@ jobs:
 | `fail-on-render-error` | `true` | Fail the step when the merge result does not render |
 | `in-place` | `true` | Render in the checkout (faster on GitHub runners) or in a workspace under `RUNNER_TEMP` |
 | `render-parallel`, `helmfile-timeout` | CPUs, `900` | Concurrent helmfile calls per render; seconds per call |
+| `engine-repository` | `ghcr.io/max06/atlas` | Image repository of pinned engines: a side whose `atlas.yaml` pins another minor renders in `<engine-repository>:<pin>` (see [Reviews across engine versions](#reviews-across-engine-versions)) |
 
 ### Outputs
 
@@ -731,8 +733,22 @@ jobs:
 | `render_mode`, `classify_mode` | `full` or `subset`; what the classifier decided |
 | `changed_resources`, `changed_releases` | Counts |
 | `shadow_result`, `shadow_missed` | `covered`, `uncovered`, `full`, `skipped` or `inconclusive`; deployments the classifier missed |
+| `engine_baseline`, `engine_pr` | Who rendered each side: `self` or the image of its pin |
 | `head`, `base` | The two commits |
 | `comment_body`, `summary_file` | The comment markdown; the path of the job summary |
+
+### Reviews across engine versions
+
+Each side renders with the engine that its [`atlas.yaml`](#atlasyaml-the-engine-pin) pins. Thus a PR that changes the pin shows what the new engine changes in the rendered manifests.
+
+- No `atlas.yaml`, or a pin of the action's own minor: the action renders the side itself.
+- A pin of another minor: the action renders the side in the image `<engine-repository>:<pin>`. It starts the image as a sibling container through the docker socket of the runner, with the checkout and `RUNNER_TEMP` at their own paths and as the runner's user. The action mounts the socket into its container when the socket exists.
+- The two talk through a request file and a result file (`atlas review ci side`, side contract 1). Releases before the contract cannot render a side: the review says so. If that is the baseline, the baseline counts as not rendered and the PR is not blocked; if it is the merge result, the review fails.
+- `engine-repository` comes from the workflow file. With `pull_request_target` that is the base branch, so a PR selects only the version, not the source of the image.
+- A build without a release version (a branch image) renders every side itself: it is the engine under test.
+- When the pins differ, the comment says so, and the job summary lists the engine of each side.
+
+`atlas review diff` on your machine renders both sides with one engine. If a side pins another minor than your `atlas`, it stops with an explanation. `--single-engine` compares anyway (content changes only).
 
 ### Migrating from the reusable workflow
 

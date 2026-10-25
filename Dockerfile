@@ -60,7 +60,9 @@ FROM alpine:3.24
 # recipients first; in CI, gpg state in the shared /github/home of one step
 # made gpg -d hang forever in the next step. Without gpg the PGP attempt fails
 # at once and age decrypts.
-RUN apk add --no-cache bash ca-certificates curl git jq
+# docker-cli: a review renders a side that pins another engine in that
+# release's image (sibling container through a mounted docker socket).
+RUN apk add --no-cache bash ca-certificates curl docker-cli git jq
 
 COPY --from=tools /usr/local/bin/ /usr/local/bin/
 
