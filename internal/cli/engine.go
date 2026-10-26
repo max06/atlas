@@ -1,14 +1,20 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/max06/atlas/internal/config"
+	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/engine"
 	"github.com/max06/atlas/internal/helmfile"
 )
@@ -59,6 +65,9 @@ func (e *engineFlags) layout(g *globalFlags) (engine.Layout, error) {
 
 // renderNative is `atlas render --engine native`: the engine writes the
 // instance states and the values of every release, helmfile renders them.
+// Like the helmfile backend: leaf cluster names resolve and unknown names
+// fail with suggestions (not in Argo CD mode, where the plugin env is
+// taken as given), and the stage-1 filter is backed by release selectors.
 func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selection, argocd bool, outputDir string, extra []string) error {
 	if argocd {
 		if err := sel.fromArgoCD(); err != nil {
@@ -75,17 +84,18 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 	if err != nil {
 		return err
 	}
-	clusters, err := resolveNativeClusters(l, sel.clusters)
-	if err != nil {
-		return err
+	if !argocd {
+		if err := resolveNativeNames(l, sel); err != nil {
+			return err
+		}
 	}
 	eng, err := engine.New(l, engine.Switches{SkipSecrets: sel.keyless(argocd)})
 	if err != nil {
 		return err
 	}
 	args := helmfile.TemplateArgs()
-	var opts engine.GenerateOptions
 	r := helmfile.Runner{Binary: g.helmfile, File: "helmfile.yaml", Stderr: os.Stderr}
+	opts := engine.GenerateOptions{}
 	if argocd {
 		env, err := argoCDAppEnv()
 		if err != nil {
@@ -106,12 +116,19 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 	if os.Getenv("ATLAS_NATIVE_KEEP") == "" {
 		defer os.RemoveAll(dir)
 	} else {
-		fmt.Fprintf(os.Stderr, "atlas: native render kept in %s\n", dir)
-	}
-	if _, err := eng.Generate(dir, engine.Filter{Clusters: clusters, Deployments: sel.deployments}, opts); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "atlas: native render kept in %s (values files may hold decrypted secrets)\n", dir)
 	}
 	r.Dir = dir
+	if truthy(os.Getenv("HELMFILE_CACHE_CLEANUP")) || truthy(os.Getenv("ARGOCD_ENV_HELMFILE_CACHE_CLEANUP")) {
+		if err := r.Run(cmd.Context(), helmfile.Options{}, io.Discard, "cache", "cleanup"); err != nil {
+			return err
+		}
+	}
+	opts.Prepare = buildPreparer(cmd.Context(), r)
+	if _, err := eng.Generate(dir, engine.Filter{Clusters: sel.clusters, Deployments: sel.deployments}, opts); err != nil {
+		return err
+	}
+	args = append(args, sel.selectors()...)
 	if outputDir != "" {
 		abs, err := filepath.Abs(outputDir)
 		if err != nil {
@@ -122,34 +139,76 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 	return r.Run(cmd.Context(), helmfile.Options{}, cmd.OutOrStdout(), append(args, extra...)...)
 }
 
-// resolveNativeClusters accepts full cluster paths and leaf names (like the
-// helmfile backend), resolved against the native discovery.
-func resolveNativeClusters(l engine.Layout, names []string) ([]string, error) {
-	if len(names) == 0 {
-		return nil, nil
+// buildPreparer runs `helmfile build` on the generated root: the releases
+// as helmfile prepares them (rendered release templates, commonLabels,
+// defaults) are the .Release of the values computation.
+func buildPreparer(ctx context.Context, r helmfile.Runner) engine.Preparer {
+	return func(root string) (map[string][]engine.PreparedRelease, error) {
+		var log bytes.Buffer
+		br := r
+		br.File, br.Dir, br.Stderr = root, filepath.Dir(root), &log
+		out, err := br.Output(ctx, helmfile.Options{}, "build")
+		if err != nil {
+			return nil, withLog(fmt.Errorf("native engine: helmfile build of the generated states: %w", err), &log)
+		}
+		prepared := map[string][]engine.PreparedRelease{}
+		dec := yaml.NewDecoder(bytes.NewReader(out))
+		for {
+			var state struct {
+				FilePath string `yaml:"filepath"`
+				Releases []struct {
+					Name        string            `yaml:"name"`
+					Namespace   string            `yaml:"namespace"`
+					Chart       string            `yaml:"chart"`
+					Version     string            `yaml:"version"`
+					KubeContext string            `yaml:"kubeContext"`
+					Labels      map[string]string `yaml:"labels"`
+				} `yaml:"releases"`
+			}
+			err := dec.Decode(&state)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("native engine: parse helmfile build output: %w", err)
+			}
+			var releases []engine.PreparedRelease
+			for _, rel := range state.Releases {
+				releases = append(releases, engine.PreparedRelease{Name: rel.Name, Namespace: rel.Namespace, Chart: rel.Chart, Version: rel.Version, KubeContext: rel.KubeContext, Labels: rel.Labels})
+			}
+			if _, seen := prepared[state.FilePath]; !seen {
+				prepared[state.FilePath] = releases
+			}
+		}
+		return prepared, nil
+	}
+}
+
+// resolveNativeNames resolves leaf cluster names to full paths and checks
+// the deployment names, with the messages of the helmfile backend.
+func resolveNativeNames(l engine.Layout, sel *selection) error {
+	if len(sel.clusters) == 0 && len(sel.deployments) == 0 {
+		return nil
 	}
 	pairs, err := engine.Discover(l, engine.Filter{})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	known := map[string]string{} // leaf → full path
-	full := map[string]bool{}
+	m := &discovery.Map{}
 	for _, p := range pairs {
-		known[p.ClusterName] = p.Cluster
-		full[p.Cluster] = true
+		m.Pairs = append(m.Pairs, discovery.Pair{Cluster: p.Cluster, ClusterName: p.ClusterName, DeploymentName: p.DeploymentName})
 	}
-	out := make([]string, 0, len(names))
-	for _, n := range names {
-		switch {
-		case full[n]:
-			out = append(out, n)
-		case known[n] != "":
-			out = append(out, known[n])
-		default:
-			return nil, fmt.Errorf("unknown cluster %q", n)
+	for i, c := range sel.clusters {
+		if sel.clusters[i], err = m.ResolveCluster(c); err != nil {
+			return err
 		}
 	}
-	return out, nil
+	for _, d := range sel.deployments {
+		if err := m.CheckDeployment(d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // newNativeCmd is the hidden `atlas native` group: entry points of the native
@@ -164,7 +223,7 @@ func newNativeCmd(g *globalFlags) *cobra.Command {
 		PersistentPreRun: func(*cobra.Command, []string) {},
 	}
 	var e engineFlags
-	var out string
+	var out, namespace string
 	gen := &cobra.Command{
 		Use:   "generate",
 		Short: "Write the native states of the tree into --out (root: <out>/helmfile.yaml)",
@@ -191,11 +250,15 @@ ATLAS_REDACT_SECRETS=true, ATLAS_REDACT_MAPS=1, ATLAS_DISCOVERY_MAP=1.`,
 				_, err = eng.GenerateDiscoveryMap(out, f)
 				return err
 			}
-			_, err = eng.Generate(out, f, engine.GenerateOptions{})
+			_, err = eng.Generate(out, f, engine.GenerateOptions{
+				NamespaceOverride: namespace,
+				Prepare:           buildPreparer(cmd.Context(), helmfile.Runner{Binary: g.helmfile, Stderr: os.Stderr}),
+			})
 			return err
 		},
 	}
 	e.register(gen)
+	gen.Flags().StringVar(&namespace, "namespace", "", "helmfile's --namespace of the render (the .Release.Namespace of the values)")
 	gen.Flags().StringVar(&out, "out", "", "output directory")
 	_ = gen.MarkFlagRequired("out")
 	cmd.AddCommand(gen)

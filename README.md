@@ -429,7 +429,14 @@ atlas discover --engine native               # the discovery map from the native
 
 **Container image and wrapper.** `ghcr.io/max06/atlas:<version>` carries the CLI plus the toolchain it is tested with (helm, helmfile, kustomize, sops, the redaction plugin). Copy [`contrib/atlas-wrapper.sh`](contrib/atlas-wrapper.sh) into a consumer repository as `bin/atlas`; it needs only docker and git. The wrapper mounts the repository at its own absolute path, runs as your uid, keeps charts and helmfile states in the named volume `atlas-cache`, and passes `SOPS_AGE_KEY_FILE` only with `--decrypt`/`--redact`. `ATLAS_IMAGE=<ref>` runs another build (for example a branch test image); otherwise the tag comes from `spec.engine` in [`atlas.yaml`](#atlasyaml-the-engine-pin), then from the wrapper's default. A moving atlas ref in the entry helmfile (a branch) stays cached in the volume: `docker volume rm atlas-cache` refreshes it.
 
-**Native engine (experimental).** `--engine native` runs the logic of the ATLAS templates in Go instead of the helmfile templates that the entry pins. It reads the directories from `atlas.yaml` (or `--templates`, `--deployments`). The tpl context is the one of helmfile (sprig plus helmfile's functions, the helper templates of `templates/_*.tpl`), so templates and values files render the same. Today `discover` supports it; the result equals the map of the templates (tested on every fixture root).
+**Native engine (experimental).** `--engine native` runs the logic of the ATLAS templates in Go instead of the helmfile templates that the entry pins: discovery, the deployment definitions, the hierarchy and instance values (SOPS included), the release rewrite and the redaction. helmfile then renders plain, generated states: no ATLAS template is evaluated. The engine reads the directories from `atlas.yaml` (or `--templates`, `--deployments`). Its tpl context is the one of helmfile (sprig plus helmfile's functions, the atlas templates directory as base path with the helpers of `templates/_*.tpl`), so templates and values files render the same.
+
+```bash
+atlas discover --engine native               # the discovery map
+atlas render --engine native -c zulu -d app  # manifests (keyless by default, --decrypt for SOPS)
+```
+
+The oracle is the template engine: `ATLAS_ENGINE=native` (with `ATLAS_CLI`) runs the core bats suites against the native engine through a helmfile shim, and full renders of consumer trees are compared file by file. `--redact` and the review pipeline still use the template engine.
 
 `-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`). `-c` takes the full cluster path or the leaf name; an unknown cluster or deployment fails with the nearest known names.
 

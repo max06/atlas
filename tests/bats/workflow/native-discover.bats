@@ -18,7 +18,8 @@ setup() {
 # template map gets no ATLAS_* switch, like `atlas discover`; an empty charts
 # list is made explicit (the CLI's JSON omits it).
 _template_map() {
-  (cd "$(_repo_root)/tests" && ATLAS_DISCOVERY_MAP=1 \
+  # the oracle is the template engine, also when the suites run native
+  (cd "$(_repo_root)/tests" && ATLAS_DISCOVERY_MAP=1 ATLAS_NATIVE_SHIM_OFF=1 \
     helmfile -f helmfile.yaml.gotmpl build --allow-no-matching-release \
       --state-values-set "atlas.deploymentDefinitions=$1,atlas.appTemplates=$2" 2>"$TEST_TEMP/template.err") |
     yq -o json 'select(.renderedvalues.atlasDiscovery) | .renderedvalues.atlasDiscovery' |

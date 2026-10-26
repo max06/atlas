@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"reflect"
 	"strings"
 )
 
@@ -379,7 +380,15 @@ func applyListOverride(release, instance map[string]any, templateDir, deployment
 			if err != nil {
 				return err
 			}
-			cl, _ := current.([]any)
+			// sprig's concat takes lists only
+			var cl []any
+			switch c := current.(type) {
+			case nil:
+			case []any:
+				cl = c
+			default:
+				return fmt.Errorf("Cannot concat type %s as list", reflect.ValueOf(current).Kind())
+			}
 			release[field] = append(append([]any{}, cl...), converted...)
 		}
 	}
@@ -394,9 +403,14 @@ func convertPaths(target string, values any, field string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var entries []any
-	if err := json.Unmarshal(data, &entries); err != nil {
+	// `range $entry := (.values | fromJson)`: a list, or the values of a map
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, fmt.Errorf("%s: %w", field, err)
+	}
+	entries, err := rangeValues(decoded, field)
+	if err != nil {
+		return nil, err
 	}
 	out := []any{}
 	for _, entry := range entries {
