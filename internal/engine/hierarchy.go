@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -67,9 +68,27 @@ func (e *Engine) sopsLoad(file string, redact, skipSecrets bool) (map[string]any
 	return roundTrip(loaded, file)
 }
 
-// redactValue is atlas.redact.value (step C).
+// redactValue is `index (include "atlas.redact.value" $v | fromJson) "v"`:
+// the helper of templates/_redaction.tpl itself, run in the tpl context.
 func (e *Engine) redactValue(v map[string]any) (map[string]any, error) {
-	return nil, fmt.Errorf("native engine: redaction is not implemented yet")
+	out, err := e.includeJSON("atlas.redact.value", v)
+	if err != nil {
+		return nil, err
+	}
+	return asMap(out, "atlas.redact.value")
+}
+
+// includeJSON is `index (include name data | fromJson) "v"`.
+func (e *Engine) includeJSON(name string, data any) (any, error) {
+	text, err := e.T.Tpl(`{{ include "`+name+`" . }}`, data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	var wrapped map[string]any
+	if err := json.Unmarshal([]byte(text), &wrapped); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return wrapped["v"], nil
 }
 
 // Hierarchy is atlas.hierarchy.merged: global → group → cluster →

@@ -31,6 +31,9 @@ func (e *Engine) Generate(dir string, f Filter, o GenerateOptions) (string, erro
 			return "", err
 		}
 	}
+	if err := writeYAML(filepath.Join(dir, "states", CarrierFile), map[string]any{"releases": []any{}}); err != nil {
+		return "", err
+	}
 	var states []any
 	for _, p := range pairs {
 		instances, err := e.Instances(p)

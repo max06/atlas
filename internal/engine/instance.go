@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 )
@@ -131,9 +133,6 @@ func (e *Engine) instanceState(p Pair, values map[string]any) (*Instance, error)
 			return nil, fmt.Errorf("apps[].nameStyle must be 'prefix' or 'suffix', got: %q (template=%s instance=%s)", nameStyle, inst["template"], inst["name"])
 		}
 	}
-	if atlas["redactSecrets"] == true || atlas["redactMaps"] == true {
-		return nil, fmt.Errorf("native engine: redaction is not implemented yet")
-	}
 
 	releases, err := field(template, "releases", templateFile)
 	if err != nil {
@@ -145,6 +144,7 @@ func (e *Engine) instanceState(p Pair, values map[string]any) (*Instance, error)
 	}
 	result := &Instance{Pair: p, Template: fmt.Sprintf("%v", inst["template"]), Name: fmt.Sprintf("%v", inst["name"]), Values: values, State: template}
 	deploymentDir := path.Dir(fmt.Sprintf("%s", atlas["deployment"].(map[string]any)["deploymentPath"]))
+	redactMaps := map[string]any{}
 	for _, r := range releaseList {
 		release, ok := r.(map[string]any)
 		if !ok {
@@ -243,6 +243,9 @@ func (e *Engine) instanceState(p Pair, values map[string]any) (*Instance, error)
 		if needsMunge {
 			release["name"] = munged(release["name"], inst["name"], true, nameStyle)
 		}
+		if err := e.redaction(values, release, redactMaps); err != nil {
+			return nil, err
+		}
 		result.Releases = append(result.Releases, release)
 	}
 
@@ -259,7 +262,90 @@ func (e *Engine) instanceState(p Pair, values map[string]any) (*Instance, error)
 	}
 	template["commonLabels"] = labels
 	template["environments"] = map[string]any{"default": map[string]any{"values": []any{map[string]any{"atlas": atlas}}}}
+	if atlas["redactMaps"] == true {
+		// the release-less carrier state (see Generate) hands the maps out
+		existing, err := list(template, "helmfiles")
+		if err != nil {
+			return nil, err
+		}
+		template["helmfiles"] = append(append([]any{}, existing...), map[string]any{
+			"path": CarrierFile,
+			"values": []any{map[string]any{"atlasRedactMaps": map[string]any{
+				"version":        1,
+				"cluster":        deployment["cluster"],
+				"deploymentName": deployment["deploymentName"],
+				"releases":       redactMaps,
+			}}},
+		})
+	}
 	return result, nil
+}
+
+// CarrierFile is the release-less carrier state next to the instance
+// states (helmfile.discovery-map.yaml of the templates).
+const CarrierFile = "helmfile.discovery-map.yaml"
+
+// redaction is the REDACTION POST-RENDERER WIRING block of
+// helmfile.instance.yaml.gotmpl: the replacement map of the release from
+// the real and the redacted values, handed out through the carrier
+// (redactMaps) or the atlas-redact post-renderer (redactSecrets).
+func (e *Engine) redaction(values, release, redactMaps map[string]any) error {
+	atlas := values["atlas"].(map[string]any)
+	maps, secrets := truthy(atlas["redactMaps"]), truthy(atlas["redactSecrets"])
+	replMap := map[string]any{}
+	if maps || secrets {
+		ns, err := get(release, "namespace", "")
+		if err != nil {
+			return err
+		}
+		relCtx := map[string]any{"Name": release["name"], "Namespace": ns}
+		real, err := e.Values(values, relCtx, false)
+		if err != nil {
+			return err
+		}
+		if real, err = roundTrip(real, "values"); err != nil {
+			return err
+		}
+		redacted, err := e.Values(values, relCtx, true)
+		if err != nil {
+			return err
+		}
+		if redacted, err = roundTrip(redacted, "redacted values"); err != nil {
+			return err
+		}
+		out, err := e.includeJSON("atlas.diff.values", map[string]any{"real": real, "redacted": redacted})
+		if err != nil {
+			return err
+		}
+		if replMap, err = asMap(out, "atlas.diff.values"); err != nil {
+			return err
+		}
+		if replMap == nil {
+			replMap = map[string]any{}
+		}
+	}
+	switch {
+	case maps:
+		redactMaps[fmt.Sprintf("%v", release["name"])] = replMap
+	case secrets:
+		data, err := json.Marshal(replMap)
+		if err != nil {
+			return err
+		}
+		args := base64.StdEncoding.EncodeToString(data)
+		if len(args) > 1048576 {
+			deployment := atlas["deployment"].(map[string]any)
+			return fmt.Errorf("atlas-redact: replacement map is %vKB, exceeding the 1MB safety limit for postRendererArgs (ARG_MAX is ~2MB). Cluster=%s Deployment=%s Release=%s", float64(len(args))/1024, deployment["cluster"], deployment["deploymentName"], release["name"])
+		}
+		release["postRenderer"] = "atlas-redact"
+		if dir := os.Getenv("ATLAS_SIDEDUMP_MAP_DIR"); dir != "" {
+			deployment := atlas["deployment"].(map[string]any)
+			release["postRendererArgs"] = []any{args, fmt.Sprintf("%s/%s/%s/%s.json", dir, deployment["cluster"], deployment["deploymentName"], release["name"])}
+		} else {
+			release["postRendererArgs"] = []any{args}
+		}
+	}
+	return nil
 }
 
 // applyListOverride is atlas.applyListOverride: template-relative paths of
