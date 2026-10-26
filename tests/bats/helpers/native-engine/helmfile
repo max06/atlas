@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# helmfile shim of the native engine backend (ATLAS_ENGINE=native, see
+# render.bash). A call with the ATLAS test entry (tests/helmfile.yaml.gotmpl)
+# renders the native states first (`atlas native generate`, the same ATLAS_*
+# switches and atlas.* state values as the entry) and runs the real helmfile
+# on them with the remaining arguments. Every other call, and every call with
+# ATLAS_NATIVE_SHIM_OFF=1 (tests whose oracle is the template engine), passes
+# through unchanged. So each test runs unchanged against both engines.
+set -uo pipefail
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+real=""
+IFS=: read -ra path_dirs <<< "$PATH"
+for d in "${path_dirs[@]}"; do
+  [ "$(cd "$d" 2>/dev/null && pwd)" = "$self_dir" ] && continue
+  if [ -x "$d/helmfile" ]; then real="$d/helmfile"; break; fi
+done
+[ -n "$real" ] || { echo "native-engine shim: no real helmfile on PATH" >&2; exit 127; }
+[ "${ATLAS_NATIVE_SHIM_OFF:-}" = "1" ] && exec "$real" "$@"
+
+file="" namespace=""
+args=() state_values=()
+original=("$@")
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f|--file) file="$2"; shift 2 ;;
+    --file=*) file="${1#--file=}"; shift ;;
+    --state-values-set) state_values+=("$2"); shift 2 ;;
+    --state-values-set=*) state_values+=("${1#--state-values-set=}"); shift ;;
+    --state-values-file|--state-values-file=*)
+      echo "native-engine shim: --state-values-file is not supported" >&2; exit 2 ;;
+    -n|--namespace) namespace="$2"; args+=("$1" "$2"); shift 2 ;;
+    --namespace=*) namespace="${1#--namespace=}"; args+=("$1"); shift ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+entry_dir=""
+case "$file" in
+  */tests/helmfile.yaml.gotmpl|tests/helmfile.yaml.gotmpl|helmfile.yaml.gotmpl)
+    entry_dir="$(cd "$(dirname "$file")" && pwd)" ;;
+esac
+# only the ATLAS test entry, not another tree's helmfile.yaml.gotmpl
+if [ -z "$entry_dir" ] || ! [ -d "$entry_dir/templates/app1" ]; then
+  exec "$real" "${original[@]}"
+fi
+
+templates="" deployments=""
+rest_values=()
+for v in "${state_values[@]}"; do
+  case "$v" in
+    *'{'*|*'\,'*) echo "native-engine shim: --state-values-set form not supported: $v" >&2; exit 2 ;;
+  esac
+  IFS=, read -ra pairs <<< "$v"
+  for kv in "${pairs[@]}"; do
+    case "$kv" in
+      atlas.deploymentDefinitions=*) deployments="${kv#*=}" ;;
+      atlas.appTemplates=*) templates="${kv#*=}" ;;
+      atlas.*) echo "native-engine shim: state value $kv is not supported" >&2; exit 2 ;;
+      *) rest_values+=(--state-values-set "$kv") ;;
+    esac
+  done
+done
+
+out="$(mktemp -d "${BATS_RUN_TMPDIR:-/tmp}/native-states.XXXXXX")"
+"${ATLAS_CLI:?ATLAS_ENGINE=native needs ATLAS_CLI}" native generate -C "$entry_dir" \
+  ${templates:+--templates "$templates"} ${deployments:+--deployments "$deployments"} \
+  ${namespace:+--namespace "$namespace"} --out "$out" || exit 1
+exec "$real" -f "$out/helmfile.yaml" "${rest_values[@]}" "${args[@]}"

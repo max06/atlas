@@ -103,3 +103,12 @@ jobs:
         env:
           ATLAS_REVIEW_BACKEND: cli
         run: bats --recursive --jobs 4 tests/bats/workflow/ tests/bats/redaction/redaction-replay.bats
+
+      # The core suites (values, redaction, integration) against the native
+      # Go engine: a helmfile shim renders the native states for every call
+      # with the test entry (tests/bats/helpers/native-engine), the
+      # assertions stay the ones of the templates.
+      - name: Run the core suites against the native engine
+        env:
+          ATLAS_ENGINE: native
+        run: bats --recursive --jobs 4 tests/bats/values/ tests/bats/redaction/ tests/bats/integration/

@@ -1,0 +1,3 @@
+apps:
+  - template: rel
+  - template: patched

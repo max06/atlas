@@ -1,0 +1,22 @@
+helmDefaults:
+  kubeContext: kc-default
+releases:
+  # two releases with one name in two namespaces
+  - name: x
+    namespace: nsa
+    chart: ../../../charts/chart1
+    labels:
+      template: overridden # commonLabels win
+    values:
+      - release.yaml.gotmpl
+  - name: x
+    namespace: nsb
+    chart: ../../../charts/chart1
+    values:
+      - release.yaml.gotmpl
+  # a release field rendered by helmfile at load time
+  - name: tmplns
+    namespace: '{{`{{ .Values.atlas.deployment.clusterName }}`}}-ns'
+    chart: ../../../charts/chart1
+    values:
+      - release.yaml.gotmpl

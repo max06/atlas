@@ -14,12 +14,14 @@
 # The Go build and the tool downloads run on the build platform and target
 # TARGETARCH, so they need no emulation; only the final stage's apk runs
 # emulated when cross-building.
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
+# the native engine embeds the helper templates (templates/_*.tpl)
+COPY templates/ templates/
 ARG VERSION=dev
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \

@@ -1,0 +1,2 @@
+apps:
+  - template: {{ if isFile "helmfile.all.yaml.gotmpl" }}t1{{ else }}none{{ end }}{{ exec "true" (list) }}

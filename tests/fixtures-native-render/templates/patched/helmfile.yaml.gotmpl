@@ -1,0 +1,6 @@
+releases:
+  - name: patched
+    chart: ../../../charts/chart1
+    # a map-shaped list field: the template ranges over its values
+    strategicMergePatches:
+      p: patch.yaml

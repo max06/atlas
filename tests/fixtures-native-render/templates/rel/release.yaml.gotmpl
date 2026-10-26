@@ -1,0 +1,5 @@
+release:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  kubeContext: {{ .Release.KubeContext }}
+  labels: {{ .Release.Labels | toJson }}

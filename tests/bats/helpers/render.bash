@@ -25,6 +25,14 @@
 #                         atlas-redact helm post-renderer to scrub SOPS-tainted
 #                         values while preserving non-secret ones)
 RENDER_DIR="${BATS_RUN_TMPDIR:-/tmp}/atlas-bats-render"
+
+# ATLAS_ENGINE=native runs every test against the native Go engine: a
+# helmfile shim on PATH renders the native states for calls with the test
+# entry (helpers/native-engine/helmfile). Needs ATLAS_CLI.
+if [ "${ATLAS_ENGINE:-}" = "native" ]; then
+  PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/native-engine:$PATH"
+  export PATH
+fi
 RENDER_DIR_REDACTED="${BATS_RUN_TMPDIR:-/tmp}/atlas-bats-render-redacted"
 
 # _repo_root returns the ATLAS repo root.
