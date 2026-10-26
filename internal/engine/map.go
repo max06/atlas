@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/max06/atlas/internal/discovery"
@@ -22,12 +23,19 @@ func DiscoveryMap(l Layout, f Filter) (*discovery.Map, error) {
 	if err != nil {
 		return nil, err
 	}
+	e := New(l, Switches{SkipSecrets: true})
 	m := &discovery.Map{Version: 2, Capabilities: Capabilities, DeploymentsRoot: l.Deployments, TemplatesRoot: l.Templates, Pairs: []discovery.Pair{}}
 	for _, p := range pairs {
+		templates, charts, err := e.pairTemplatesAndCharts(p)
+		if err != nil {
+			return nil, fmt.Errorf("%s/%s: %w", p.Cluster, p.DeploymentName, err)
+		}
 		m.Pairs = append(m.Pairs, discovery.Pair{
 			Cluster: p.Cluster, ClusterName: p.ClusterName, ClusterGroup: p.ClusterGroup,
 			DeploymentName: p.DeploymentName,
 			DeploymentPath: strings.TrimPrefix(p.DeploymentPath, l.Root+"/"),
+			Templates:      templates,
+			Charts:         charts,
 		})
 	}
 	return m, nil

@@ -16,6 +16,7 @@ on:
       - go.sum
       - cmd/**
       - internal/**
+      - templates/**
       - .github/actions/**
       - .github/workflows/image.yml
   push:
@@ -27,6 +28,7 @@ on:
       - go.sum
       - cmd/**
       - internal/**
+      - templates/**
       - .github/actions/**
       - .github/workflows/image.yml
   workflow_dispatch:
