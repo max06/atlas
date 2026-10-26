@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -31,15 +33,13 @@ var (
 	baseErr  error
 )
 
-// templatesBase extracts the embedded atlas templates into a directory, once
-// per process.
+// templatesBase is the directory with the embedded atlas templates: one
+// directory per content (a hash of the files) in the user cache, shared by
+// every process of this build and written atomically, so nothing piles up.
 func templatesBase() (string, error) {
 	baseOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "atlas-templates-")
-		if err != nil {
-			baseErr = err
-			return
-		}
+		h := sha256.New()
+		var names []string
 		baseErr = fs.WalkDir(templates.Files, ".", func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
@@ -48,8 +48,50 @@ func templatesBase() (string, error) {
 			if err != nil {
 				return err
 			}
-			return os.WriteFile(filepath.Join(dir, p), data, 0o644)
+			names = append(names, p)
+			fmt.Fprintf(h, "%s\x00%d\x00", p, len(data))
+			h.Write(data)
+			return nil
 		})
+		if baseErr != nil {
+			return
+		}
+		cache, err := os.UserCacheDir()
+		if err != nil || os.MkdirAll(filepath.Join(cache, "atlas"), 0o755) != nil {
+			cache = os.TempDir() // no writable user cache
+		}
+		dir := filepath.Join(cache, "atlas", "templates-"+hex.EncodeToString(h.Sum(nil))[:16])
+		if _, err := os.Stat(filepath.Join(dir, ".complete")); err == nil {
+			baseDir = dir
+			return
+		}
+		if baseErr = os.MkdirAll(filepath.Dir(dir), 0o755); baseErr != nil {
+			return
+		}
+		tmp, err := os.MkdirTemp(filepath.Dir(dir), ".templates-")
+		if err != nil {
+			baseErr = err
+			return
+		}
+		for _, n := range names {
+			data, _ := templates.Files.ReadFile(n)
+			if baseErr = os.WriteFile(filepath.Join(tmp, n), data, 0o644); baseErr != nil {
+				os.RemoveAll(tmp)
+				return
+			}
+		}
+		if baseErr = os.WriteFile(filepath.Join(tmp, ".complete"), nil, 0o644); baseErr != nil {
+			os.RemoveAll(tmp)
+			return
+		}
+		// another process may have won the race: its copy is the same
+		if err := os.Rename(tmp, dir); err != nil {
+			os.RemoveAll(tmp)
+			if _, statErr := os.Stat(filepath.Join(dir, ".complete")); statErr != nil {
+				baseErr = err
+				return
+			}
+		}
 		baseDir = dir
 	})
 	return baseDir, baseErr
