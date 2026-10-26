@@ -12,8 +12,6 @@ import (
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
-	"github.com/helmfile/helmfile/pkg/filesystem"
-	"github.com/helmfile/helmfile/pkg/tmpl"
 
 	"github.com/max06/atlas/templates"
 )
@@ -23,7 +21,7 @@ import (
 // directory as base path (its _*.tpl helpers in scope, relative paths and
 // exec there).
 type Templater struct {
-	ctx *tmpl.Context
+	ctx *tmplContext
 	dir string
 }
 
@@ -103,30 +101,26 @@ func NewTemplater() (*Templater, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &tmpl.Context{}
-	c.SetBasePath(dir)
-	c.SetFileSystem(filesystem.DefaultFileSystem())
-	return &Templater{ctx: c, dir: dir}, nil
+	return &Templater{ctx: &tmplContext{basePath: dir}, dir: dir}, nil
 }
 
 // Tpl is `tpl text data`.
 func (t *Templater) Tpl(text string, data any) (string, error) {
-	return t.ctx.Tpl(text, data)
+	return t.ctx.tpl(text, data)
 }
 
 // The sprig and helmfile functions the templates call, with their exact
 // semantics (mergeOverwrite: mergo with override, an empty source value
 // does not override; deepCopy: copystructure).
 var (
-	funcs            = sprig.TxtFuncMap()
-	mergeOverwrite   = funcs["mergeOverwrite"].(func(map[string]any, ...map[string]any) any)
-	deepCopyFn       = funcs["deepCopy"].(func(any) any)
-	omit             = funcs["omit"].(func(map[string]any, ...string) map[string]any)
-	uniqFn           = funcs["uniq"].(func(any) []any)
-	sortAlpha        = funcs["sortAlpha"].(func(any) []string)
-	toStringFn       = funcs["toString"].(func(any) string)
-	helmfileGet      = (&tmpl.Context{}).CreateFuncMap()["get"].(func(string, ...any) (any, error))
-	fetchSecretValue = (&tmpl.Context{}).CreateFuncMap()["fetchSecretValue"].(func(string) (string, error))
+	funcs          = sprig.TxtFuncMap()
+	mergeOverwrite = funcs["mergeOverwrite"].(func(map[string]any, ...map[string]any) any)
+	deepCopyFn     = funcs["deepCopy"].(func(any) any)
+	omit           = funcs["omit"].(func(map[string]any, ...string) map[string]any)
+	uniqFn         = funcs["uniq"].(func(any) []any)
+	sortAlpha      = funcs["sortAlpha"].(func(any) []string)
+	toStringFn     = funcs["toString"].(func(any) string)
+	helmfileGet    = tmplGet
 )
 
 // merge is `$dst = mergeOverwrite $dst $src`: it mutates dst.
@@ -159,7 +153,7 @@ func untyped(v any) any {
 // fromYaml is helmfile's fromYaml. A template passes its result to a map
 // parameter: nil stays nil, anything else that is not a map is an error.
 func fromYamlMap(s, what string) (map[string]any, error) {
-	v, err := tmpl.FromYaml(s)
+	v, err := tmplFromYaml(s)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
@@ -179,7 +173,7 @@ func asMap(v any, what string) (map[string]any, error) {
 // roundTrip is `include ... | fromYaml` of a template that ends with
 // `{{ $x | toYaml }}`: the value as the caller sees it.
 func roundTrip(v map[string]any, what string) (map[string]any, error) {
-	s, err := tmpl.ToYaml(v)
+	s, err := tmplToYaml(v)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}

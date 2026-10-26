@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/helmfile/helmfile/pkg/tmpl"
 )
 
 // GenerateOptions control a generated render.
@@ -138,11 +136,11 @@ func writeState(file string, state map[string]any) error {
 			rest[k] = v
 		}
 	}
-	env, err := tmpl.ToYaml(map[string]any{"environments": state["environments"]})
+	env, err := tmplToYaml(map[string]any{"environments": state["environments"]})
 	if err != nil {
 		return err
 	}
-	body, err := tmpl.ToYaml(rest)
+	body, err := tmplToYaml(rest)
 	if err != nil {
 		return err
 	}
@@ -155,7 +153,7 @@ func writeState(file string, state map[string]any) error {
 func writeYAML(file string, v any) error { return writeYAMLMode(file, v, 0o644) }
 
 func writeYAMLMode(file string, v any, mode os.FileMode) error {
-	s, err := tmpl.ToYaml(v)
+	s, err := tmplToYaml(v)
 	if err != nil {
 		return err
 	}
