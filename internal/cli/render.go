@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/max06/atlas/internal/discovery"
+	"github.com/max06/atlas/internal/engine"
 	"github.com/max06/atlas/internal/helmfile"
 	"github.com/max06/atlas/internal/toolchain"
 )
@@ -176,10 +177,24 @@ func newInspectCmd(g *globalFlags) *cobra.Command {
 }
 
 func newDiscoverCmd(g *globalFlags) *cobra.Command {
-	return &cobra.Command{
+	var e engineFlags
+	cmd := &cobra.Command{
 		Use:   "discover",
 		Short: "Print the discovery map: every (cluster, deployment) with its templates and local charts",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if e.native() {
+				l, err := e.layout(g)
+				if err != nil {
+					return err
+				}
+				m, err := engine.DiscoveryMap(l, engine.Filter{})
+				if err != nil {
+					return err
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(m)
+			}
 			r, err := g.runner()
 			if err != nil {
 				return err
@@ -197,6 +212,8 @@ func newDiscoverCmd(g *globalFlags) *cobra.Command {
 			return enc.Encode(m)
 		},
 	}
+	e.register(cmd)
+	return cmd
 }
 
 func newDoctorCmd(_ *globalFlags) *cobra.Command {
