@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# helmfile shim of the native engine backend (ATLAS_ENGINE=native, see
+# render.bash). A call with the ATLAS test entry (tests/helmfile.yaml.gotmpl)
+# renders the native states first (`atlas native generate`, the same ATLAS_*
+# switches and atlas.* state values as the entry) and runs the real helmfile
+# on them with the remaining arguments. Every other call passes through. So
+# each test runs unchanged against both engines.
+set -uo pipefail
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+real=""
+IFS=: read -ra path_dirs <<< "$PATH"
+for d in "${path_dirs[@]}"; do
+  [ "$(cd "$d" 2>/dev/null && pwd)" = "$self_dir" ] && continue
+  if [ -x "$d/helmfile" ]; then real="$d/helmfile"; break; fi
+done
+[ -n "$real" ] || { echo "native-engine shim: no real helmfile on PATH" >&2; exit 127; }
+
+file="" templates="" deployments=""
+args=()
+state_values=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -f|--file) file="$2"; shift 2 ;;
+    --file=*) file="${1#--file=}"; shift ;;
+    --state-values-set) state_values+=("$2"); shift 2 ;;
+    --state-values-set=*) state_values+=("${1#--state-values-set=}"); shift ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+case "$file" in
+  */tests/helmfile.yaml.gotmpl|tests/helmfile.yaml.gotmpl|helmfile.yaml.gotmpl) ;;
+  *)
+    sv=()
+    for v in "${state_values[@]}"; do sv+=(--state-values-set "$v"); done
+    exec "$real" ${file:+-f "$file"} "${sv[@]}" "${args[@]}"
+    ;;
+esac
+entry_dir="$(cd "$(dirname "$file")" && pwd)"
+# only the ATLAS test entry, not another tree's helmfile.yaml.gotmpl
+[ -f "$entry_dir/templates/app1/helmfile.yaml.gotmpl" ] || [ -d "$entry_dir/deployments" ] || exec "$real" -f "$file" "${args[@]}"
+
+rest_values=()
+for v in "${state_values[@]}"; do
+  IFS=, read -ra pairs <<< "$v"
+  for kv in "${pairs[@]}"; do
+    case "$kv" in
+      atlas.deploymentDefinitions=*) deployments="${kv#*=}" ;;
+      atlas.appTemplates=*) templates="${kv#*=}" ;;
+      *) rest_values+=(--state-values-set "$kv") ;;
+    esac
+  done
+done
+
+out="$(mktemp -d "${BATS_RUN_TMPDIR:-/tmp}/native-states.XXXXXX")"
+"${ATLAS_CLI:?ATLAS_ENGINE=native needs ATLAS_CLI}" native generate -C "$entry_dir" \
+  ${templates:+--templates "$templates"} ${deployments:+--deployments "$deployments"} --out "$out" || exit 1
+exec "$real" -f "$out/helmfile.yaml" "${rest_values[@]}" "${args[@]}"

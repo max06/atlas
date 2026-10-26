@@ -62,7 +62,9 @@ func Discover(l Layout, f Filter) ([]Pair, error) {
 		return nil, err
 	}
 	clusters := map[string]bool{}
-	leafSeen := map[string][]string{}
+	// helmfile's get splits its key at dots: the template's lookup of a
+	// dotted leaf name goes into nested keys (kept as is, see below)
+	leafSeen := map[string]any{}
 	for _, match := range raw {
 		clusterPath := path.Dir(strings.TrimPrefix(match, dd+"/"))
 		// "." is the global apps/ directory itself
@@ -77,15 +79,27 @@ func Discover(l Layout, f Filter) ([]Pair, error) {
 		if leaf {
 			// before the filter: name collisions are a repository problem
 			name := path.Base(clusterPath)
-			leafSeen[name] = append(leafSeen[name], clusterPath)
+			seenAt, err := get(leafSeen, name, []any{})
+			if err != nil {
+				return nil, err
+			}
+			seenList, err := rangeValues(seenAt, "leaf names")
+			if err != nil {
+				return nil, err
+			}
+			leafSeen[name] = append(append([]any{}, seenList...), clusterPath)
 		}
 		if leaf && (len(f.Clusters) == 0 || has(f.Clusters, clusterPath)) {
 			clusters[clusterPath] = true
 		}
 	}
 	for _, name := range sortedKeys(leafSeen) {
-		if paths := leafSeen[name]; len(paths) > 1 {
-			return nil, fmt.Errorf("cluster discovery: duplicate leaf cluster name %q used by: %s — leaf names must be unique across the repo (clusterName names downstream resources)", name, strings.Join(paths, ", "))
+		if paths, _ := leafSeen[name].([]any); len(paths) > 1 {
+			strs := make([]string, len(paths))
+			for i, p := range paths {
+				strs[i] = fmt.Sprintf("%v", p)
+			}
+			return nil, fmt.Errorf("cluster discovery: duplicate leaf cluster name %q used by: %s — leaf names must be unique across the repo (clusterName names downstream resources)", name, strings.Join(strs, ", "))
 		}
 	}
 

@@ -18,12 +18,17 @@ var Capabilities = []string{
 
 // DiscoveryMap is the discovery map mode of helmfile.all.yaml.gotmpl:
 // version 2, every pair with its repository-relative deployment.yaml path.
-func DiscoveryMap(l Layout, f Filter) (*discovery.Map, error) {
+func DiscoveryMap(l Layout, f Filter, s Switches) (*discovery.Map, error) {
 	pairs, err := Discover(l, f)
 	if err != nil {
 		return nil, err
 	}
-	e := New(l, Switches{SkipSecrets: true})
+	// the state-build walk never decrypts; atlas.skipSecrets in .Values
+	// is the caller's switch, as in the entry
+	e, err := New(l, s)
+	if err != nil {
+		return nil, err
+	}
 	m := &discovery.Map{Version: 2, Capabilities: Capabilities, DeploymentsRoot: l.Deployments, TemplatesRoot: l.Templates, Pairs: []discovery.Pair{}}
 	for _, p := range pairs {
 		templates, charts, err := e.pairTemplatesAndCharts(p)

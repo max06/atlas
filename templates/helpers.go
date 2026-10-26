@@ -1,13 +1,16 @@
-// Package templates embeds the helper templates of the helmfile engine.
+// Package templates embeds the helmfile templates of ATLAS for the native
+// engine (internal/engine).
 //
-// helmfile loads every _*.tpl of a state file's directory as named templates
-// into each template render, also into `tpl` calls on consumer files. The
-// native engine (internal/engine) gives its tpl context the same helpers.
+// helmfile renders the atlas templates with this directory as base path:
+// every _*.tpl in it is a named template of each render (also of `tpl`
+// calls on consumer files), relative paths of readFile/isFile resolve in it
+// and exec runs in it. The native engine extracts the files into a real
+// directory and uses it as its base path, so all of that stays the same.
 package templates
 
 import "embed"
 
-// Helpers are the _*.tpl files of this directory.
+// Files are the template files of this directory.
 //
-//go:embed _*.tpl
-var Helpers embed.FS
+//go:embed *.gotmpl *.yaml _*.tpl
+var Files embed.FS

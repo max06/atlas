@@ -22,6 +22,7 @@ func newRenderCmd(g *globalFlags) *cobra.Command {
 		sel       selection
 		outputDir string
 		argocd    bool
+		eng       engineFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "render [-- extra helmfile template args]",
@@ -38,6 +39,10 @@ state under $XDG_CACHE_HOME/apps/<app>, and HELMFILE_CACHE_CLEANUP=true
 (sidecar env or plugin env) drops the cached remote states first — needed
 when the entry pins ATLAS to a branch.`,
 		RunE: func(cmd *cobra.Command, extra []string) error {
+			if eng.native() {
+				warnToolchain(cmd)
+				return renderNative(cmd, g, &eng, &sel, argocd, outputDir, extra)
+			}
 			r, err := g.runner()
 			if err != nil {
 				return err
@@ -84,6 +89,7 @@ when the entry pins ATLAS to a branch.`,
 	sel.register(cmd, "render", true)
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "o", "", "write one directory per release instead of stdout")
 	cmd.Flags().BoolVar(&argocd, "argocd", false, "Argo CD plugin mode (filter + namespace from the plugin environment)")
+	eng.register(cmd)
 	return cmd
 }
 
@@ -187,7 +193,8 @@ func newDiscoverCmd(g *globalFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				m, err := engine.DiscoveryMap(l, engine.Filter{})
+				// like the helmfile backend's discover: no ATLAS_* switch set
+				m, err := engine.DiscoveryMap(l, engine.Filter{}, engine.Switches{})
 				if err != nil {
 					return err
 				}

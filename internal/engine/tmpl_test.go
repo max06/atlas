@@ -10,7 +10,10 @@ import (
 // The tpl context is helmfile's: its `get` (not sprig's), missingkey=error,
 // and the atlas helpers of templates/_*.tpl in scope.
 func TestTemplater(t *testing.T) {
-	tp := NewTemplater()
+	tp, err := NewTemplater()
+	if err != nil {
+		t.Fatal(err)
+	}
 	out, err := tp.Tpl(`{{ .Values.a | upper }} {{ get "b.c" "none" .Values }} {{ sprigGet .Values "a" }}`, map[string]any{"Values": map[string]any{"a": "hi", "b": map[string]any{"c": 1}}})
 	if err != nil || out != "HI 1 hi" {
 		t.Errorf("funcs: %q, %v", out, err)

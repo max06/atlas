@@ -39,11 +39,19 @@ func isDir(path string) (bool, error) {
 }
 
 // wildcard turns a path part with `*` (and `?`) into the template's regex.
+// sprig's regexMatch drops compile errors: an invalid pattern matches
+// nothing (a nil regex here).
 func wildcard(part string) (*regexp.Regexp, error) {
 	re := strings.ReplaceAll(part, "*", ".*")
 	re = strings.ReplaceAll(re, "?", ".")
-	return regexp.Compile("^" + re + "$")
+	compiled, err := regexp.Compile("^" + re + "$")
+	if err != nil {
+		return nil, nil
+	}
+	return compiled, nil
 }
+
+func matches(re *regexp.Regexp, name string) bool { return re != nil && re.MatchString(name) }
 
 // glob is `include "glob" pattern | fromJson`.
 func glob(pattern string) ([]string, error) {
@@ -96,7 +104,7 @@ func glob(pattern string) ([]string, error) {
 		if dir != "" {
 			full = dir + "/" + e.Name()
 		}
-		if (re != nil && re.MatchString(e.Name())) || (re == nil && base == e.Name()) {
+		if (strings.Contains(base, "*") && matches(re, e.Name())) || (!strings.Contains(base, "*") && base == e.Name()) {
 			results = append(results, full)
 		}
 	}
@@ -163,7 +171,7 @@ func globIterative(parts []string, index int, current string) ([]string, error) 
 			return nil, err
 		}
 		for _, e := range entries {
-			if !re.MatchString(e.Name()) {
+			if !matches(re, e.Name()) {
 				continue
 			}
 			p := join(e.Name())
@@ -251,7 +259,7 @@ func globRecursive(dir, pattern string) ([]string, error) {
 				if err != nil {
 					return nil, err
 				}
-				match = re.MatchString(e.Name())
+				match = matches(re, e.Name())
 			} else {
 				match = first == e.Name()
 			}

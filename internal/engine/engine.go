@@ -25,8 +25,12 @@ type Switches struct {
 }
 
 // New builds an engine for a layout.
-func New(l Layout, s Switches) *Engine {
-	return &Engine{
+func New(l Layout, s Switches) (*Engine, error) {
+	t, err := NewTemplater()
+	if err != nil {
+		return nil, err
+	}
+	return &Engine{T: t,
 		Layout: l,
 		Atlas: map[string]any{
 			"cwd":                   l.Root,
@@ -36,8 +40,18 @@ func New(l Layout, s Switches) *Engine {
 			"skipSecrets":           s.SkipSecrets,
 			"redactMaps":            s.RedactMaps,
 		},
-		T: NewTemplater(),
-	}
+		Sops: helmfileSops,
+	}, nil
+}
+
+// helmfileSops is the templates' decryption: helmfile's fetchSecretValue
+// with "ref+sops://<path>?format=yaml" (vals, sops library).
+func helmfileSops(path string) (string, error) {
+	return fetchSecretValue("ref+sops://" + path + "?format=yaml")
+}
+
+func (e *Engine) switches() Switches {
+	return Switches{RedactSecrets: e.Atlas["redactSecrets"] == true, SkipSecrets: e.Atlas["skipSecrets"] == true, RedactMaps: e.Atlas["redactMaps"] == true}
 }
 
 // pairValues is .Values of a pair's states: the atlas object with
@@ -153,7 +167,11 @@ func localDependencies(dir string, seen []string) ([]string, error) {
 		return nil, err
 	}
 	for _, dep := range deps {
-		repo, err := str(dep, "repository", "")
+		repoV, err := get(dep, "repository", "")
+		if err != nil {
+			return nil, err
+		}
+		repo, err := rawString(repoV, chartFile+": dependencies[].repository")
 		if err != nil {
 			return nil, err
 		}
@@ -273,17 +291,4 @@ func (e *Engine) pairTemplatesAndCharts(p Pair) ([]string, []string, error) {
 		}
 	}
 	return sortAlpha(uniqFn(templateNames)), sortAlpha(uniqFn(charts)), nil
-}
-
-// truthy is the template's truth of a value (`if $x`).
-func truthy(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case string:
-		return x != ""
-	case bool:
-		return x
-	}
-	return true
 }

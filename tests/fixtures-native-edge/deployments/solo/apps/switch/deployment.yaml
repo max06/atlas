@@ -1,0 +1,2 @@
+apps:
+  - template: {{ if .Values.atlas.skipSecrets }}t1{{ else }}none{{ end }}
