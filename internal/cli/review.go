@@ -261,8 +261,20 @@ render), also when the change does not reach them.
 			for _, ch := range changes {
 				fmt.Printf("%-8s %s\n", ch.Kind, ch.Release)
 				if patch {
-					d := exec.Command("git", "diff", "--no-index", "--no-color",
-						filepath.Join("base", ch.Release), filepath.Join("head", ch.Release))
+					// a release on one side only (added, removed) diffs
+					// against an empty directory: all of its files as + or -
+					sides := []string{filepath.Join("base", ch.Release), filepath.Join("head", ch.Release)}
+					for i, side := range sides {
+						if _, err := os.Stat(filepath.Join(outDir, side)); errors.Is(err, os.ErrNotExist) {
+							if err := os.MkdirAll(filepath.Join(outDir, "empty"), 0o755); err != nil {
+								return err
+							}
+							sides[i] = "empty"
+						}
+					}
+					// --no-pager: in a terminal (the wrapper passes the TTY into
+					// the container) git would start less for every release
+					d := exec.Command("git", "--no-pager", "diff", "--no-index", "--no-color", sides[0], sides[1])
 					d.Dir = outDir // short a/base/... b/head/... paths
 					d.Stdout, d.Stderr = os.Stdout, os.Stderr
 					_ = d.Run() // exit 1 = differences
