@@ -272,7 +272,9 @@ render), also when the change does not reach them.
 							sides[i] = "empty"
 						}
 					}
-					d := exec.Command("git", "diff", "--no-index", "--no-color", sides[0], sides[1])
+					// --no-pager: in a terminal (the wrapper passes the TTY into
+					// the container) git would start less for every release
+					d := exec.Command("git", "--no-pager", "diff", "--no-index", "--no-color", sides[0], sides[1])
 					d.Dir = outDir // short a/base/... b/head/... paths
 					d.Stdout, d.Stderr = os.Stdout, os.Stderr
 					_ = d.Run() // exit 1 = differences
