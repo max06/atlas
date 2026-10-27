@@ -188,3 +188,22 @@ setup() {
   [[ "$stderr" != *"base side renders with the native engine"* ]]
   [ "$output" = "no changes in rendered manifests" ]
 }
+
+@test "cli: promote plan links atoms on a shared deployment and --split separates them (helmfile engine)" {
+  git -C "$FIXTURE_REPO" checkout -q -b promote-from "$BASE_SHA"
+  printf 'promoteA: changed\n' >> "$FIXTURE_REPO/templates/app1/values.yaml.gotmpl"
+  printf 'releases:\n  - name: app-novals-b\n    chart: ../../charts/chart1\n    namespace: test\n    values:\n      - promoteB: changed\n' \
+    > "$FIXTURE_REPO/templates/app-novals-b/helmfile.yaml.gotmpl"
+  fixture_commit "$FIXTURE_REPO" "promote scenario"
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" promote plan --from promote-from --to "$BASE_SHA" --format json
+  [ "$status" -eq 0 ] || { echo "$stderr"; false; }
+  [ "$(jq -r '[.units[].id] | join(";")' <<<"$output")" = "template:app-novals-b + template:app1" ]
+  [ "$(jq -r '.units[0].status' <<<"$output")" = applies ]
+  # deployment7 has both templates: the shared pair links them
+  jq -e '.units[0].pairs | index("cluster1|deployment7")' <<<"$output" >/dev/null
+  run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" promote plan --from promote-from --to "$BASE_SHA" --split --format markdown
+  [ "$status" -eq 0 ] || { echo "$stderr"; false; }
+  [[ "$output" == *"- [ ] **template:app1**"* ]]
+  [[ "$output" == *"- [ ] **template:app-novals-b**"* ]]
+  [[ "$output" == *"split from template:app-novals-b + template:app1"* ]]
+}

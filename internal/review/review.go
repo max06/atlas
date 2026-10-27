@@ -485,3 +485,51 @@ func (s *Session) renderSide(ctx context.Context, dir string, pairs *[]string, o
 	wg.Wait()
 	return errors.Join(errs...)
 }
+
+// DiscoverTree is the discovery map of the tree in dir: the native engine's
+// when its atlas.yaml sets spec.native, else helmfile's (entry, binary).
+func DiscoverTree(ctx context.Context, dir, entry, binary string) (*discovery.Map, error) {
+	l, isNative, err := native.Layout(dir)
+	if err != nil {
+		return nil, err
+	}
+	if isNative {
+		return engine.DiscoveryMap(l, engine.Filter{}, engine.Switches{})
+	}
+	if _, err := os.Stat(filepath.Join(dir, entry)); err != nil {
+		return nil, fmt.Errorf("%s: %w", entry, ErrNoEntry)
+	}
+	s := &Session{Workspace: dir, Entry: entry, Binary: binary}
+	r, log := s.runner()
+	m, err := discovery.Discover(ctx, r)
+	if err != nil {
+		return nil, withLog(err, log)
+	}
+	return m, nil
+}
+
+// RenderTree renders the tree in dir into out like one side of a review
+// (the native engine when its atlas.yaml sets spec.native): the pairs, or
+// everything when pairs is nil. out is replaced. Its parent directory must
+// be private: the native engine keeps its states there while it renders.
+func RenderTree(ctx context.Context, dir, entry, binary string, pairs []string, out string, opts RenderOptions, log io.Writer) error {
+	if err := os.RemoveAll(out); err != nil {
+		return err
+	}
+	if log == nil {
+		log = io.Discard
+	}
+	s := &Session{Workspace: dir, Entry: entry, Binary: binary, Log: log}
+	var p *[]string
+	if pairs != nil {
+		p = &pairs
+	}
+	l, isNative, err := native.Layout(dir)
+	if err != nil {
+		return err
+	}
+	if isNative {
+		return s.renderNative(ctx, "tree", l, out, p, opts)
+	}
+	return s.renderSide(ctx, out, p, opts)
+}

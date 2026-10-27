@@ -22,6 +22,7 @@ package gitrev
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -231,4 +232,122 @@ func (r *Repo) Checkout(ctx context.Context, rev string) error {
 	}
 	_, err := r.git(ctx, nil, "clean", "-fdq")
 	return err
+}
+
+// MergeBase returns the best common ancestor of two revisions. A shallow
+// clone without the shared history has none: that is an error.
+func (r *Repo) MergeBase(ctx context.Context, a, b string) (string, error) {
+	out, err := r.git(ctx, nil, "merge-base", a, b)
+	if err != nil {
+		return "", fmt.Errorf("no merge base of %s and %s (shallow clone?): %w", a, b, err)
+	}
+	return out, nil
+}
+
+// Tree returns the tree id of a revision.
+func (r *Repo) Tree(ctx context.Context, rev string) (string, error) {
+	return r.git(ctx, nil, "rev-parse", "--verify", rev+"^{tree}")
+}
+
+// Differ returns the paths among paths whose content (or presence) differs
+// between two revisions.
+func (r *Repo) Differ(ctx context.Context, a, b string, paths []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	// in batches: the argument list of one git call is limited
+	for start := 0; start < len(paths); start += 500 {
+		end := min(start+500, len(paths))
+		res, err := r.git(ctx, nil, append([]string{"diff", "--name-only", "--no-renames", a, b, "--"}, paths[start:end]...)...)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range strings.Split(res, "\n") {
+			if p != "" {
+				out[p] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// WithFiles returns a commit (parent base) whose tree is base's tree with
+// the given paths as they are in from: changed, added, or removed when from
+// does not have them. Nothing outside the object store changes.
+func (r *Repo) WithFiles(ctx context.Context, base, from string, paths []string, message string) (string, error) {
+	tmp, err := os.CreateTemp("", "atlas-promote-index-*")
+	if err != nil {
+		return "", err
+	}
+	tmp.Close()
+	os.Remove(tmp.Name())
+	defer os.Remove(tmp.Name())
+	env := []string{"GIT_INDEX_FILE=" + tmp.Name()}
+	if _, err := r.git(ctx, env, "read-tree", base); err != nil {
+		return "", err
+	}
+	entries := map[string]string{} // path → "mode sha"
+	for start := 0; start < len(paths); start += 500 {
+		end := min(start+500, len(paths))
+		out, err := r.git(ctx, nil, append([]string{"ls-tree", "-r", "--full-tree", from, "--"}, paths[start:end]...)...)
+		if err != nil {
+			return "", err
+		}
+		for _, line := range strings.Split(out, "\n") {
+			meta, path, ok := strings.Cut(line, "\t")
+			if !ok {
+				continue
+			}
+			f := strings.Fields(meta) // mode type sha
+			if len(f) == 3 {
+				entries[path] = f[0] + " " + f[2]
+			}
+		}
+	}
+	var info strings.Builder
+	for _, p := range paths {
+		if e, ok := entries[p]; ok {
+			fmt.Fprintf(&info, "%s\t%s\n", e, p)
+		} else {
+			fmt.Fprintf(&info, "0 0000000000000000000000000000000000000000\t%s\n", p)
+		}
+	}
+	if err := r.gitStdin(ctx, env, info.String(), "update-index", "--index-info"); err != nil {
+		return "", err
+	}
+	tree, err := r.git(ctx, env, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return r.git(ctx, []string{
+		"GIT_AUTHOR_NAME=atlas", "GIT_AUTHOR_EMAIL=atlas@localhost",
+		"GIT_COMMITTER_NAME=atlas", "GIT_COMMITTER_EMAIL=atlas@localhost",
+	}, "commit-tree", tree, "-p", base, "-m", message)
+}
+
+// MergeTreeWithBase merges two commits with an explicit merge base
+// (`git merge-tree --write-tree --merge-base`): the change base..b applied
+// on a, by content only. It returns the tree id, or the conflicting paths.
+func (r *Repo) MergeTreeWithBase(ctx context.Context, base, a, b string) (string, []string, error) {
+	out, err := r.git(ctx, nil, "merge-tree", "--write-tree", "--name-only", "--no-messages", "--merge-base="+base, a, b)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(lines) > 1 {
+			return "", lines[1:], nil
+		}
+		return "", nil, err
+	}
+	return lines[0], nil, nil
+}
+
+func (r *Repo) gitStdin(ctx context.Context, env []string, stdin string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = r.Dir
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
