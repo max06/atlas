@@ -1,11 +1,13 @@
-# Tests for the ATLAS Review pipeline: the bash scripts (render.sh, diff.sh,
-# comment.sh, replay.sh, ...) and their Go port in the atlas CLI, which the
-# review actions run. Both are checked with the same bats assertions; this
-# workflow replicates the image's toolchain on a bare runner.
+# Tests for the ATLAS Review pipeline and the native engine, through the
+# atlas CLI the review actions run. The bats assertions were written against
+# the bash scripts under .github/actions/ (the reference implementation of the
+# port); shims in tests/bats/helpers/cli-actions serve each script's contract
+# through `atlas review ci`. The scripts themselves are no longer tested here:
+# no action runs them since the review moved to the CLI.
 #
-# Separated from the main tests.yml matrix because the action scripts have
-# their own tool dependencies (dyff) and don't need Helm/Helmfile version
-# matrix coverage — they test the review pipeline, not the template engine.
+# Separated from the main tests.yml matrix because the review pipeline has
+# its own tool dependencies (dyff) and doesn't need Helm/Helmfile version
+# matrix coverage. The suites run as parallel jobs.
 
 name: Action Tests
 
@@ -37,9 +39,39 @@ permissions:
   contents: read
 
 jobs:
-  workflow-scripts:
+  unit:
     runs-on: ubuntu-latest
-    name: action script tests
+    name: go vet + unit tests
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Go vet + unit tests
+        run: |
+          go vet ./...
+          go test ./...
+
+  suites:
+    runs-on: ubuntu-latest
+    name: action tests (${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the review pipeline through the atlas CLI
+          - suite: review workflow
+            backend: cli
+            engine: ""
+            paths: tests/bats/workflow/ tests/bats/redaction/redaction-replay.bats
+          # the core suites (values, redaction, integration) against the
+          # native Go engine: a helmfile shim renders the native states for
+          # every call with the test entry (tests/bats/helpers/native-engine),
+          # the assertions stay the ones of the templates
+          - suite: native engine
+            backend: ""
+            engine: native
+            paths: tests/bats/values/ tests/bats/redaction/ tests/bats/integration/
     env:
       SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
     steps:
@@ -76,39 +108,19 @@ jobs:
           curl -fsSL "https://github.com/homeport/dyff/releases/download/${DYFF_VERSION}/dyff_${DYFF_VERSION#v}_linux_amd64.tar.gz" | tar xz
           sudo mv dyff /usr/local/bin/dyff
 
-      # The atlas CLI (cmd/atlas). With ATLAS_CLI set, every classify scenario
-      # also runs the Go port and compares it with classify.sh, and cli.bats
-      # drives the binary end to end.
+      # The atlas CLI (cmd/atlas): the review backend of the shims, the
+      # native engine, and cli.bats drives the binary end to end.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-
-      - name: Go vet + unit tests
-        run: |
-          go vet ./...
-          go test ./...
 
       - name: Build the atlas CLI
         run: |
           go build -o "${RUNNER_TEMP}/atlas" ./cmd/atlas
           echo "ATLAS_CLI=${RUNNER_TEMP}/atlas" >> "$GITHUB_ENV"
 
-      - name: Run workflow script tests
-        run: bats --recursive --jobs 4 tests/bats/workflow/
-
-      # The same assertions against the Go port: shims in
-      # tests/bats/helpers/cli-actions serve each script's contract through
-      # `atlas review ci` (the actions run the CLI since review-cli).
-      - name: Run workflow tests against the atlas CLI
+      - name: Run the ${{ matrix.suite }} suites
         env:
-          ATLAS_REVIEW_BACKEND: cli
-        run: bats --recursive --jobs 4 tests/bats/workflow/ tests/bats/redaction/redaction-replay.bats
-
-      # The core suites (values, redaction, integration) against the native
-      # Go engine: a helmfile shim renders the native states for every call
-      # with the test entry (tests/bats/helpers/native-engine), the
-      # assertions stay the ones of the templates.
-      - name: Run the core suites against the native engine
-        env:
-          ATLAS_ENGINE: native
-        run: bats --recursive --jobs 4 tests/bats/values/ tests/bats/redaction/ tests/bats/integration/
+          ATLAS_REVIEW_BACKEND: ${{ matrix.backend }}
+          ATLAS_ENGINE: ${{ matrix.engine }}
+        run: bats --recursive --jobs 4 ${{ matrix.paths }}

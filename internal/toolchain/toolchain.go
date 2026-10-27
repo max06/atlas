@@ -16,12 +16,13 @@ import (
 	"strings"
 )
 
-// Versions this release is tested with, and the floors ATLAS enforces.
+// Versions this release is tested with, and the floors ATLAS enforces (the
+// oldest versions the test matrix covers).
 const (
 	TestedHelm     = "4.3.0"
 	TestedHelmfile = "1.8.1"
-	MinHelm        = "4.0.0"
-	MinHelmfile    = "1.0.0"
+	MinHelm        = "4.3.0"
+	MinHelmfile    = "1.8.1"
 	// git merge-tree --write-tree (local merge result for reviews)
 	MinGit = "2.38.0"
 )

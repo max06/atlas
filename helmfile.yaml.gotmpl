@@ -19,17 +19,17 @@
                                       (see templates/helmfile.all.yaml.gotmpl) */ -}}
 
 {{- /* ── Version gate ──────────────────────────────────────────────────
-     ATLAS requires Helm >= 4.0.0 and Helmfile >= 1.0.0.
+     ATLAS requires Helm >= 4.3.0 and Helmfile >= 1.8.1 (the oldest tested versions).
      Older versions lack template-context fields (.Environment.Values)
      and post-renderer features that the pipeline relies on. */ -}}
 {{- $helmVersion := exec "helm" (list "version" "--short") | trim | regexFind "\\d+\\.\\d+\\.\\d+" }}
-{{- if not (semverCompare ">=4.0.0" $helmVersion) }}
-  {{- fail (printf "ATLAS requires Helm >= 4.0.0 (found %s)" $helmVersion) }}
+{{- if not (semverCompare ">=4.3.0" $helmVersion) }}
+  {{- fail (printf "ATLAS requires Helm >= 4.3.0 (found %s)" $helmVersion) }}
 {{- end }}
 
 {{- $hfVersion := exec "helmfile" (list "version") | regexFind "\\d+\\.\\d+\\.\\d+" }}
-{{- if not (semverCompare ">=1.0.0" $hfVersion) }}
-  {{- fail (printf "ATLAS requires Helmfile >= 1.0.0 (found %s)" $hfVersion) }}
+{{- if not (semverCompare ">=1.8.1" $hfVersion) }}
+  {{- fail (printf "ATLAS requires Helmfile >= 1.8.1 (found %s)" $hfVersion) }}
 {{- end }}
 
 {{- $atlas := deepCopy .Values.atlas }}
