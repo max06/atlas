@@ -1,10 +1,16 @@
 # atlas image: the CLI plus its toolchain (Dockerfile at the repo root).
 #
-# Pull requests build the image without pushing it. Tags v* push the release
-# (semver tags: 1.2.3, 1.2, 1). A push to a branch that changes the image
-# inputs (and a manual dispatch) pushes a test build tagged with the branch
-# name and the short commit — for the wrapper's ATLAS_IMAGE, e.g.
-# ATLAS_IMAGE=ghcr.io/max06/atlas:cli-poc.
+# Tags v* push the release (semver tags: 1.2.3, 1.2, 1). A push to a branch
+# that changes the image inputs (and a manual dispatch) pushes a test build
+# tagged with the branch name and the short commit — for the wrapper's
+# ATLAS_IMAGE and the self-review of a pull request, e.g.
+# ATLAS_IMAGE=ghcr.io/max06/atlas:cli-poc. Every build is smoke-tested on
+# both platforms before it is pushed.
+#
+# Pull requests build without pushing only where no push build exists: bot
+# branches (renovate/dependabot pushes are ignored) and pull requests from
+# forks (their pushes run in the fork). A branch of this repository already
+# gets its build from the push.
 
 name: Image
 
@@ -38,6 +44,11 @@ permissions:
 
 jobs:
   image:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      startsWith(github.head_ref, 'renovate/') ||
+      startsWith(github.head_ref, 'dependabot/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,6 +75,18 @@ jobs:
             type=sha,prefix=sha-,enable=${{ github.ref_type == 'branch' && github.event_name != 'pull_request' }}
             type=ref,event=pr
 
+      # before anything is pushed: the image starts and finds its toolchain
+      # on both platforms (as an arbitrary uid, like the wrapper runs it).
+      # The same build arguments as the push below, so the push reuses
+      # these layers and the smoke test checks the image that is pushed.
+      - name: Smoke test
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            docker buildx build --load --platform "$platform" --cache-from type=gha \
+              -t atlas-smoke --build-arg VERSION=${{ steps.meta.outputs.version }} .
+            docker run --rm --platform "$platform" --user 12345:12345 atlas-smoke doctor
+          done
+
       - if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
@@ -82,10 +105,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test
-        if: github.event_name == 'pull_request'
-        run: |
-          for platform in linux/amd64 linux/arm64; do
-            docker buildx build --load --platform "$platform" -t atlas-smoke --build-arg VERSION=smoke .
-            docker run --rm --platform "$platform" --user 12345:12345 atlas-smoke doctor
-          done
