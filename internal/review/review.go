@@ -19,8 +19,11 @@ import (
 	"github.com/max06/atlas/internal/classify"
 	"github.com/max06/atlas/internal/config"
 	"github.com/max06/atlas/internal/discovery"
+	"github.com/max06/atlas/internal/engine"
 	"github.com/max06/atlas/internal/gitrev"
 	"github.com/max06/atlas/internal/helmfile"
+	"github.com/max06/atlas/internal/native"
+	"github.com/max06/atlas/internal/snapshot"
 )
 
 // Spec says which revisions to compare.
@@ -266,11 +269,17 @@ func (s *Session) discover(ctx context.Context, side Side) (*discovery.Map, erro
 	if err := s.checkout(ctx, side); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil {
-		return nil, fmt.Errorf("%s: %w", s.Entry, ErrNoEntry)
-	}
 	if err := s.checkEngine(side); err != nil {
 		return nil, err
+	}
+	if l, isNative, err := native.Layout(s.Workspace); err != nil {
+		return nil, fmt.Errorf("%s side: %w", side, err)
+	} else if isNative {
+		fmt.Fprintf(s.Log, "review: %s side renders with the native engine (atlas.yaml spec.native)\n", side)
+		return engine.DiscoveryMap(l, engine.Filter{}, engine.Switches{})
+	}
+	if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil {
+		return nil, fmt.Errorf("%s: %w", s.Entry, ErrNoEntry)
 	}
 	r, log := s.runner()
 	m, err := discovery.Discover(ctx, r)
@@ -342,7 +351,17 @@ func (s *Session) Render(ctx context.Context, c *Classification, outDir string, 
 		if err := s.checkout(ctx, side); err != nil {
 			return res, err
 		}
-		if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil {
+		l, isNative, err := native.Layout(s.Workspace)
+		if err != nil {
+			err = fmt.Errorf("%s side: %w", side, err)
+			if side == Base {
+				res.Base, res.BaseErr = StatusError, err
+				continue
+			}
+			res.Head = StatusError
+			return res, err
+		}
+		if _, err := os.Stat(filepath.Join(s.Workspace, s.Entry)); err != nil && !isNative {
 			if side == Base {
 				fmt.Fprintf(s.Log, "review: %s side has no %s, nothing to render\n", side, s.Entry)
 				res.Base = StatusMissing
@@ -357,7 +376,11 @@ func (s *Session) Render(ctx context.Context, c *Classification, outDir string, 
 				pairs = c.SelectedBaseline
 			}
 		}
-		err := s.renderSide(ctx, dir, pairs, opts)
+		if isNative {
+			err = s.renderNative(ctx, side, l, dir, pairs, opts)
+		} else {
+			err = s.renderSide(ctx, dir, pairs, opts)
+		}
 		if err != nil && side == Base {
 			res.Base, res.BaseErr = StatusError, err
 			continue
@@ -368,6 +391,43 @@ func (s *Session) Render(ctx context.Context, c *Classification, outDir string, 
 		}
 	}
 	return res, nil
+}
+
+// renderNative renders the workspace of a native tree into dir
+// (internal/native, like the CI render step): everything when pairs is nil,
+// else the pairs. With Redact, the redaction maps of the native engine
+// redact the tree in place (snapshot.RedactTree); a pair or release that
+// fails, or cannot be redacted, leaves no files and fails the side.
+func (s *Session) renderNative(ctx context.Context, side Side, l engine.Layout, dir string, pairs *[]string, opts RenderOptions) error {
+	o := native.Options{
+		Layout: l, OutputDir: dir, SkipSecrets: opts.SkipSecrets,
+		Work: filepath.Join(filepath.Dir(s.Workspace), "native-"+string(side)),
+		Log:  io.Discard,
+	}
+	if pairs != nil {
+		o.Pairs = append([]string{}, *pairs...)
+	}
+	if opts.Redact {
+		o.MapsDir = filepath.Join(filepath.Dir(s.Workspace), "maps-"+string(side))
+		if err := os.RemoveAll(o.MapsDir); err != nil {
+			return err
+		}
+	}
+	res, err := native.Render(ctx, o)
+	if err != nil {
+		return err
+	}
+	errs := []error{res.Err()}
+	if opts.Redact {
+		failed, err := snapshot.RedactTree(dir, o.MapsDir, res.Pairs, s.Log)
+		if err != nil {
+			return err
+		}
+		for _, f := range failed {
+			errs = append(errs, fmt.Errorf("%s: cannot be redacted (%s), its files are left out", f.Release, f.Status))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // renderSide renders the workspace into dir: everything when pairs is nil,

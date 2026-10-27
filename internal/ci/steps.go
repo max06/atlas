@@ -41,6 +41,11 @@ func Discover(ctx context.Context, dir, entry, binary, out string, log io.Writer
 	if dir == "" {
 		dir = "."
 	}
+	if l, native, err := nativeLayout(dir); err != nil {
+		return &ExitError{1, "discover: " + err.Error()}
+	} else if native {
+		return discoverNative(l, out, log)
+	}
 	if _, err := os.Stat(inDir(dir, entry)); err != nil {
 		return &ExitError{2, "discover: helmfile not found at " + entry}
 	}

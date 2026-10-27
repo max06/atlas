@@ -438,7 +438,7 @@ atlas render --engine native -c cluster1 -d app  # manifests (keyless by default
 atlas render --engine native --redact -o out      # decrypted, then redacted as the review does
 ```
 
-The oracle is the template engine: `ATLAS_ENGINE=native` (with `ATLAS_CLI`) runs the core bats suites against the native engine through a helmfile shim, and full renders of consumer trees are compared file by file. `--redact` computes the redaction maps with the native engine and scrubs the tree like the review's render step (Secret values hashed, the maps replayed; a release that cannot be redacted fails the command and nothing is written). The review pipeline still uses the template engine.
+The oracle is the template engine: `ATLAS_ENGINE=native` (with `ATLAS_CLI`) runs the core bats suites against the native engine through a helmfile shim, and full renders of consumer trees are compared file by file. `--redact` computes the redaction maps with the native engine and scrubs the tree like the review's render step (Secret values hashed, the maps replayed; a release that cannot be redacted fails the command and nothing is written). A tree with `native: true` in `atlas.yaml` uses the native engine everywhere without `--engine`, the review included.
 
 `-C <dir>` points at the repository, `-f <file>` at the entry helmfile (default `helmfile.yaml.gotmpl`). `-c` takes the full cluster path or the leaf name; an unknown cluster or deployment fails with the nearest known names.
 
@@ -471,6 +471,7 @@ apiVersion: atlas.io/v1alpha1
 kind: Root
 spec:
   engine: "0.13"              # engine minor: "<major>.<minor>", a quoted string
+  native: false               # optional: true renders the tree with the native engine (engine 0.14 or later)
   templateDir: templates      # optional, default "templates"
   deploymentDir: deployments  # optional, default "deployments"
 ```
@@ -479,9 +480,10 @@ Rules:
 
 - `engine` must be a quoted string. An unquoted `1.10` is the float `1.1` for every YAML reader, and it would select a different engine. atlas rejects it.
 - Only `apiVersion`, `kind`, `metadata` and `spec` are permitted at the top level. An unknown key is an error, so a misspelled key cannot fall back to a default silently.
-- `templateDir` and `deploymentDir` are relative paths inside the tree. At this time the entry helmfile still sets the directories (`atlas.appTemplates`, `atlas.deploymentDefinitions`). atlas validates the two keys but does not use them yet.
+- `templateDir` and `deploymentDir` are relative paths inside the tree. The helmfile templates take the directories from the entry helmfile (`atlas.appTemplates`, `atlas.deploymentDefinitions`); the native engine reads them from `atlas.yaml`.
+- `native: true` selects the [native engine](#atlas-cli-proof-of-concept) for the tree: in the review (discovery, render and redaction maps of that side), in the Argo CD plugin (`atlas render --argocd`) and in local commands without `--engine`. The entry helmfile is then not used. It needs `engine: "0.14"` or later, because an older engine rejects the unknown key.
 
-The pin selects:
+The pin (with `native`) selects:
 
 - the image of the developer wrapper (`bin/atlas`),
 - the engine that renders each side of a review ([Reviews across engine versions](#reviews-across-engine-versions)), and
@@ -759,6 +761,7 @@ Each side renders with the engine that its [`atlas.yaml`](#atlasyaml-the-engine-
 - `engine-repository` comes from the workflow file. With `pull_request_target` that is the base branch, so a PR selects only the version, not the source of the image.
 - A build without a release version (a branch image) renders every side itself: it is the engine under test.
 - When the pins differ, the comment says so, and the job summary lists the engine of each side.
+- A side whose `atlas.yaml` sets `native: true` renders with the native engine of its pinned image: discovery, states, render and redaction maps without helmfile, the redaction in the CLI. A failed pair (states or redaction maps) or a failed release does not stop the others; its files are left out and the side reports the error. The local `atlas review diff` renders such a side the same way. A PR that only sets `native: true` shows what the switch changes: nothing, when the native engine renders the tree like the templates.
 
 `atlas review diff` on your machine renders both sides with one engine. If a side pins another minor than your `atlas`, it stops with an explanation. `--single-engine` compares anyway (content changes only).
 
