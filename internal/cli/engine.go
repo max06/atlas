@@ -181,7 +181,11 @@ func nativePreparer(root string) (map[string][]engine.PreparedRelease, error) {
 	prepared := map[string][]engine.PreparedRelease{}
 	for _, st := range r.States {
 		var releases []engine.PreparedRelease
-		for _, rel := range st.Prepared() {
+		prep, err := st.Prepared("")
+		if err != nil {
+			return nil, err
+		}
+		for _, rel := range prep {
 			releases = append(releases, engine.PreparedRelease{Name: rel.Name, Namespace: rel.Namespace, Chart: rel.Chart, Version: rel.Version, KubeContext: rel.KubeContext, Labels: rel.Labels})
 		}
 		prepared[filepath.Base(st.File)] = releases

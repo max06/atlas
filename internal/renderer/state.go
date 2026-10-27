@@ -15,8 +15,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"text/template"
+
+	"github.com/max06/atlas/internal/engine"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -75,7 +79,7 @@ type SetValue struct {
 }
 
 var (
-	stateKeys   = set("commonLabels", "kubeVersion", "releases", "repositories", "helmDefaults")
+	stateKeys   = set("commonLabels", "kubeVersion", "releases", "repositories", "helmDefaults", "helmfiles")
 	releaseKeys = set("name", "namespace", "chart", "version", "values", "labels", "skipSchemaValidation",
 		"jsonPatches", "strategicMergePatches", "transformers", "set", "setString",
 		"postRenderer", "postRendererArgs",
@@ -95,6 +99,9 @@ func set(keys ...string) map[string]bool {
 	}
 	return m
 }
+
+// carrierFile is the engine's release-less carrier state (engine.CarrierFile).
+const carrierFile = "helmfile.discovery-map.yaml"
 
 // LoadRoot reads a generated root state (helmfile.yaml with helmfiles[].path)
 // and its instance states.
@@ -129,10 +136,6 @@ func LoadState(dir, rel string) (*State, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
-	}
-	if bytes.Contains(data, []byte("{{")) {
-		// helmfile would render release templates; the engine never writes any
-		return nil, fmt.Errorf("%s: template expressions in a generated state are not supported", file)
 	}
 	st := &State{File: rel, Env: map[string]any{}}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -180,6 +183,17 @@ func (st *State) read(doc map[string]any) error {
 	for k := range doc {
 		if !stateKeys[k] {
 			return fmt.Errorf("unsupported state field %q", k)
+		}
+	}
+	// helmfiles: only the release-less carrier state of the redaction maps
+	// (redactMaps), which `helmfile build` shows and template renders as
+	// nothing
+	if subs, ok := doc["helmfiles"].([]any); ok {
+		for i, sub := range subs {
+			m, _ := sub.(map[string]any)
+			if filepath.Base(str(m["path"])) != carrierFile {
+				return fmt.Errorf("helmfiles[%d]: only the carrier state %s is supported", i, carrierFile)
+			}
 		}
 	}
 	if v, ok := doc["kubeVersion"]; ok {
@@ -301,10 +315,12 @@ func stringMap(v any, what string) (map[string]string, error) {
 
 // Prepared returns the releases as `helmfile build` shows them, the
 // .Release of the values computation: commonLabels copied over the release
-// labels (ExecuteTemplates), then the selector labels name, namespace and
-// chart (GetReleasesWithLabels; chart = the last path segment). The engine
-// writes no release templates, so the template fixpoint is the identity.
-func (st *State) Prepared() []Release {
+// labels and the helmDefaults kubeContext as default, the release template
+// expressions rendered (ExecuteTemplates), then the selector labels name,
+// namespace and chart (GetReleasesWithLabels; chart = the last path
+// segment). namespaceOverride is helmfile's --namespace (the .Namespace of
+// the release templates).
+func (st *State) Prepared(namespaceOverride string) ([]Release, error) {
 	out := make([]Release, len(st.Releases))
 	for i, r := range st.Releases {
 		labels := map[string]string{}
@@ -314,16 +330,141 @@ func (st *State) Prepared() []Release {
 		for k, v := range st.CommonLabels {
 			labels[k] = v
 		}
-		labels["name"] = r.Name
-		labels["namespace"] = r.Namespace
-		labels["chart"] = r.Chart[strings.LastIndex(r.Chart, "/")+1:]
 		r.Labels = labels
 		if r.KubeContext == "" {
 			r.KubeContext = st.KubeContext
 		}
+		r, err := st.executeTemplates(r, namespaceOverride)
+		if err != nil {
+			return nil, err
+		}
+		if r.Chart == "" {
+			return nil, fmt.Errorf("encountered empty chart while reading release %q", r.Name)
+		}
+		labels = map[string]string{}
+		for k, v := range r.Labels {
+			labels[k] = v
+		}
+		labels["name"] = r.Name
+		labels["namespace"] = r.Namespace
+		labels["chart"] = r.Chart[strings.LastIndex(r.Chart, "/")+1:]
+		r.Labels = labels
 		out[i] = r
 	}
-	return out
+	return out, nil
+}
+
+// executeTemplates is helmfile's release template fixpoint (at most six
+// rounds, each with the .Release of the previous one): name, chart,
+// namespace, version (trimmed), the label values, the post-renderer
+// arguments and the values entries that are paths. Inline value maps stay
+// as they are.
+func (st *State) executeTemplates(r Release, namespaceOverride string) (Release, error) {
+	if !hasTemplate(r) {
+		return r, nil
+	}
+	t, err := templater()
+	if err != nil {
+		return r, err
+	}
+	prev := r
+	for it := 0; it < 6; it++ {
+		data := map[string]any{
+			"Environment": map[string]any{"Name": "default", "KubeContext": "", "Values": st.Env},
+			"KubeContext": "",
+			"Namespace":   namespaceOverride,
+			"Chart":       "",
+			"Values":      st.Env,
+			"StateValues": st.Env,
+			"Release": map[string]any{
+				"Name": prev.Name, "Chart": prev.Chart, "Namespace": prev.Namespace,
+				"Labels": prev.Labels, "KubeContext": prev.KubeContext, "ChartVersion": prev.Version,
+			},
+		}
+		render := func(field, s string) (string, error) {
+			out, err := t.Tpl(s, data)
+			if err != nil {
+				return "", fmt.Errorf("failed executing template expressions in release \"%s\".%s = \"%s\": %w", r.Name, field, s, err)
+			}
+			return out, nil
+		}
+		next := prev
+		next.Labels = map[string]string{}
+		for _, f := range []struct {
+			name string
+			v    *string
+		}{{"name", &next.Name}, {"chart", &next.Chart}, {"namespace", &next.Namespace}, {"version", &next.Version}} {
+			out, err := render(f.name, *f.v)
+			if err != nil {
+				return r, err
+			}
+			*f.v = strings.TrimSpace(out)
+		}
+		for k, v := range prev.Labels {
+			out, err := render("labels."+k, v)
+			if err != nil {
+				return r, err
+			}
+			next.Labels[k] = out
+		}
+		next.PostRendererArgs = nil
+		for _, a := range prev.PostRendererArgs {
+			out, err := render("postRendererArgs", a)
+			if err != nil {
+				return r, err
+			}
+			next.PostRendererArgs = append(next.PostRendererArgs, out)
+		}
+		next.Values = make([]any, len(prev.Values))
+		for i, v := range prev.Values {
+			if sv, ok := v.(string); ok {
+				out, err := render(fmt.Sprintf("values[%d]", i), sv)
+				if err != nil {
+					return r, err
+				}
+				next.Values[i] = out
+				continue
+			}
+			next.Values[i] = v
+		}
+		if reflect.DeepEqual(prev, next) {
+			return next, nil
+		}
+		prev = next
+	}
+	return r, fmt.Errorf("failed executing templates in release \"%s\": recursive references can't be resolved", r.Name)
+}
+
+func hasTemplate(r Release) bool {
+	strs := []string{r.Name, r.Chart, r.Namespace, r.Version}
+	strs = append(strs, r.PostRendererArgs...)
+	for _, v := range r.Labels {
+		strs = append(strs, v)
+	}
+	for _, v := range r.Values {
+		if s, ok := v.(string); ok {
+			strs = append(strs, s)
+		}
+	}
+	for _, s := range strs {
+		if strings.Contains(s, "{{") {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	templaterOnce sync.Once
+	sharedTpl     *engine.Templater
+	templaterErr  error
+)
+
+// templater is the engine's template renderer (helmfile's function set),
+// created on first use: only states with release templates need it.
+func templater() (*engine.Templater, error) {
+	templaterOnce.Do(func() { sharedTpl, templaterErr = engine.NewTemplater() })
+	return sharedTpl, templaterErr
 }
 
 // deploymentOf is atlas.deployment.<key> of the state environment.

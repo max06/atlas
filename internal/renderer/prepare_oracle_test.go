@@ -60,7 +60,10 @@ func TestPreparedOracle(t *testing.T) {
 	n := 0
 	for _, st := range r.States {
 		want := built[filepath.Base(st.File)]
-		got := st.Prepared()
+		got, err := st.Prepared("")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(want) != len(got) {
 			t.Errorf("%s: %d releases, helmfile %d", st.File, len(got), len(want))
 			continue

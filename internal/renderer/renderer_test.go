@@ -99,9 +99,8 @@ func TestOutputDir(t *testing.T) {
 func TestLoadStateRefusesUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
-		"field.yaml":    "releases:\n  - name: r\n    chart: c\n    hooks: []\n",
-		"template.yaml": "releases:\n  - name: '{{ .Values.x }}'\n    chart: c\n",
-		"state.yaml":    "helmfiles: []\n",
+		"field.yaml": "releases:\n  - name: r\n    chart: c\n    hooks: []\n",
+		"state.yaml": "helmfiles:\n  - path: other.yaml\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -109,5 +108,25 @@ func TestLoadStateRefusesUnknownFields(t *testing.T) {
 		if _, err := LoadState(dir, name); err == nil {
 			t.Errorf("%s: must fail", name)
 		}
+	}
+}
+
+func TestPreparedReleaseTemplates(t *testing.T) {
+	st := &State{
+		Env:          map[string]any{"atlas": map[string]any{"deployment": map[string]any{"clusterName": "c1"}}},
+		CommonLabels: map[string]string{"team": "a"},
+		Releases: []Release{{
+			Name: "r", Chart: "repo/chart", Namespace: "{{ .Values.atlas.deployment.clusterName }}-ns",
+			Labels: map[string]string{"ns": "{{ .Release.Namespace }}"},
+		}},
+	}
+	got, err := st.Prepared("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the fixpoint: the label sees the rendered namespace in the next round
+	want := map[string]string{"team": "a", "ns": "c1-ns", "name": "r", "namespace": "c1-ns", "chart": "chart"}
+	if got[0].Namespace != "c1-ns" || !reflect.DeepEqual(got[0].Labels, want) {
+		t.Errorf("got %+v", got[0])
 	}
 }

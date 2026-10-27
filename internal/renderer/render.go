@@ -142,13 +142,26 @@ func (o Options) selected(labels map[string]string) bool {
 
 // renderState renders the selected releases of a state and returns their
 // number. Selectors see the prepared labels; --namespace replaces the
-// namespace before the selection (helmfile's ApplyOverrides at load).
+// namespace before the selection (helmfile's ApplyOverrides at load). Like
+// helmfile, all charts of the state are prepared first (chartify included,
+// whose output lands in between), then the releases render in order.
 func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int, error) {
 	for _, repo := range st.Repositories {
 		r.repos[repo.Name] = repo
 	}
-	n := 0
-	for _, rel := range st.Prepared() {
+	prepared, err := st.Prepared(r.opts.NamespaceOverride)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", st.File, err)
+	}
+	var calls []templateCall
+	defer func() {
+		for _, t := range calls {
+			for _, f := range t.cleanup {
+				os.Remove(f)
+			}
+		}
+	}()
+	for _, rel := range prepared {
 		if r.opts.NamespaceOverride != "" {
 			rel.Namespace = r.opts.NamespaceOverride
 			rel.Labels["namespace"] = rel.Namespace
@@ -156,21 +169,27 @@ func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int,
 		if !r.opts.selected(rel.Labels) {
 			continue
 		}
-		n++
-		if err := r.renderRelease(ctx, root, st, rel); err != nil {
-			// debugging aid for the A/B comparison while the port is incomplete
-			if errors.Is(err, errUnsupported) && os.Getenv("ATLAS_RENDER_SKIP_UNSUPPORTED") == "1" {
-				fmt.Fprintf(r.opts.Log, "atlas: SKIPPED release %q in %s: %v\n", rel.Name, st.File, err)
-				continue
-			}
-			return n, fmt.Errorf("release %q in %s: %w", rel.Name, st.File, err)
+		t, err := r.prepareRelease(root, st, rel)
+		calls = append(calls, t)
+		if err != nil {
+			return len(calls), fmt.Errorf("release %q in %s: %w", rel.Name, st.File, err)
 		}
 	}
-	return n, nil
+	for _, t := range calls {
+		if err := r.templateRelease(ctx, t); err != nil {
+			return len(calls), fmt.Errorf("release %q in %s: %w", t.Name, st.File, err)
+		}
+	}
+	return len(calls), nil
 }
 
-func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel Release) error {
+// prepareRelease is helmfile's prepareChartForRelease plus the template
+// flags: the chart reference (repositories added, chartify run), the values
+// files and set flags, the output directory.
+func (r *Renderer) prepareRelease(root *Root, st *State, rel Release) (templateCall, error) {
 	stateDir := filepath.Dir(filepath.Join(root.Dir, st.File))
+	t := templateCall{Name: rel.Name, Namespace: rel.Namespace, Version: rel.Version, KubeVersion: st.KubeVersion,
+		PostRenderer: rel.PostRenderer, PostRendererArgs: rel.PostRendererArgs}
 	chartRef := rel.Chart
 	local := filepath.IsAbs(chartRef) || strings.HasPrefix(chartRef, "./") || strings.HasPrefix(chartRef, "../")
 	manifestsDir := false
@@ -180,53 +199,75 @@ func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel
 		}
 		ok, err := exists(filepath.Join(chartRef, "Chart.yaml"))
 		if err != nil {
-			return err
+			return t, err
 		}
 		manifestsDir = !ok
 	} else {
 		var err error
 		if chartRef, err = r.remoteRef(chartRef); err != nil {
-			return err
+			return t, err
 		}
 	}
 	files, err := r.valuesFiles(stateDir, rel)
-	defer func() {
-		for _, f := range files {
-			os.Remove(f)
-		}
-	}()
+	t.cleanup = files
 	if err != nil {
-		return err
+		return t, err
 	}
 	vo, err := setOptions(rel)
 	if err != nil {
-		return err
+		return t, err
 	}
 	vo.ValueFiles = files
+	t.Values = vo
 	if manifestsDir || needsChartify(rel) {
 		dir, err := r.chartify(st, rel, stateDir, chartRef, local, files)
 		if err != nil {
-			return err
+			return t, err
 		}
 		chartRef, local = dir, true
 	}
-	t := templateCall{
-		Name:             rel.Name,
-		Chart:            chartRef,
-		Local:            local,
-		Namespace:        rel.Namespace,
-		Version:          rel.Version,
-		KubeVersion:      st.KubeVersion,
-		Values:           vo,
-		PostRenderer:     rel.PostRenderer,
-		PostRendererArgs: rel.PostRendererArgs,
-	}
+	t.Chart, t.Local = chartRef, local
 	if r.opts.OutputDir != "" {
 		if t.OutputDir, err = st.outputDir(root.Dir, r.opts.OutputDir, r.opts.OutputDirTemplate, rel); err != nil {
-			return err
+			return t, err
 		}
 	}
-	return r.helmTemplate(ctx, t, r.opts.Stdout)
+	return t, nil
+}
+
+// templateRelease is helmfile's TemplateRelease: helm's stdout plus a
+// newline; with an output directory it is only the "wrote" lines, which go
+// to the log.
+func (r *Renderer) templateRelease(ctx context.Context, t templateCall) error {
+	var out bytes.Buffer
+	if err := r.helmTemplate(ctx, t, &out); err != nil {
+		return err
+	}
+	if t.OutputDir != "" {
+		_, err := io.WriteString(r.opts.Log, dedupeLines(out.String()))
+		return err
+	}
+	if out.Len() > 0 {
+		out.WriteByte('\n')
+		_, err := r.opts.Stdout.Write(out.Bytes())
+		return err
+	}
+	return nil
+}
+
+// dedupeLines drops repeated lines (helm writes one "wrote" line per
+// document of a file).
+func dedupeLines(s string) string {
+	seen := map[string]bool{}
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(s, "\n") {
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 // templateCall is one `helm template` (with --include-crds and
@@ -243,6 +284,8 @@ type templateCall struct {
 	// arguments (--post-renderer-args), loaded from HELM_PLUGINS like helm.
 	PostRenderer     string
 	PostRendererArgs []string
+	// cleanup: temporary files of the call (values)
+	cleanup []string
 }
 
 // helmTemplate renders like `helm template`: without an output directory the
