@@ -76,12 +76,14 @@ jobs:
             type=ref,event=pr
 
       # before anything is pushed: the image starts and finds its toolchain
-      # on both platforms (as an arbitrary uid, like the wrapper runs it)
+      # on both platforms (as an arbitrary uid, like the wrapper runs it).
+      # The same build arguments as the push below, so the push reuses
+      # these layers and the smoke test checks the image that is pushed.
       - name: Smoke test
         run: |
           for platform in linux/amd64 linux/arm64; do
             docker buildx build --load --platform "$platform" --cache-from type=gha \
-              -t atlas-smoke --build-arg VERSION=smoke .
+              -t atlas-smoke --build-arg VERSION=${{ steps.meta.outputs.version }} .
             docker run --rm --platform "$platform" --user 12345:12345 atlas-smoke doctor
           done
 
