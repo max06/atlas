@@ -22,6 +22,7 @@ import (
 	"text/template"
 
 	"github.com/max06/atlas/internal/engine"
+	"github.com/max06/atlas/internal/snapshot"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -44,6 +45,9 @@ type State struct {
 	// KubeContext is helmDefaults.kubeContext.
 	KubeContext string
 	Releases    []Release
+	// RedactMaps are the redaction maps the carrier entry holds
+	// (ATLAS_REDACT_MAPS): what `helmfile build` shows as its rendered values.
+	RedactMaps []snapshot.Maps
 }
 
 // Repository is a chart repository of a state (helm repo add, or an OCI
@@ -77,6 +81,30 @@ type Release struct {
 type SetValue struct {
 	Name, Value, File string
 	Values            []any
+}
+
+// RedactMaps returns the redaction maps of all states.
+func (r *Root) RedactMaps() []snapshot.Maps {
+	var all []snapshot.Maps
+	for _, st := range r.States {
+		all = append(all, st.RedactMaps...)
+	}
+	return all
+}
+
+// Pairs returns the "<cluster>|<deployment>" pairs of the states (the
+// selection snapshot.Scrub takes), in render order.
+func (r *Root) Pairs() []string {
+	var pairs []string
+	seen := map[string]bool{}
+	for _, st := range r.States {
+		p := st.deploymentOf("cluster") + "|" + st.deploymentOf("deploymentName")
+		if !seen[p] {
+			seen[p] = true
+			pairs = append(pairs, p)
+		}
+	}
+	return pairs
 }
 
 // carrierFile is the engine's release-less carrier state (engine.CarrierFile).
@@ -275,6 +303,25 @@ func (st *State) read(sd stateDoc) error {
 	for i, h := range sd.Helmfiles {
 		if filepath.Base(h.Path) != carrierFile {
 			return fmt.Errorf("helmfiles[%d]: only the carrier state %s is supported", i, carrierFile)
+		}
+		for _, v := range h.Values {
+			m, ok := v.(map[string]any)
+			if !ok {
+				return fmt.Errorf("helmfiles[%d].values: only inline maps are supported", i)
+			}
+			raw, ok := m["atlasRedactMaps"]
+			if !ok {
+				continue
+			}
+			data, err := yaml.Marshal(raw)
+			if err != nil {
+				return err
+			}
+			var maps snapshot.Maps
+			if err := yaml.Unmarshal(data, &maps); err != nil {
+				return fmt.Errorf("helmfiles[%d]: redaction maps: %w", i, err)
+			}
+			st.RedactMaps = append(st.RedactMaps, maps)
 		}
 	}
 	st.KubeVersion = sd.KubeVersion

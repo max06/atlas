@@ -133,3 +133,35 @@ func TestPreparedReleaseTemplates(t *testing.T) {
 		t.Errorf("got %+v", got[0])
 	}
 }
+
+func TestRedactMapsFromCarrier(t *testing.T) {
+	dir := t.TempDir()
+	body := `releases: []
+helmfiles:
+  - path: helmfile.discovery-map.yaml
+    values:
+      - atlasRedactMaps:
+          version: 1
+          cluster: g/c1
+          deploymentName: app
+          releases:
+            web:
+              hunter2: REDACTED
+            plain: {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "s.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadState(dir, "s.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Root{States: []*State{st}}
+	maps := r.RedactMaps()
+	if len(maps) != 1 || maps[0].Cluster != "g/c1" || maps[0].DeploymentName != "app" || maps[0].Releases["web"]["hunter2"] != "REDACTED" {
+		t.Errorf("maps %+v", maps)
+	}
+	if _, ok := maps[0].Releases["plain"]; !ok {
+		t.Errorf("empty release map dropped: %+v", maps[0].Releases)
+	}
+}
