@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/engine"
 	"github.com/max06/atlas/internal/helmfile"
+	"github.com/max06/atlas/internal/renderer"
 )
 
 // engineFlags select the engine of a command: the helmfile templates the
@@ -124,9 +126,39 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 			return err
 		}
 	}
-	opts.Prepare = buildPreparer(cmd.Context(), r)
-	if _, err := eng.Generate(dir, engine.Filter{Clusters: sel.clusters, Deployments: sel.deployments}, opts); err != nil {
+	goRenderer := os.Getenv("ATLAS_NATIVE_RENDERER") == "go"
+	if goRenderer {
+		opts.Prepare = nativePreparer
+	} else {
+		opts.Prepare = buildPreparer(cmd.Context(), r)
+	}
+	root, err := eng.Generate(dir, engine.Filter{Clusters: sel.clusters, Deployments: sel.deployments}, opts)
+	if err != nil {
 		return err
+	}
+	if goRenderer {
+		states, err := renderer.LoadRoot(root)
+		if err != nil {
+			return err
+		}
+		ro := renderer.Options{Stdout: cmd.OutOrStdout(), Log: os.Stderr, NamespaceOverride: opts.NamespaceOverride, OutputDirTemplate: helmfile.OutputDirTemplate}
+		if outputDir != "" {
+			if ro.OutputDir, err = filepath.Abs(outputDir); err != nil {
+				return err
+			}
+		}
+		if len(extra) > 0 {
+			return fmt.Errorf("ATLAS_NATIVE_RENDERER=go: extra helmfile template arguments are not supported: %v", extra)
+		}
+		sels := sel.selectors()
+		for i := 1; i < len(sels); i += 2 {
+			s, err := renderer.ParseSelector(sels[i])
+			if err != nil {
+				return err
+			}
+			ro.Selectors = append(ro.Selectors, s)
+		}
+		return renderer.Render(cmd.Context(), states, ro)
 	}
 	args = append(args, sel.selectors()...)
 	if outputDir != "" {
@@ -137,6 +169,24 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 		args = append(args, "--output-dir", abs, "--output-dir-template", helmfile.OutputDirTemplate)
 	}
 	return r.Run(cmd.Context(), helmfile.Options{}, cmd.OutOrStdout(), append(args, extra...)...)
+}
+
+// nativePreparer is buildPreparer without helmfile: the releases of the
+// generated states as `helmfile build` shows them (renderer.State.Prepared).
+func nativePreparer(root string) (map[string][]engine.PreparedRelease, error) {
+	r, err := renderer.LoadRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	prepared := map[string][]engine.PreparedRelease{}
+	for _, st := range r.States {
+		var releases []engine.PreparedRelease
+		for _, rel := range st.Prepared() {
+			releases = append(releases, engine.PreparedRelease{Name: rel.Name, Namespace: rel.Namespace, Chart: rel.Chart, Version: rel.Version, KubeContext: rel.KubeContext, Labels: rel.Labels})
+		}
+		prepared[filepath.Base(st.File)] = releases
+	}
+	return prepared, nil
 }
 
 // buildPreparer runs `helmfile build` on the generated root: the releases
@@ -250,10 +300,11 @@ ATLAS_REDACT_SECRETS=true, ATLAS_REDACT_MAPS=1, ATLAS_DISCOVERY_MAP=1.`,
 				_, err = eng.GenerateDiscoveryMap(out, f)
 				return err
 			}
-			_, err = eng.Generate(out, f, engine.GenerateOptions{
-				NamespaceOverride: namespace,
-				Prepare:           buildPreparer(cmd.Context(), helmfile.Runner{Binary: g.helmfile, Stderr: os.Stderr}),
-			})
+			prepare := buildPreparer(cmd.Context(), helmfile.Runner{Binary: g.helmfile, Stderr: os.Stderr})
+			if os.Getenv("ATLAS_NATIVE_RENDERER") == "go" {
+				prepare = nativePreparer
+			}
+			_, err = eng.Generate(out, f, engine.GenerateOptions{NamespaceOverride: namespace, Prepare: prepare})
 			return err
 		},
 	}
@@ -261,6 +312,81 @@ ATLAS_REDACT_SECRETS=true, ATLAS_REDACT_MAPS=1, ATLAS_DISCOVERY_MAP=1.`,
 	gen.Flags().StringVar(&namespace, "namespace", "", "helmfile's --namespace of the render (the .Release.Namespace of the values)")
 	gen.Flags().StringVar(&out, "out", "", "output directory")
 	_ = gen.MarkFlagRequired("out")
-	cmd.AddCommand(gen)
+	cmd.AddCommand(gen, newNativeTemplateCmd())
 	return cmd
+}
+
+// newNativeTemplateCmd is `helmfile template` on generated states, rendered
+// by the Go renderer: the helmfile flags the tests and the CLI use, any
+// other flag is an error.
+func newNativeTemplateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "template --root <generated helmfile.yaml> [helmfile template flags]",
+		Short:              "Render generated states like helmfile template, without helmfile and helm",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o := renderer.Options{Stdout: cmd.OutOrStdout(), Log: os.Stderr}
+			root := ""
+			value := func(i *int, name string) (string, error) {
+				a := args[*i]
+				if v, ok := strings.CutPrefix(a, name+"="); ok {
+					return v, nil
+				}
+				if *i+1 >= len(args) {
+					return "", fmt.Errorf("flag %s needs a value", name)
+				}
+				*i++
+				return args[*i], nil
+			}
+			for i := 0; i < len(args); i++ {
+				a := args[i]
+				flag, _, _ := strings.Cut(a, "=")
+				var v string
+				var err error
+				switch flag {
+				case "template", "--skip-schema-validation", "--include-crds":
+					// the renderer always skips schema validation and includes CRDs (the AppSet's flags)
+					continue
+				case "--root", "-f", "--file":
+					root, err = value(&i, flag)
+				case "--namespace", "-n":
+					o.NamespaceOverride, err = value(&i, flag)
+				case "--output-dir":
+					if v, err = value(&i, flag); err == nil {
+						o.OutputDir, err = filepath.Abs(v)
+					}
+				case "--output-dir-template":
+					o.OutputDirTemplate, err = value(&i, flag)
+				case "--selector", "-l":
+					if v, err = value(&i, flag); err == nil {
+						var s renderer.Selector
+						if s, err = renderer.ParseSelector(v); err == nil {
+							o.Selectors = append(o.Selectors, s)
+						}
+					}
+				case "--args":
+					if v, err = value(&i, flag); err == nil {
+						for _, f := range strings.Fields(v) {
+							if f != "--skip-schema-validation" && f != "--include-crds" {
+								return fmt.Errorf("--args: helm flag %s is not supported", f)
+							}
+						}
+					}
+				default:
+					return fmt.Errorf("native template: unsupported argument %q", a)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			if root == "" {
+				return fmt.Errorf("native template: --root is required")
+			}
+			states, err := renderer.LoadRoot(root)
+			if err != nil {
+				return err
+			}
+			return renderer.Render(cmd.Context(), states, o)
+		},
+	}
 }

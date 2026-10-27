@@ -66,4 +66,10 @@ out="$(mktemp -d "${BATS_RUN_TMPDIR:-/tmp}/native-states.XXXXXX")"
 "${ATLAS_CLI:?ATLAS_ENGINE=native needs ATLAS_CLI}" native generate -C "$entry_dir" \
   ${templates:+--templates "$templates"} ${deployments:+--deployments "$deployments"} \
   ${namespace:+--namespace "$namespace"} --out "$out" || exit 1
+# ATLAS_NATIVE_RENDERER=go: helmfile template on the states through the Go
+# renderer (no helmfile, no helm); other subcommands stay with helmfile.
+if [ "${ATLAS_NATIVE_RENDERER:-}" = "go" ] && [[ " ${args[*]} " == *" template "* ]]; then
+  [ ${#rest_values[@]} -eq 0 ] || { echo "native-engine shim: state values ${rest_values[*]} with the Go renderer" >&2; exit 2; }
+  exec "$ATLAS_CLI" native template --root "$out/helmfile.yaml" "${args[@]}"
+fi
 exec "$real" -f "$out/helmfile.yaml" "${rest_values[@]}" "${args[@]}"
