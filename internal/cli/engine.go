@@ -126,7 +126,7 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 			return err
 		}
 	}
-	goRenderer := os.Getenv("ATLAS_NATIVE_RENDERER") == "go"
+	goRenderer := nativeGoRenderer()
 	if goRenderer {
 		opts.Prepare = nativePreparer
 	} else {
@@ -137,6 +137,16 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 		return err
 	}
 	if goRenderer {
+		// the in-process helm reads its homes from the environment: one HOME
+		// and helm cache per Application, like the helmfile runner's
+		// subprocess environment (set after Generate, whose decryption keeps
+		// the sidecar's own environment, as with helmfile)
+		for _, kv := range r.ExtraEnv {
+			k, v, _ := strings.Cut(kv, "=")
+			if err := os.Setenv(k, v); err != nil {
+				return err
+			}
+		}
 		states, err := renderer.LoadRoot(root)
 		if err != nil {
 			return err
@@ -148,7 +158,7 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 			}
 		}
 		if len(extra) > 0 {
-			return fmt.Errorf("ATLAS_NATIVE_RENDERER=go: extra helmfile template arguments are not supported: %v", extra)
+			return fmt.Errorf("--engine native: extra helmfile template arguments are not supported (ATLAS_NATIVE_RENDERER=helmfile passes them on): %v", extra)
 		}
 		sels := sel.selectors()
 		for i := 1; i < len(sels); i += 2 {
@@ -170,6 +180,11 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 	}
 	return r.Run(cmd.Context(), helmfile.Options{}, cmd.OutOrStdout(), append(args, extra...)...)
 }
+
+// nativeGoRenderer: the native engine renders its states with the Go
+// renderer (helm SDK, krusty) unless ATLAS_NATIVE_RENDERER=helmfile, which
+// keeps helmfile build/template on the generated states (the oracle path).
+func nativeGoRenderer() bool { return os.Getenv("ATLAS_NATIVE_RENDERER") != "helmfile" }
 
 // nativePreparer is buildPreparer without helmfile: the releases of the
 // generated states as `helmfile build` shows them (renderer.State.Prepared).
@@ -305,7 +320,7 @@ ATLAS_REDACT_SECRETS=true, ATLAS_REDACT_MAPS=1, ATLAS_DISCOVERY_MAP=1.`,
 				return err
 			}
 			prepare := buildPreparer(cmd.Context(), helmfile.Runner{Binary: g.helmfile, Stderr: os.Stderr})
-			if os.Getenv("ATLAS_NATIVE_RENDERER") == "go" {
+			if nativeGoRenderer() {
 				prepare = nativePreparer
 			}
 			_, err = eng.Generate(out, f, engine.GenerateOptions{NamespaceOverride: namespace, Prepare: prepare})
