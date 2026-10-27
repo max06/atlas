@@ -34,8 +34,12 @@ setup() {
 # ── No changes ──────────────────────────────────────────────────────────────
 
 @test "diff.sh: identical renders produce no-changes" {
-  export BASELINE_DIR="$BASELINE_SNAPSHOT_DIR"
-  export PR_DIR="$BASELINE_SNAPSHOT_DIR"
+  # private copies: diff.sh splits multi-document files in place, and the
+  # snapshot is shared with the tests that run in parallel (bats --jobs)
+  export BASELINE_DIR="${TEST_TEMP}/baseline"
+  export PR_DIR="${TEST_TEMP}/pr"
+  cp -r "$BASELINE_SNAPSHOT_DIR" "$BASELINE_DIR"
+  cp -r "$BASELINE_SNAPSHOT_DIR" "$PR_DIR"
 
   run bash "$(_diff_script)"
   [ "$status" -eq 0 ]
