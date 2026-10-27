@@ -25,8 +25,10 @@ func TestSelector(t *testing.T) {
 			t.Errorf("%v: got %v, want %v", c.labels, got, c.want)
 		}
 	}
-	if _, err := ParseSelector("novalue"); err == nil {
-		t.Error("a label without = must fail")
+	for _, bad := range []string{"novalue", "k=", "a=b=c", "k y=v"} {
+		if _, err := ParseSelector(bad); err == nil {
+			t.Errorf("%q must fail", bad)
+		}
 	}
 }
 
@@ -35,29 +37,30 @@ func TestSetOptions(t *testing.T) {
 		Set: []SetValue{
 			{Name: "a", Value: "x,y"},
 			{Name: "b", File: "/f.txt"},
-			{Name: "c", Values: []any{"1", 2}},
+			{Name: "c", Values: []any{"1", 2, map[string]any{"a": 1}}},
+			{Name: "rel", File: "rel.txt"},
 		},
 		SetString: []SetValue{
 			{Name: "d", Value: "{v}"},
 			{Name: "e", File: "/ignored.txt"}, // helmfile's setStringFlags ignores file
 		},
-	})
+	}, "/state")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{`a=x\,y`, "c={1,2}"}; !reflect.DeepEqual(o.Values, want) {
+	if want := []string{`a=x\,y`, `c={1,2,\{"a":1\}}`}; !reflect.DeepEqual(o.Values, want) {
 		t.Errorf("Values = %q, want %q", o.Values, want)
 	}
 	if want := []string{`d=\{v\}`}; !reflect.DeepEqual(o.StringValues, want) {
 		t.Errorf("StringValues = %q, want %q", o.StringValues, want)
 	}
-	if want := []string{"b=/f.txt"}; !reflect.DeepEqual(o.FileValues, want) {
+	if want := []string{"b=/f.txt", "rel=/state/rel.txt"}; !reflect.DeepEqual(o.FileValues, want) {
 		t.Errorf("FileValues = %q, want %q", o.FileValues, want)
 	}
-	if _, err := setOptions(Release{Set: []SetValue{{Name: "s", Value: "ref+sops://x"}}}); err == nil {
+	if _, err := setOptions(Release{Set: []SetValue{{Name: "s", Value: "ref+sops://x"}}}, "/state"); err == nil {
 		t.Error("a vals reference must fail")
 	}
-	flags, err := chartifySetFlags([]SetValue{{Name: "a", Value: "1"}, {Name: "b", File: "/f"}, {Name: "c", Value: "2"}})
+	flags, err := chartifySetFlags([]SetValue{{Name: "a", Value: "1"}, {Name: "b", File: "/f"}, {Name: "c", Value: "2"}}, "/state")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -121,7 +121,8 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 		fmt.Fprintf(os.Stderr, "atlas: native render kept in %s (values files may hold decrypted secrets)\n", dir)
 	}
 	r.Dir = dir
-	if truthy(os.Getenv("HELMFILE_CACHE_CLEANUP")) || truthy(os.Getenv("ARGOCD_ENV_HELMFILE_CACHE_CLEANUP")) {
+	// helmfile's cache of remote states: only the helmfile path has one
+	if !nativeGoRenderer() && (truthy(os.Getenv("HELMFILE_CACHE_CLEANUP")) || truthy(os.Getenv("ARGOCD_ENV_HELMFILE_CACHE_CLEANUP"))) {
 		if err := r.Run(cmd.Context(), helmfile.Options{}, io.Discard, "cache", "cleanup"); err != nil {
 			return err
 		}

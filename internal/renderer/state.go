@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
@@ -78,47 +79,129 @@ type SetValue struct {
 	Values            []any
 }
 
-var (
-	stateKeys   = set("commonLabels", "kubeVersion", "releases", "repositories", "helmDefaults", "helmfiles")
-	releaseKeys = set("name", "namespace", "chart", "version", "values", "labels", "skipSchemaValidation",
-		"jsonPatches", "strategicMergePatches", "transformers", "set", "setString",
-		"postRenderer", "postRendererArgs",
-		// needs only orders sync/apply, keyring only verifies: template ignores both
-		"needs", "keyring")
-	// helmDefaults that template sees: kubeContext (.Release.KubeContext);
-	// timeout and wait only act on sync/apply
-	helmDefaultsKeys = set("kubeContext", "timeout", "wait")
-	setValueKeys     = set("name", "value", "file", "values")
-	repositoryKeys   = set("name", "url", "oci")
-)
-
-func set(keys ...string) map[string]bool {
-	m := map[string]bool{}
-	for _, k := range keys {
-		m[k] = true
-	}
-	return m
-}
-
 // carrierFile is the engine's release-less carrier state (engine.CarrierFile).
 const carrierFile = "helmfile.discovery-map.yaml"
 
-// LoadRoot reads a generated root state (helmfile.yaml with helmfiles[].path)
-// and its instance states.
+// The documents are decoded into typed structs like helmfile does
+// (go.yaml.in/yaml/v3, string fields keep the scalar text: version 1.10
+// stays "1.10"), with KnownFields: any field the renderer does not
+// implement, and any type mismatch, is an error instead of being ignored.
+type rootDoc struct {
+	Helmfiles []struct {
+		Path string `yaml:"path"`
+	} `yaml:"helmfiles"`
+}
+
+type envDoc struct {
+	Environments map[string]struct {
+		Values []map[string]any `yaml:"values"`
+	} `yaml:"environments"`
+}
+
+type stateDoc struct {
+	KubeVersion  string            `yaml:"kubeVersion"`
+	CommonLabels map[string]string `yaml:"commonLabels"`
+	Repositories []struct {
+		Name string `yaml:"name"`
+		URL  string `yaml:"url"`
+		OCI  bool   `yaml:"oci"`
+	} `yaml:"repositories"`
+	// helmDefaults that template sees: kubeContext (.Release.KubeContext);
+	// timeout and wait only act on sync/apply
+	HelmDefaults struct {
+		KubeContext string `yaml:"kubeContext"`
+		Timeout     int    `yaml:"timeout"`
+		Wait        bool   `yaml:"wait"`
+	} `yaml:"helmDefaults"`
+	// helmfiles: only the release-less carrier state of the redaction maps
+	// (redactMaps), which `helmfile build` shows and template renders as
+	// nothing
+	Helmfiles []struct {
+		Path   string `yaml:"path"`
+		Values []any  `yaml:"values"`
+	} `yaml:"helmfiles"`
+	Releases []releaseDoc `yaml:"releases"`
+}
+
+type releaseDoc struct {
+	Name                  string            `yaml:"name"`
+	Namespace             string            `yaml:"namespace"`
+	Chart                 string            `yaml:"chart"`
+	Version               string            `yaml:"version"`
+	Values                []any             `yaml:"values"`
+	Labels                map[string]string `yaml:"labels"`
+	SkipSchemaValidation  *bool             `yaml:"skipSchemaValidation"`
+	JSONPatches           []any             `yaml:"jsonPatches"`
+	StrategicMergePatches []any             `yaml:"strategicMergePatches"`
+	Transformers          []any             `yaml:"transformers"`
+	Set                   []setDoc          `yaml:"set"`
+	SetString             []setDoc          `yaml:"setString"`
+	PostRenderer          string            `yaml:"postRenderer"`
+	PostRendererArgs      []string          `yaml:"postRendererArgs"`
+	// needs only orders sync/apply, keyring only verifies: template
+	// ignores both
+	Needs   []string `yaml:"needs"`
+	Keyring string   `yaml:"keyring"`
+}
+
+type setDoc struct {
+	Name   string `yaml:"name"`
+	Value  string `yaml:"value"`
+	File   string `yaml:"file"`
+	Values []any  `yaml:"values"`
+}
+
+// strictDecode decodes one document node into v, refusing unknown fields.
+func strictDecode(node *yaml.Node, v any) error {
+	data, err := yaml.Marshal(node)
+	if err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	return dec.Decode(v)
+}
+
+// documents splits a file into its YAML documents.
+func documents(data []byte) ([]*yaml.Node, error) {
+	var docs []*yaml.Node
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var n yaml.Node
+		err := dec.Decode(&n)
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, &n)
+	}
+}
+
+// LoadRoot reads a generated root state (one document with helmfiles[].path
+// and nothing else) and its instance states.
 func LoadRoot(file string) (*Root, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
-	var root struct {
-		Helmfiles []struct {
-			Path string `yaml:"path"`
-		} `yaml:"helmfiles"`
-	}
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	docs, err := documents(data)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
 	}
-	r := &Root{Dir: filepath.Dir(file)}
+	if len(docs) != 1 {
+		return nil, fmt.Errorf("%s: a generated root has one document, found %d", file, len(docs))
+	}
+	var root rootDoc
+	if err := strictDecode(docs[0], &root); err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	dir, err := filepath.Abs(filepath.Dir(file))
+	if err != nil {
+		return nil, err
+	}
+	r := &Root{Dir: dir}
 	for _, h := range root.Helmfiles {
 		st, err := LoadState(r.Dir, h.Path)
 		if err != nil {
@@ -129,166 +212,96 @@ func LoadRoot(file string) (*Root, error) {
 	return r, nil
 }
 
-// LoadState reads one state: a document with the environments, then the
-// document with the releases (writeState of the engine).
+// LoadState reads one state: an environments document (the engine writes
+// the default environment with inline value maps), then the state document
+// (writeState of the engine).
 func LoadState(dir, rel string) (*State, error) {
 	file := filepath.Join(dir, rel)
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
+	docs, err := documents(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
 	st := &State{File: rel, Env: map[string]any{}}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	for {
-		var doc map[string]any
-		err := dec.Decode(&doc)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", file, err)
-		}
-		if env, ok := doc["environments"]; ok {
-			if err := st.readEnvironments(env); err != nil {
+	for _, doc := range docs {
+		if hasKey(doc, "environments") {
+			var env envDoc
+			if err := strictDecode(doc, &env); err != nil {
 				return nil, fmt.Errorf("%s: %w", file, err)
+			}
+			for name, e := range env.Environments {
+				if name != "default" {
+					return nil, fmt.Errorf("%s: environment %q: only the default environment is supported", file, name)
+				}
+				for _, m := range e.Values {
+					for k, v := range m {
+						st.Env[k] = v
+					}
+				}
 			}
 			continue
 		}
-		if err := st.read(doc); err != nil {
+		var sd stateDoc
+		if err := strictDecode(doc, &sd); err != nil {
+			return nil, fmt.Errorf("%s: %w", file, err)
+		}
+		if err := st.read(sd); err != nil {
 			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 	}
 	return st, nil
 }
 
-// readEnvironments takes the values of the default environment (maps only:
-// the engine writes the atlas object inline).
-func (st *State) readEnvironments(env any) error {
-	envs, _ := env.(map[string]any)
-	def, _ := envs["default"].(map[string]any)
-	list, _ := def["values"].([]any)
-	for _, v := range list {
-		m, ok := v.(map[string]any)
-		if !ok {
-			return fmt.Errorf("environments.default.values: only inline maps are supported")
-		}
-		for k, val := range m {
-			st.Env[k] = val
+func hasKey(doc *yaml.Node, key string) bool {
+	n := doc
+	if n.Kind == yaml.DocumentNode && len(n.Content) > 0 {
+		n = n.Content[0]
+	}
+	if n.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
-func (st *State) read(doc map[string]any) error {
-	for k := range doc {
-		if !stateKeys[k] {
-			return fmt.Errorf("unsupported state field %q", k)
+func (st *State) read(sd stateDoc) error {
+	for i, h := range sd.Helmfiles {
+		if filepath.Base(h.Path) != carrierFile {
+			return fmt.Errorf("helmfiles[%d]: only the carrier state %s is supported", i, carrierFile)
 		}
 	}
-	// helmfiles: only the release-less carrier state of the redaction maps
-	// (redactMaps), which `helmfile build` shows and template renders as
-	// nothing
-	if subs, ok := doc["helmfiles"].([]any); ok {
-		for i, sub := range subs {
-			m, _ := sub.(map[string]any)
-			if filepath.Base(str(m["path"])) != carrierFile {
-				return fmt.Errorf("helmfiles[%d]: only the carrier state %s is supported", i, carrierFile)
-			}
-		}
+	st.KubeVersion = sd.KubeVersion
+	st.KubeContext = sd.HelmDefaults.KubeContext
+	st.CommonLabels = sd.CommonLabels
+	for _, r := range sd.Repositories {
+		st.Repositories = append(st.Repositories, Repository{Name: r.Name, URL: r.URL, OCI: r.OCI})
 	}
-	if v, ok := doc["kubeVersion"]; ok {
-		st.KubeVersion = fmt.Sprint(v)
-	}
-	if hd, ok := doc["helmDefaults"].(map[string]any); ok {
-		for k := range hd {
-			if !helmDefaultsKeys[k] {
-				return fmt.Errorf("unsupported helmDefaults field %q", k)
-			}
+	for i, rd := range sd.Releases {
+		if rd.Name == "" || rd.Chart == "" {
+			return fmt.Errorf("releases[%d]: release without name or chart", i)
 		}
-		st.KubeContext = str(hd["kubeContext"])
-	}
-	labels, err := stringMap(doc["commonLabels"], "commonLabels")
-	if err != nil {
-		return err
-	}
-	st.CommonLabels = labels
-	repos, _ := doc["repositories"].([]any)
-	for i, r := range repos {
-		m, ok := r.(map[string]any)
-		if !ok {
-			return fmt.Errorf("repositories[%d]: not a map", i)
+		r := Release{
+			Name: rd.Name, Namespace: rd.Namespace, Chart: rd.Chart, Version: rd.Version,
+			Values: rd.Values, Labels: rd.Labels, SkipSchemaValidation: rd.SkipSchemaValidation,
+			JSONPatches: rd.JSONPatches, StrategicMergePatches: rd.StrategicMergePatches, Transformers: rd.Transformers,
+			PostRenderer: rd.PostRenderer, PostRendererArgs: rd.PostRendererArgs,
 		}
-		for k := range m {
-			if !repositoryKeys[k] {
-				return fmt.Errorf("repositories[%d]: unsupported field %q", i, k)
-			}
+		for _, sv := range rd.Set {
+			r.Set = append(r.Set, SetValue(sv))
 		}
-		st.Repositories = append(st.Repositories, Repository{Name: fmt.Sprint(m["name"]), URL: fmt.Sprint(m["url"]), OCI: m["oci"] == true})
-	}
-	releases, _ := doc["releases"].([]any)
-	for i, r := range releases {
-		m, ok := r.(map[string]any)
-		if !ok {
-			return fmt.Errorf("releases[%d]: not a map", i)
+		for _, sv := range rd.SetString {
+			r.SetString = append(r.SetString, SetValue(sv))
 		}
-		rel, err := readRelease(m)
-		if err != nil {
-			return fmt.Errorf("releases[%d]: %w", i, err)
-		}
-		st.Releases = append(st.Releases, rel)
+		st.Releases = append(st.Releases, r)
 	}
 	return nil
-}
-
-func readRelease(m map[string]any) (Release, error) {
-	for k := range m {
-		if !releaseKeys[k] {
-			return Release{}, fmt.Errorf("unsupported release field %q", k)
-		}
-	}
-	r := Release{Name: str(m["name"]), Namespace: str(m["namespace"]), Chart: str(m["chart"]), Version: str(m["version"])}
-	if r.Name == "" || r.Chart == "" {
-		return r, fmt.Errorf("release without name or chart")
-	}
-	r.Values, _ = m["values"].([]any)
-	r.JSONPatches, _ = m["jsonPatches"].([]any)
-	r.StrategicMergePatches, _ = m["strategicMergePatches"].([]any)
-	r.Transformers, _ = m["transformers"].([]any)
-	labels, err := stringMap(m["labels"], "labels")
-	if err != nil {
-		return r, err
-	}
-	r.Labels = labels
-	if v, ok := m["skipSchemaValidation"].(bool); ok {
-		r.SkipSchemaValidation = &v
-	}
-	r.PostRenderer = str(m["postRenderer"])
-	if args, ok := m["postRendererArgs"].([]any); ok {
-		for _, a := range args {
-			r.PostRendererArgs = append(r.PostRendererArgs, str(a))
-		}
-	}
-	for _, f := range []struct {
-		key string
-		dst *[]SetValue
-	}{{"set", &r.Set}, {"setString", &r.SetString}} {
-		list, _ := m[f.key].([]any)
-		for i, e := range list {
-			sm, ok := e.(map[string]any)
-			if !ok {
-				return r, fmt.Errorf("%s[%d]: not a map", f.key, i)
-			}
-			for k := range sm {
-				if !setValueKeys[k] {
-					return r, fmt.Errorf("%s[%d]: unsupported field %q", f.key, i, k)
-				}
-			}
-			sv := SetValue{Name: str(sm["name"]), Value: str(sm["value"]), File: str(sm["file"])}
-			sv.Values, _ = sm["values"].([]any)
-			*f.dst = append(*f.dst, sv)
-		}
-	}
-	return r, nil
 }
 
 func str(v any) string {
@@ -296,21 +309,6 @@ func str(v any) string {
 		return ""
 	}
 	return fmt.Sprint(v)
-}
-
-func stringMap(v any, what string) (map[string]string, error) {
-	if v == nil {
-		return nil, nil
-	}
-	m, ok := v.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("%s: not a map", what)
-	}
-	out := map[string]string{}
-	for k, val := range m {
-		out[k] = fmt.Sprint(val)
-	}
-	return out, nil
 }
 
 // Prepared returns the releases as `helmfile build` shows them, the
@@ -361,12 +359,18 @@ func (st *State) Prepared(namespaceOverride string) ([]Release, error) {
 // as they are.
 func (st *State) executeTemplates(r Release, namespaceOverride string) (Release, error) {
 	if !hasTemplate(r) {
+		// a field without template expressions renders to itself; helmfile
+		// trims the four names in any case
+		r.Name, r.Chart = strings.TrimSpace(r.Name), strings.TrimSpace(r.Chart)
+		r.Namespace, r.Version = strings.TrimSpace(r.Namespace), strings.TrimSpace(r.Version)
 		return r, nil
 	}
 	t, err := templater()
 	if err != nil {
 		return r, err
 	}
+	// every round renders the original release; only the template data
+	// (.Release) comes from the previous round
 	prev := r
 	for it := 0; it < 6; it++ {
 		data := map[string]any{
@@ -388,8 +392,7 @@ func (st *State) executeTemplates(r Release, namespaceOverride string) (Release,
 			}
 			return out, nil
 		}
-		next := prev
-		next.Labels = map[string]string{}
+		next := r
 		for _, f := range []struct {
 			name string
 			v    *string
@@ -400,7 +403,8 @@ func (st *State) executeTemplates(r Release, namespaceOverride string) (Release,
 			}
 			*f.v = strings.TrimSpace(out)
 		}
-		for k, v := range prev.Labels {
+		next.Labels = map[string]string{}
+		for k, v := range r.Labels {
 			out, err := render("labels."+k, v)
 			if err != nil {
 				return r, err
@@ -408,15 +412,15 @@ func (st *State) executeTemplates(r Release, namespaceOverride string) (Release,
 			next.Labels[k] = out
 		}
 		next.PostRendererArgs = nil
-		for _, a := range prev.PostRendererArgs {
+		for _, a := range r.PostRendererArgs {
 			out, err := render("postRendererArgs", a)
 			if err != nil {
 				return r, err
 			}
 			next.PostRendererArgs = append(next.PostRendererArgs, out)
 		}
-		next.Values = make([]any, len(prev.Values))
-		for i, v := range prev.Values {
+		next.Values = make([]any, len(r.Values))
+		for i, v := range r.Values {
 			if sv, ok := v.(string); ok {
 				out, err := render(fmt.Sprintf("values[%d]", i), sv)
 				if err != nil {
@@ -521,22 +525,29 @@ type condition struct {
 	negate     bool
 }
 
-// ParseSelector reads key=value,key!=value.
+// ParseSelector reads key=value,key!=value with helmfile's label syntax.
 func ParseSelector(s string) (Selector, error) {
 	var sel Selector
 	for _, part := range strings.Split(s, ",") {
-		if k, v, ok := strings.Cut(part, "!="); ok {
+		switch {
+		case reLabelMismatch.MatchString(part):
+			k, v, _ := strings.Cut(part, "!=")
 			sel = append(sel, condition{key: k, value: v, negate: true})
-			continue
-		}
-		k, v, ok := strings.Cut(part, "=")
-		if !ok {
+		case reLabelMatch.MatchString(part):
+			k, v, _ := strings.Cut(part, "=")
+			sel = append(sel, condition{key: k, value: v})
+		default:
 			return nil, fmt.Errorf("malformed label: %s. Expected label in form k=v or k!=v", part)
 		}
-		sel = append(sel, condition{key: k, value: v})
 	}
 	return sel, nil
 }
+
+// helmfile's label filter syntax (release_filters.go)
+var (
+	reLabelMismatch = regexp.MustCompile(`^[a-zA-Z0-9_\.\/\+-]+!=[a-zA-Z0-9_\.\/\+-]+$`)
+	reLabelMatch    = regexp.MustCompile(`^[a-zA-Z0-9_\.\/\+-]+=[a-zA-Z0-9_\.\/\+-]+$`)
+)
 
 // matches is helmfile's LabelFilter on the prepared labels.
 func (s Selector) matches(labels map[string]string) bool {

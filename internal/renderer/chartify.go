@@ -36,7 +36,7 @@ const (
 // helmfile's PrepareChartify + processChartification. The chartify library
 // itself does the work; its helm and kustomize commands run in-process
 // (runCommand): helm through the SDK, kustomize through krusty.
-func (r *Renderer) chartify(st *State, rel Release, stateDir, chartRef string, local bool, valuesFiles []string) (string, error) {
+func (r *Renderer) chartify(st *State, rel Release, stateDir, chartRef string, local, manifestsDir bool, valuesFiles []string) (string, error) {
 	// helmfile pulls an OCI chart before chartify (getOCIChart): chartify
 	// gets a local directory, and the dependencies stay skipped (the chart
 	// is remote for helmfile's skipDeps)
@@ -62,17 +62,22 @@ func (r *Renderer) chartify(st *State, rel Release, stateDir, chartRef string, l
 		// remote charts skip the dependency update (helmfile's skipDeps)
 		SkipDeps: skipDeps,
 	}
-	setFlags, err := chartifySetFlags(rel.Set)
+	setFlags, err := chartifySetFlags(rel.Set, stateDir)
 	if err != nil {
 		return "", err
 	}
 	opts.SetFlags = setFlags
-	if local {
+	// chartify renders .gotmpl files of a directory of manifests with
+	// helmfile's template functions and data, not ported: refused there
+	// (in a chart they stay untouched files)
+	if manifestsDir {
 		if gotmpl, err := hasGotmpl(chartRef); err != nil {
 			return "", err
 		} else if gotmpl {
-			return "", fmt.Errorf("chart %s: .gotmpl files in a chartified directory: %w", chartRef, errUnsupported)
+			return "", fmt.Errorf("chart %s: .gotmpl files in a directory of manifests: %w", chartRef, errUnsupported)
 		}
+	}
+	if local {
 		if err := checkFileDependencies(chartRef); err != nil {
 			return "", err
 		}
@@ -124,8 +129,8 @@ func releaseID(rel Release) string {
 
 // chartifySetFlags is helmfile's setFlags(release.SetValues) as chartify
 // gets them: flag and value pairs (setString does not reach chartify).
-func chartifySetFlags(set []SetValue) ([]string, error) {
-	o, err := setOptions(Release{Set: set})
+func chartifySetFlags(set []SetValue, stateDir string) ([]string, error) {
+	o, err := setOptions(Release{Set: set}, stateDir)
 	if err != nil {
 		return nil, err
 	}

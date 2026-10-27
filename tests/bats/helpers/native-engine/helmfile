@@ -2,8 +2,10 @@
 # helmfile shim of the native engine backend (ATLAS_ENGINE=native, see
 # render.bash). A call with the ATLAS test entry (tests/helmfile.yaml.gotmpl)
 # renders the native states first (`atlas native generate`, the same ATLAS_*
-# switches and atlas.* state values as the entry) and runs the real helmfile
-# on them with the remaining arguments. Every other call, and every call with
+# switches and atlas.* state values as the entry), then `template` runs
+# through the Go renderer (`atlas native template`) and other subcommands
+# through the real helmfile, with the remaining arguments
+# (ATLAS_NATIVE_RENDERER=helmfile: helmfile for every subcommand). Every other call, and every call with
 # ATLAS_NATIVE_SHIM_OFF=1 (tests whose oracle is the template engine), passes
 # through unchanged. So each test runs unchanged against both engines.
 set -uo pipefail

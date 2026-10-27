@@ -3,12 +3,14 @@ package renderer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -106,7 +108,8 @@ func Render(ctx context.Context, root *Root, o Options) error {
 		}
 		matched += n
 	}
-	if len(o.Selectors) > 0 && matched == 0 {
+	if matched == 0 {
+		// helmfile's NoMatchingHelmfileError, also without selectors
 		return fmt.Errorf("err: no releases found that matches specified selector(%s) and environment(default), in any helmfile", o.selectorText())
 	}
 	return nil
@@ -125,7 +128,7 @@ func (o Options) selectorText() string {
 		}
 		parts = append(parts, strings.Join(conds, ","))
 	}
-	return strings.Join(parts, " | ")
+	return strings.Join(parts, ", ")
 }
 
 func (o Options) selected(labels map[string]string) bool {
@@ -152,6 +155,9 @@ func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int,
 	prepared, err := st.Prepared(r.opts.NamespaceOverride)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", st.File, err)
+	}
+	if err := checkDuplicates(prepared, r.opts); err != nil {
+		return 0, err
 	}
 	var calls []templateCall
 	defer func() {
@@ -183,13 +189,60 @@ func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int,
 	return len(calls), nil
 }
 
+// checkDuplicates is helmfile's check on the selected releases of a state:
+// one (namespace, name, kubeContext) at most once.
+func checkDuplicates(prepared []Release, o Options) error {
+	type key struct{ ns, name, kc string }
+	counts := map[key]int{}
+	var order []key
+	for _, rel := range prepared {
+		if o.NamespaceOverride != "" {
+			rel.Namespace = o.NamespaceOverride
+		}
+		labels := map[string]string{}
+		for k, v := range rel.Labels {
+			labels[k] = v
+		}
+		labels["namespace"] = rel.Namespace
+		if !o.selected(labels) {
+			continue
+		}
+		k := key{rel.Namespace, rel.Name, rel.KubeContext}
+		if counts[k] == 0 {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
+	for _, k := range order {
+		if c := counts[k]; c > 1 {
+			msg := ""
+			if k.ns != "" {
+				msg += fmt.Sprintf(" in namespace %q", k.ns)
+			}
+			if k.kc != "" {
+				msg += fmt.Sprintf(" in kubecontext %q", k.kc)
+			}
+			return fmt.Errorf("duplicate release %q found%s: there were %d releases named \"%s\" matching specified selector", k.name, msg, c, k.name)
+		}
+	}
+	return nil
+}
+
 // prepareRelease is helmfile's prepareChartForRelease plus the template
 // flags: the chart reference (repositories added, chartify run), the values
 // files and set flags, the output directory.
 func (r *Renderer) prepareRelease(root *Root, st *State, rel Release) (templateCall, error) {
 	stateDir := filepath.Dir(filepath.Join(root.Dir, st.File))
-	t := templateCall{Name: rel.Name, Namespace: rel.Namespace, Version: rel.Version, KubeVersion: st.KubeVersion,
-		PostRenderer: rel.PostRenderer, PostRendererArgs: rel.PostRendererArgs}
+	// helmfile strips an OCI digest from --version (the digest is part of the
+	// chart reference); empty post-renderer arguments are dropped
+	version, _, _ := strings.Cut(rel.Version, "@")
+	t := templateCall{Name: rel.Name, Namespace: rel.Namespace, Version: version, KubeVersion: st.KubeVersion,
+		PostRenderer: rel.PostRenderer}
+	for _, a := range rel.PostRendererArgs {
+		if a != "" {
+			t.PostRendererArgs = append(t.PostRendererArgs, a)
+		}
+	}
 	chartRef := rel.Chart
 	local := filepath.IsAbs(chartRef) || strings.HasPrefix(chartRef, "./") || strings.HasPrefix(chartRef, "../")
 	manifestsDir := false
@@ -197,11 +250,15 @@ func (r *Renderer) prepareRelease(root *Root, st *State, rel Release) (templateC
 		if !filepath.IsAbs(chartRef) {
 			chartRef = filepath.Join(stateDir, chartRef)
 		}
-		ok, err := exists(filepath.Join(chartRef, "Chart.yaml"))
-		if err != nil {
-			return t, err
+		// a directory without Chart.yaml is a directory of manifests; a
+		// file is a chart archive
+		if info, err := os.Stat(chartRef); err == nil && info.IsDir() {
+			ok, err := exists(filepath.Join(chartRef, "Chart.yaml"))
+			if err != nil {
+				return t, err
+			}
+			manifestsDir = !ok
 		}
-		manifestsDir = !ok
 	} else {
 		var err error
 		if chartRef, err = r.remoteRef(chartRef); err != nil {
@@ -213,14 +270,14 @@ func (r *Renderer) prepareRelease(root *Root, st *State, rel Release) (templateC
 	if err != nil {
 		return t, err
 	}
-	vo, err := setOptions(rel)
+	vo, err := setOptions(rel, stateDir)
 	if err != nil {
 		return t, err
 	}
 	vo.ValueFiles = files
 	t.Values = vo
 	if manifestsDir || needsChartify(rel) {
-		dir, err := r.chartify(st, rel, stateDir, chartRef, local, files)
+		dir, err := r.chartify(st, rel, stateDir, chartRef, local, manifestsDir, files)
 		if err != nil {
 			return t, err
 		}
@@ -397,7 +454,7 @@ func (r *Renderer) helmTemplate(ctx context.Context, t templateCall, out io.Writ
 
 // captureStdout runs fn with the process stdout redirected into a pipe and
 // returns what fn printed. Renders run one at a time, so the swap is safe.
-func captureStdout(fn func() error) (string, error) {
+func captureStdout(fn func() error) (out string, err error) {
 	rd, wr, err := os.Pipe()
 	if err != nil {
 		return "", err
@@ -409,12 +466,15 @@ func captureStdout(fn func() error) (string, error) {
 		b, _ := io.ReadAll(rd)
 		done <- string(b)
 	}()
-	ferr := fn()
-	os.Stdout = saved
-	wr.Close()
-	out := <-done
-	rd.Close()
-	return out, ferr
+	defer func() {
+		// also on a panic in fn: stdout back, the reader drained
+		os.Stdout = saved
+		wr.Close()
+		out = <-done
+		rd.Close()
+	}()
+	err = fn()
+	return out, err
 }
 
 // writeToFile is helm template's hook writer (with its "wrote" line).
@@ -443,13 +503,14 @@ func writeToFile(outputDir, name, data string, appendData bool, out io.Writer) e
 
 // setOptions are helmfile's set and setString flags (setFlags,
 // setStringFlags) as helm values options: value -> --set(-string), file ->
-// --set-file (set only: setString ignores file), values -> name={a,b}.
-// Secret references (ref+) need vals and are refused.
-func setOptions(rel Release) (*values.Options, error) {
+// --set-file relative to the state directory (set only: setString ignores
+// file), values -> name={a,b} with non-string items as JSON. Secret
+// references (ref+) need vals and are refused.
+func setOptions(rel Release, stateDir string) (*values.Options, error) {
 	o := &values.Options{}
 	item := func(v string) (string, error) {
 		if strings.Contains(v, "ref+") {
-			return "", fmt.Errorf("set value with a secret reference (ref+) is not supported")
+			return "", fmt.Errorf("set value with a secret reference (ref+): %w", errUnsupported)
 		}
 		return escape(v), nil
 	}
@@ -468,12 +529,24 @@ func setOptions(rel Release) (*values.Options, error) {
 				*list.dst = append(*list.dst, escape(sv.Name)+"="+v)
 			case sv.File != "":
 				if list.files {
-					o.FileValues = append(o.FileValues, escape(sv.Name)+"="+sv.File)
+					f := sv.File
+					if !filepath.IsAbs(f) && !strings.Contains(f, "://") {
+						f = filepath.Join(stateDir, f)
+					}
+					o.FileValues = append(o.FileValues, escape(sv.Name)+"="+f)
 				}
 			case len(sv.Values) > 0:
 				items := make([]string, len(sv.Values))
 				for i, raw := range sv.Values {
-					v, err := item(fmt.Sprint(raw))
+					s, ok := raw.(string)
+					if !ok {
+						b, err := json.Marshal(raw)
+						if err != nil {
+							return nil, err
+						}
+						s = string(b)
+					}
+					v, err := item(s)
 					if err != nil {
 						return nil, err
 					}
@@ -577,6 +650,10 @@ func (r *Renderer) valuesFiles(stateDir string, rel Release) ([]string, error) {
 			}
 			data = b
 		case map[string]any:
+			if hasValsRef(tv) {
+				// helmfile evaluates the values list with vals
+				return files, fmt.Errorf("values[%d]: vals references (ref+): %w", i, errUnsupported)
+			}
 			var b bytes.Buffer
 			enc := yaml.NewEncoder(&b)
 			enc.SetIndent(2)
@@ -609,6 +686,30 @@ func (r *Renderer) valuesFiles(stateDir string, rel Release) ([]string, error) {
 func (r *Renderer) buildDependencies(chartPath string) (chart.Charter, error) {
 	return nil, fmt.Errorf("chart %s: local chart dependencies are not supported yet", chartPath)
 }
+
+// hasValsRef reports a string with a vals reference (ref+<scheme>://)
+// anywhere in v.
+func hasValsRef(v any) bool {
+	switch tv := v.(type) {
+	case string:
+		return valsRefURI.MatchString(tv)
+	case map[string]any:
+		for _, e := range tv {
+			if hasValsRef(e) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range tv {
+			if hasValsRef(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var valsRefURI = regexp.MustCompile(`ref\+[a-z0-9]+://`)
 
 func exists(path string) (bool, error) {
 	_, err := os.Stat(path)

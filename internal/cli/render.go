@@ -40,7 +40,10 @@ state under $XDG_CACHE_HOME/apps/<app>, and HELMFILE_CACHE_CLEANUP=true
 when the entry pins ATLAS to a branch.`,
 		RunE: func(cmd *cobra.Command, extra []string) error {
 			if eng.native() {
-				warnToolchain(cmd)
+				// the Go renderer needs neither helm nor helmfile
+				if !nativeGoRenderer() {
+					warnToolchain(cmd)
+				}
 				return renderNative(cmd, g, &eng, &sel, argocd, outputDir, extra)
 			}
 			r, err := g.runner()
