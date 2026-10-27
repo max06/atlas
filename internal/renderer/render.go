@@ -18,7 +18,6 @@ import (
 	"helm.sh/helm/v4/pkg/chart/loader"
 	"helm.sh/helm/v4/pkg/cli"
 	"helm.sh/helm/v4/pkg/cli/values"
-	"helm.sh/helm/v4/pkg/downloader"
 	"helm.sh/helm/v4/pkg/getter"
 	"helm.sh/helm/v4/pkg/registry"
 	release "helm.sh/helm/v4/pkg/release/v1"
@@ -81,6 +80,21 @@ func Render(ctx context.Context, root *Root, o Options) error {
 	)
 	if err != nil {
 		return fmt.Errorf("registry client: %w", err)
+	}
+	// chartify looks its helm and kustomize binaries up before it runs them
+	// through runCommand: two names for this executable satisfy the lookup,
+	// nothing is executed
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(work, "bin"), 0o700); err != nil {
+		return err
+	}
+	for _, name := range []string{"helm", "kustomize"} {
+		if err := os.Symlink(self, filepath.Join(work, "bin", name)); err != nil {
+			return err
+		}
 	}
 	r := &Renderer{opts: o, settings: settings, work: work, registry: rc, repos: map[string]Repository{}, added: map[string]bool{}}
 	matched := 0
@@ -156,76 +170,110 @@ func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int,
 
 func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel Release) error {
 	stateDir := filepath.Dir(filepath.Join(root.Dir, st.File))
-	if needsChartify(rel) {
-		return fmt.Errorf("patches (jsonPatches, strategicMergePatches, transformers): %w", errUnsupported)
-	}
 	chartRef := rel.Chart
 	local := filepath.IsAbs(chartRef) || strings.HasPrefix(chartRef, "./") || strings.HasPrefix(chartRef, "../")
+	manifestsDir := false
 	if local {
 		if !filepath.IsAbs(chartRef) {
 			chartRef = filepath.Join(stateDir, chartRef)
 		}
-		if ok, _ := exists(filepath.Join(chartRef, "Chart.yaml")); !ok {
-			return fmt.Errorf("chart %s: a directory of manifests (no Chart.yaml): %w", chartRef, errUnsupported)
+		ok, err := exists(filepath.Join(chartRef, "Chart.yaml"))
+		if err != nil {
+			return err
 		}
+		manifestsDir = !ok
 	} else {
 		var err error
 		if chartRef, err = r.remoteRef(chartRef); err != nil {
 			return err
 		}
 	}
-
-	client := action.NewInstall(&action.Configuration{})
-	client.DryRunStrategy = action.DryRunClient
-	client.ReleaseName = rel.Name
-	client.Replace = true
-	client.IncludeCRDs = true
-	client.Namespace = rel.Namespace
-	if client.Namespace == "" {
-		client.Namespace = r.settings.Namespace()
-	}
-	client.Version = rel.Version
-	client.SkipSchemaValidation = true
-	client.SetRegistryClient(r.registry)
-	kubeVersion := st.KubeVersion
-	if kubeVersion != "" {
-		kv, err := common.ParseKubeVersion(kubeVersion)
-		if err != nil {
-			return fmt.Errorf("invalid kube version '%s': %w", kubeVersion, err)
-		}
-		client.KubeVersion = kv
-	}
-	outDir := ""
-	if r.opts.OutputDir != "" {
-		var err error
-		if outDir, err = st.outputDir(root.Dir, r.opts.OutputDir, r.opts.OutputDirTemplate, rel); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(outDir, 0o755); err != nil {
-			return err
-		}
-		client.OutputDir = outDir
-	}
-
-	chartPath, err := client.LocateChart(chartRef, r.settings)
-	if err != nil {
-		return err
-	}
 	files, err := r.valuesFiles(stateDir, rel)
-	if err != nil {
-		return err
-	}
 	defer func() {
 		for _, f := range files {
 			os.Remove(f)
 		}
 	}()
+	if err != nil {
+		return err
+	}
 	vo, err := setOptions(rel)
 	if err != nil {
 		return err
 	}
 	vo.ValueFiles = files
-	vals, err := vo.MergeValues(getter.All(r.settings))
+	if manifestsDir || needsChartify(rel) {
+		dir, err := r.chartify(st, rel, stateDir, chartRef, local, files)
+		if err != nil {
+			return err
+		}
+		chartRef, local = dir, true
+	}
+	t := templateCall{
+		Name:        rel.Name,
+		Chart:       chartRef,
+		Local:       local,
+		Namespace:   rel.Namespace,
+		Version:     rel.Version,
+		KubeVersion: st.KubeVersion,
+		Values:      vo,
+	}
+	if r.opts.OutputDir != "" {
+		if t.OutputDir, err = st.outputDir(root.Dir, r.opts.OutputDir, r.opts.OutputDirTemplate, rel); err != nil {
+			return err
+		}
+	}
+	return r.helmTemplate(ctx, t, r.opts.Stdout)
+}
+
+// templateCall is one `helm template` (with --include-crds and
+// --skip-schema-validation, the flags of every atlas render).
+type templateCall struct {
+	Name, Chart        string
+	Local              bool // Chart is a directory: helm dependency build if needed
+	Namespace, Version string
+	KubeVersion        string
+	APIVersions        []string
+	OutputDir          string
+	Values             *values.Options
+}
+
+// helmTemplate renders like `helm template`: without an output directory the
+// manifests and hooks go to out; with one, helm writes the files and out
+// gets helm's "wrote <file>" lines (the install action prints them to the
+// process stdout, which is captured for the duration of the call).
+func (r *Renderer) helmTemplate(ctx context.Context, t templateCall, out io.Writer) error {
+	client := action.NewInstall(&action.Configuration{})
+	client.DryRunStrategy = action.DryRunClient
+	client.ReleaseName = t.Name
+	client.Replace = true
+	client.IncludeCRDs = true
+	client.Namespace = t.Namespace
+	if client.Namespace == "" {
+		client.Namespace = r.settings.Namespace()
+	}
+	client.Version = t.Version
+	client.SkipSchemaValidation = true
+	client.SetRegistryClient(r.registry)
+	client.APIVersions = common.VersionSet(t.APIVersions)
+	if t.KubeVersion != "" {
+		kv, err := common.ParseKubeVersion(t.KubeVersion)
+		if err != nil {
+			return fmt.Errorf("invalid kube version '%s': %w", t.KubeVersion, err)
+		}
+		client.KubeVersion = kv
+	}
+	if t.OutputDir != "" {
+		if err := os.MkdirAll(t.OutputDir, 0o755); err != nil {
+			return err
+		}
+		client.OutputDir = t.OutputDir
+	}
+	chartPath, err := client.LocateChart(t.Chart, r.settings)
+	if err != nil {
+		return err
+	}
+	vals, err := t.Values.MergeValues(getter.All(r.settings))
 	if err != nil {
 		return err
 	}
@@ -244,7 +292,7 @@ func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel
 	}
 	if req := ac.MetaDependencies(); len(req) > 0 {
 		if err := action.CheckDependencies(ch, req); err != nil {
-			if !local {
+			if !t.Local {
 				return fmt.Errorf("an error occurred while checking for chart dependencies. You may need to run 'helm dependency build' to fetch missing dependencies: %w", err)
 			}
 			// helmfile runs `helm dependency build` on local charts
@@ -253,7 +301,12 @@ func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel
 			}
 		}
 	}
-	res, err := client.RunWithContext(ctx, ch, vals)
+	var res any
+	wrote, err := captureStdout(func() error {
+		var err error
+		res, err = client.RunWithContext(ctx, ch, vals)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -261,35 +314,54 @@ func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel
 	if !ok {
 		return errors.New("unexpected release type")
 	}
-	return r.write(rl, outDir)
-}
-
-// write is the output of helm template: the manifests (written by the
-// install action itself with an output directory), then the hooks.
-func (r *Renderer) write(rl *release.Release, outDir string) error {
-	if outDir == "" {
+	if t.OutputDir == "" {
 		var b bytes.Buffer
 		fmt.Fprintln(&b, strings.TrimSpace(rl.Manifest))
 		for _, h := range rl.Hooks {
 			fmt.Fprintf(&b, "---\n# Source: %s\n%s\n", h.Path, h.Manifest)
 		}
-		_, err := r.opts.Stdout.Write(b.Bytes())
+		_, err := out.Write(b.Bytes())
+		return err
+	}
+	if _, err := io.WriteString(out, wrote); err != nil {
 		return err
 	}
 	written := map[string]bool{}
 	for _, h := range rl.Hooks {
-		if _, err := os.Stat(filepath.Join(outDir, h.Path)); err == nil {
+		if _, err := os.Stat(filepath.Join(t.OutputDir, h.Path)); err == nil {
 			written[h.Path] = true
 		}
-		if err := writeToFile(outDir, h.Path, h.Manifest, written[h.Path]); err != nil {
+		if err := writeToFile(t.OutputDir, h.Path, h.Manifest, written[h.Path], out); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writeToFile is helm template's hook writer.
-func writeToFile(outputDir, name, data string, appendData bool) error {
+// captureStdout runs fn with the process stdout redirected into a pipe and
+// returns what fn printed. Renders run one at a time, so the swap is safe.
+func captureStdout(fn func() error) (string, error) {
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	saved := os.Stdout
+	os.Stdout = wr
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(rd)
+		done <- string(b)
+	}()
+	ferr := fn()
+	os.Stdout = saved
+	wr.Close()
+	out := <-done
+	rd.Close()
+	return out, ferr
+}
+
+// writeToFile is helm template's hook writer (with its "wrote" line).
+func writeToFile(outputDir, name, data string, appendData bool, out io.Writer) error {
 	file := outputDir + string(filepath.Separator) + name
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return err
@@ -305,7 +377,10 @@ func writeToFile(outputDir, name, data string, appendData bool) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "---\n# Source: %s\n%s\n", name, data)
+	if _, err = fmt.Fprintf(f, "---\n# Source: %s\n%s\n", name, data); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "wrote %s\n", file)
 	return err
 }
 
@@ -439,6 +514,10 @@ func (r *Renderer) valuesFiles(stateDir string, rel Release) ([]string, error) {
 			if err != nil {
 				return files, fmt.Errorf("failed to render values files \"%s\": %w", tv, err)
 			}
+			if valsRef.Match(b) {
+				// helmfile would evaluate the file with vals
+				return files, fmt.Errorf("values %s: vals references (ref+): %w", tv, errUnsupported)
+			}
 			data = b
 		case map[string]any:
 			var b bytes.Buffer
@@ -473,8 +552,6 @@ func (r *Renderer) valuesFiles(stateDir string, rel Release) ([]string, error) {
 func (r *Renderer) buildDependencies(chartPath string) (chart.Charter, error) {
 	return nil, fmt.Errorf("chart %s: local chart dependencies are not supported yet", chartPath)
 }
-
-var _ = downloader.Manager{}
 
 func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
