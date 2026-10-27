@@ -37,6 +37,17 @@ const (
 // itself does the work; its helm and kustomize commands run in-process
 // (runCommand): helm through the SDK, kustomize through krusty.
 func (r *Renderer) chartify(st *State, rel Release, stateDir, chartRef string, local bool, valuesFiles []string) (string, error) {
+	// helmfile pulls an OCI chart before chartify (getOCIChart): chartify
+	// gets a local directory, and the dependencies stay skipped (the chart
+	// is remote for helmfile's skipDeps)
+	skipDeps := !local
+	if strings.HasPrefix(chartRef, "oci://") {
+		dir, err := r.pullUntar(chartRef, rel.Version)
+		if err != nil {
+			return "", err
+		}
+		chartRef, local = dir, true
+	}
 	opts := &chartify.ChartifyOpts{
 		WorkaroundOutputDirIssue:    true,
 		EnableKustomizeAlphaPlugins: true,
@@ -49,7 +60,7 @@ func (r *Renderer) chartify(st *State, rel Release, stateDir, chartRef string, l
 		IncludeCRDs:  true,
 		KubeVersion:  st.KubeVersion,
 		// remote charts skip the dependency update (helmfile's skipDeps)
-		SkipDeps: !local,
+		SkipDeps: skipDeps,
 	}
 	setFlags, err := chartifySetFlags(rel.Set)
 	if err != nil {
@@ -314,18 +325,54 @@ func (r *Renderer) chartifyPull(args []string) error {
 	if len(args) < 4 || args[1] != "--untar" || args[2] != "-d" {
 		return fmt.Errorf("chartify: unsupported helm pull %v", args)
 	}
-	p := action.NewPull(action.WithConfig(&action.Configuration{RegistryClient: r.registry}))
-	p.Settings = r.settings
-	p.Untar = true
-	p.UntarDir = args[3]
-	p.DestDir = args[3]
+	version := ""
 	if len(args) == 6 && args[4] == "--version" {
-		p.Version = args[5]
+		version = args[5]
 	} else if len(args) != 4 {
 		return fmt.Errorf("chartify: unsupported helm pull %v", args)
 	}
-	_, err := p.Run(args[0])
+	return r.pull(args[0], version, args[3])
+}
+
+// pull is `helm pull <chart> --untar -d <dir> [--version v]`: the chart
+// directory lands in dir, the archive in a temporary directory.
+func (r *Renderer) pull(chartRef, version, dir string) error {
+	p := action.NewPull(action.WithConfig(&action.Configuration{RegistryClient: r.registry}))
+	p.Settings = r.settings
+	p.Untar = true
+	p.UntarDir = "."
+	p.DestDir = dir
+	p.Version = version
+	_, err := p.Run(chartRef)
 	return err
+}
+
+// pullUntar pulls a chart into a new directory and returns the chart
+// directory in it.
+func (r *Renderer) pullUntar(chartRef, version string) (string, error) {
+	dir, err := os.MkdirTemp(r.work, "pull-")
+	if err != nil {
+		return "", err
+	}
+	if err := r.pull(chartRef, version, dir); err != nil {
+		return "", err
+	}
+	// helm's untar also creates an (empty) directory named after the
+	// reference when the chart has another name: take the chart
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	var charts []string
+	for _, e := range entries {
+		if ok, _ := exists(filepath.Join(dir, e.Name(), "Chart.yaml")); e.IsDir() && ok {
+			charts = append(charts, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(charts) != 1 {
+		return "", fmt.Errorf("pull %s: expected one chart directory in %s, found %d", chartRef, dir, len(charts))
+	}
+	return charts[0], nil
 }
 
 // dependencyUpdate is helm dependency up/build of chartify's temporary chart.

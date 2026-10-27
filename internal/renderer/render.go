@@ -19,6 +19,7 @@ import (
 	"helm.sh/helm/v4/pkg/cli"
 	"helm.sh/helm/v4/pkg/cli/values"
 	"helm.sh/helm/v4/pkg/getter"
+	"helm.sh/helm/v4/pkg/postrenderer"
 	"helm.sh/helm/v4/pkg/registry"
 	release "helm.sh/helm/v4/pkg/release/v1"
 	repo "helm.sh/helm/v4/pkg/repo/v1"
@@ -210,13 +211,15 @@ func (r *Renderer) renderRelease(ctx context.Context, root *Root, st *State, rel
 		chartRef, local = dir, true
 	}
 	t := templateCall{
-		Name:        rel.Name,
-		Chart:       chartRef,
-		Local:       local,
-		Namespace:   rel.Namespace,
-		Version:     rel.Version,
-		KubeVersion: st.KubeVersion,
-		Values:      vo,
+		Name:             rel.Name,
+		Chart:            chartRef,
+		Local:            local,
+		Namespace:        rel.Namespace,
+		Version:          rel.Version,
+		KubeVersion:      st.KubeVersion,
+		Values:           vo,
+		PostRenderer:     rel.PostRenderer,
+		PostRendererArgs: rel.PostRendererArgs,
 	}
 	if r.opts.OutputDir != "" {
 		if t.OutputDir, err = st.outputDir(root.Dir, r.opts.OutputDir, r.opts.OutputDirTemplate, rel); err != nil {
@@ -236,6 +239,10 @@ type templateCall struct {
 	APIVersions        []string
 	OutputDir          string
 	Values             *values.Options
+	// PostRenderer: a helm post-renderer plugin (--post-renderer) and its
+	// arguments (--post-renderer-args), loaded from HELM_PLUGINS like helm.
+	PostRenderer     string
+	PostRendererArgs []string
 }
 
 // helmTemplate renders like `helm template`: without an output directory the
@@ -268,6 +275,13 @@ func (r *Renderer) helmTemplate(ctx context.Context, t templateCall, out io.Writ
 			return err
 		}
 		client.OutputDir = t.OutputDir
+	}
+	if t.PostRenderer != "" {
+		pr, err := postrenderer.NewPostRendererPlugin(r.settings, t.PostRenderer, t.PostRendererArgs...)
+		if err != nil {
+			return err
+		}
+		client.PostRenderer = pr
 	}
 	chartPath, err := client.LocateChart(t.Chart, r.settings)
 	if err != nil {

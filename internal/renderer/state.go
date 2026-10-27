@@ -63,6 +63,9 @@ type Release struct {
 	Transformers          []any
 	Set, SetString        []SetValue
 	KubeContext           string
+	// PostRenderer is a helm post-renderer plugin name (atlas-redact).
+	PostRenderer     string
+	PostRendererArgs []string
 }
 
 // SetValue is one entry of set / setString.
@@ -75,6 +78,7 @@ var (
 	stateKeys   = set("commonLabels", "kubeVersion", "releases", "repositories", "helmDefaults")
 	releaseKeys = set("name", "namespace", "chart", "version", "values", "labels", "skipSchemaValidation",
 		"jsonPatches", "strategicMergePatches", "transformers", "set", "setString",
+		"postRenderer", "postRendererArgs",
 		// needs only orders sync/apply, keyring only verifies: template ignores both
 		"needs", "keyring")
 	// helmDefaults that template sees: kubeContext (.Release.KubeContext);
@@ -243,6 +247,12 @@ func readRelease(m map[string]any) (Release, error) {
 	r.Labels = labels
 	if v, ok := m["skipSchemaValidation"].(bool); ok {
 		r.SkipSchemaValidation = &v
+	}
+	r.PostRenderer = str(m["postRenderer"])
+	if args, ok := m["postRendererArgs"].([]any); ok {
+		for _, a := range args {
+			r.PostRendererArgs = append(r.PostRendererArgs, str(a))
+		}
 	}
 	for _, f := range []struct {
 		key string
