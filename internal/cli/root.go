@@ -210,7 +210,7 @@ themselves stay versioned by the repository's entry helmfile.`,
 	root.PersistentFlags().StringVarP(&g.file, "file", "f", "helmfile.yaml.gotmpl", "entry helmfile, relative to --dir")
 	root.PersistentFlags().StringVar(&g.helmfile, "helmfile", "helmfile", "helmfile binary")
 
-	root.AddCommand(newRenderCmd(g), newInspectCmd(g), newDiscoverCmd(g), newReviewCmd(g), newDoctorCmd(g), newCmpCmd(g), newNativeCmd(g), newVersionCmd())
+	root.AddCommand(newRenderCmd(g), newInspectCmd(g), newDiscoverCmd(g), newReviewCmd(g), newDoctorCmd(g), newCmpCmd(g), newNativeCmd(g), newPromoteCmd(g), newVersionCmd())
 	return root
 }
 

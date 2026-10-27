@@ -426,9 +426,19 @@ atlas review diff --format markdown          # the PR comment the review workflo
 atlas review diff -c cluster -d my-app --base origin/main   # exactly this deployment on both sides, changed or not
 atlas doctor                                 # helm / helmfile / git versions
 atlas discover --engine native               # the discovery map from the native Go engine (experimental)
+atlas promote plan --from origin/canary --to origin/main   # what canary has and main has not, as units (experimental)
 ```
 
 **Container image and wrapper.** `ghcr.io/max06/atlas:<version>` carries the CLI plus the toolchain it is tested with (helm, helmfile, kustomize, sops, the redaction plugin). Copy [`contrib/atlas-wrapper.sh`](contrib/atlas-wrapper.sh) into a consumer repository as `bin/atlas`; it needs only docker and git. The wrapper mounts the repository at its own absolute path, runs as your uid, keeps charts and helmfile states in the named volume `atlas-cache`, and passes `SOPS_AGE_KEY_FILE` only with `--decrypt`/`--redact`. `ATLAS_IMAGE=<ref>` runs another build (for example a branch test image); otherwise the tag comes from `spec.engine` in [`atlas.yaml`](#atlasyaml-the-engine-pin), then from the wrapper's default. A moving atlas ref in the entry helmfile (a branch) stays cached in the volume: `docker volume rm atlas-cache` refreshes it.
+
+**Promotion by unit (experimental).** `atlas promote plan --from <rev> --to <rev>` lists what `--from` has and `--to` does not have, as units that can move on their own (for example from a canary branch to the production branch):
+
+- The changed files are grouped into atoms by the directory convention: a deployment directory, a template, a local chart, the hierarchy files of one level, a top-level directory.
+- Atoms that reach the same (cluster, deployment) on `--to` are linked; the linked atoms are a unit. A new deployment and the new template it needs are always one unit. An atom that can change every deployment (the entry helmfile, `atlas.yaml`, global values, files outside the tree) is a unit of its own.
+- `--skip-cluster` names clusters that do not deploy from `--to`. Their deployments do not count as affected and do not link atoms.
+- `--split` renders the deployments of each linked unit on `--to` (keyless): without the unit, with all its atoms, with each atom alone. Atoms whose renders do not interact become separate units. Atoms stay linked when they change the same release, when a release renders differently together, or when an atom does not render alone.
+- Each unit gets a content check against `--to` with the merge base of the two revisions (`git merge-tree`): `applies`, `conflicts` (shown, not carried over) or `present`. The check uses content only, so squash merges do not matter. The clone needs the history down to the merge base.
+- `--format markdown` is the body of a promote dashboard: a checkbox per unit that applies, with the unit id in an HTML comment.
 
 **Native engine (experimental).** `--engine native` runs the logic of the ATLAS templates in Go instead of the helmfile templates that the entry pins: discovery, the deployment definitions, the hierarchy and instance values (SOPS included), the release rewrite and the redaction. The engine writes plain helmfile states, and its renderer renders them without helmfile and without the helm binary (helm SDK, chartify and kustomize in-process; `ATLAS_NATIVE_RENDERER=helmfile` renders them with helmfile instead): no ATLAS template is evaluated. The engine reads the directories from `atlas.yaml` (or `--templates`, `--deployments`). Its tpl context is the one of helmfile (sprig plus helmfile's functions, the atlas templates directory as base path with the helpers of `templates/_*.tpl`), so templates and values files render the same.
 
