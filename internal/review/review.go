@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -164,6 +165,75 @@ type Classification struct {
 func (c *Classification) BaseBroken() bool {
 	return c.BaseMap == nil && c.BaseErr != nil &&
 		!errors.Is(c.BaseErr, ErrNoEntry) && !errors.Is(c.BaseErr, discovery.ErrUnsupported)
+}
+
+// Select replaces the classifier's choice with an explicit selection
+// (`review diff -c/-d`): the pairs of each side whose cluster is one of
+// clusters and whose deployment is one of deployments (an empty list
+// matches all). Cluster names resolve like `atlas render -c` (full path or
+// unique leaf name) against the reviewed side, else the target side. The
+// selection renders on both sides even when the changed paths do not reach
+// it: a deployment can be compared although another change touched it.
+func (c *Classification) Select(clusters, deployments []string) error {
+	maps := []*discovery.Map{c.HeadMap, c.BaseMap}
+	resolved := make([]string, len(clusters))
+	for i, name := range clusters {
+		var firstErr error
+		for _, m := range maps {
+			if m == nil {
+				continue
+			}
+			full, err := m.ResolveCluster(name)
+			if err == nil {
+				resolved[i], firstErr = full, nil
+				break
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if resolved[i] == "" {
+			return firstErr
+		}
+	}
+	for _, name := range deployments {
+		var firstErr error
+		found := false
+		for _, m := range maps {
+			if m == nil {
+				continue
+			}
+			if err := m.CheckDeployment(name); err == nil {
+				found = true
+				break
+			} else if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if !found {
+			return firstErr
+		}
+	}
+	pick := func(m *discovery.Map) *[]string {
+		keys := []string{}
+		if m == nil {
+			return &keys
+		}
+		for _, p := range m.Pairs {
+			if (len(resolved) == 0 || slices.Contains(resolved, p.Cluster)) &&
+				(len(deployments) == 0 || slices.Contains(deployments, p.DeploymentName)) {
+				keys = append(keys, p.Key())
+			}
+		}
+		return &keys
+	}
+	c.SelectedPR, c.SelectedBaseline = pick(c.HeadMap), pick(c.BaseMap)
+	if len(*c.SelectedPR) == 0 && len(*c.SelectedBaseline) == 0 {
+		return fmt.Errorf("no cluster/deployment pair matches clusters %v and deployments %v on either side", clusters, deployments)
+	}
+	c.Mode = "subset"
+	c.Reason = "selected with -c/-d"
+	return nil
 }
 
 // Classify discovers both sides and classifies the changed paths.

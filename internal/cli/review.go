@@ -165,6 +165,10 @@ func newReviewDiffCmd(g *globalFlags) *cobra.Command {
 --full or when the classifier asks for it) from ONE workspace path, and lists
 releases that differ. --patch prints the file diffs as well.
 
+-c/-d replace the classifier: exactly these clusters and deployments render on
+both sides (comma lists or repeated flags; leaf cluster names resolve like
+render), also when the change does not reach them.
+
 --format text (default) lists the releases whose rendered files differ;
 --format markdown prints the PR comment the review workflow would post
 (semantic per-resource diffs, render scope) — the same code as the CI review.`,
@@ -180,6 +184,14 @@ releases that differ. --patch prints the file diffs as well.
 			c, err := s.Classify(cmd.Context())
 			if err != nil {
 				return err
+			}
+			if len(sel.clusters) > 0 || len(sel.deployments) > 0 {
+				if full {
+					return fmt.Errorf("--full and -c/-d exclude each other")
+				}
+				if err := c.Select(sel.clusters, sel.deployments); err != nil {
+					return err
+				}
 			}
 			fmt.Fprintf(os.Stderr, "classify: mode=%s%s\n", c.Mode, parenIf(c.Reason))
 			if full {
@@ -261,8 +273,6 @@ releases that differ. --patch prints the file diffs as well.
 	}
 	f.register(cmd)
 	sel.register(cmd, "render", true)
-	_ = cmd.Flags().MarkHidden("cluster")
-	_ = cmd.Flags().MarkHidden("deployment")
 	fl := cmd.Flags()
 	fl.StringVarP(&outDir, "out", "o", "", "keep both render trees here (<out>/base, <out>/head)")
 	fl.BoolVar(&full, "full", false, "render everything instead of the classified subset")
