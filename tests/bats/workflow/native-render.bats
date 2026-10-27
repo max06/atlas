@@ -55,3 +55,76 @@ JSON
   [ "$status" -eq 1 ]
   grep -rq 'REDACTED' "$TEST_TEMP/b"
 }
+
+# a copy of the test tree that renders with the native engine (atlas.yaml
+# spec.native); rendered values embed the tree path, so the comparison
+# replaces both tree paths with TREE
+_native_tree() {
+  cp -r "$(_repo_root)/tests" "$1"
+  printf 'apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: "0.14"\n  native: true\n' > "$1/atlas.yaml"
+}
+
+_side() { # <step> <dir> <entry> <temp> [extra json fields]
+  mkdir -p "$4"
+  cat > "$4/$1.req.json" <<JSON
+{"contract": 1, "step": "$1", "dir": "$2", "entry": "$3", "label": "pr", "temp": "$4",
+ "mapFile": "$4/map.json", "sidedumpDir": "$4/maps", "redactInCLI": true,
+ "sopsAgeKeyFile": "$SOPS_AGE_KEY_FILE", "parallel": 4 $5}
+JSON
+  (cd "$2" && "$ATLAS_CLI" review ci side --request "$4/$1.req.json" --result "$4/$1.res.json" >"$4/$1.log" 2>&1) || true
+}
+
+_same_tree() { # <a> <a-root> <b> <b-root>
+  local f n=0
+  while read -r f; do
+    n=$((n+1))
+    cmp -s <(sed "s#$2#TREE#g" "$1/$f") <(sed "s#$4#TREE#g" "$3/$f") || { echo "differs: $f"; return 1; }
+  done < <(cd "$1" && find . -type f | sort)
+  [ "$n" -eq "$(cd "$3" && find . -type f | wc -l)" ] || { echo "file count: $n vs $(cd "$3" && find . -type f | wc -l)"; return 1; }
+  [ "$n" -gt 0 ]
+}
+
+@test "review side on a native tree: discovery map and redacted render equal the helmfile side" {
+  local root; root="$(_repo_root)"
+  _native_tree "$TEST_TEMP/tree"
+  _side discover "$root" tests/helmfile.yaml.gotmpl "$TEST_TEMP/a"
+  _side discover "$TEST_TEMP/tree" helmfile.yaml.gotmpl "$TEST_TEMP/b"
+  grep -q 'discover (native engine)' "$TEST_TEMP/b/discover.log"
+  local q='.pairs|map({cluster,deploymentName,templates,charts})'
+  diff <(jq -S "$q" "$TEST_TEMP/a/map.json") <(jq -S "$q" "$TEST_TEMP/b/map.json")
+  _side render "$root" tests/helmfile.yaml.gotmpl "$TEST_TEMP/a"
+  _side render "$TEST_TEMP/tree" helmfile.yaml.gotmpl "$TEST_TEMP/b"
+  [ "$(jq -r .render.status "$TEST_TEMP/a/render.res.json")" = success ]
+  [ "$(jq -r .render.status "$TEST_TEMP/b/render.res.json")" = success ]
+  grep -q 'engine of the merge result: native' "$TEST_TEMP/b/render.log"
+  _same_tree "$TEST_TEMP/a/pr-snapshot" "$root/tests" "$TEST_TEMP/b/pr-snapshot" "$TEST_TEMP/tree"
+  # the maps the baseline replay reads
+  diff -r "$TEST_TEMP/a/maps" "$TEST_TEMP/b/maps"
+  grep -rq 'REDACTED' "$TEST_TEMP/b/pr-snapshot"
+  run grep -rq 'AKIAIOSFODNN7EXAMPLE' "$TEST_TEMP/b/pr-snapshot"
+  [ "$status" -eq 1 ]
+}
+
+@test "review side on a native tree: a broken pair fails alone and leaves nothing in the snapshot" {
+  _native_tree "$TEST_TEMP/tree"
+  echo '{{ fail "boom" }}' >> "$TEST_TEMP/tree/deployments/cluster1/apps/deployment1/values.yaml.gotmpl"
+  _side render "$TEST_TEMP/tree" helmfile.yaml.gotmpl "$TEST_TEMP/b"
+  [ "$(jq -r .render.status "$TEST_TEMP/b/render.res.json")" = error ]
+  grep -q '::warning::Render failed for cluster1/deployment1 on merge result' "$TEST_TEMP/b/render.log"
+  [ ! -e "$TEST_TEMP/b/pr-snapshot/cluster1/deployment1" ]
+  # the other pairs rendered
+  [ -f "$TEST_TEMP/b/pr-snapshot/cluster1/deployment12/app1/chart1/templates/configmap.yaml" ]
+  [ -f "$TEST_TEMP/b/pr-snapshot/group1/cluster2/deployment8/app-multi-first/chart1/templates/configmap.yaml" ]
+}
+
+@test "review side on a native tree: subset render equals the helmfile side" {
+  local root; root="$(_repo_root)"
+  _native_tree "$TEST_TEMP/tree"
+  printf 'cluster1|deployment47\ngroup1/cluster2|deployment8\ncluster1|deployment20\n' > "$TEST_TEMP/pairs.txt"
+  _side render "$root" tests/helmfile.yaml.gotmpl "$TEST_TEMP/a" ", \"pairsFile\": \"$TEST_TEMP/pairs.txt\""
+  _side render "$TEST_TEMP/tree" helmfile.yaml.gotmpl "$TEST_TEMP/b" ", \"pairsFile\": \"$TEST_TEMP/pairs.txt\""
+  [ "$(jq -r .render.mode "$TEST_TEMP/b/render.res.json")" = subset ]
+  [ "$(jq -r .render.renderedPairs "$TEST_TEMP/b/render.res.json")" = 3 ]
+  _same_tree "$TEST_TEMP/a/pr-snapshot" "$root/tests" "$TEST_TEMP/b/pr-snapshot" "$TEST_TEMP/tree"
+  diff -r "$TEST_TEMP/a/maps" "$TEST_TEMP/b/maps"
+}

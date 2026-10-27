@@ -39,7 +39,11 @@ state under $XDG_CACHE_HOME/apps/<app>, and HELMFILE_CACHE_CLEANUP=true
 (sidecar env or plugin env) drops the cached remote states first — needed
 when the entry pins ATLAS to a branch.`,
 		RunE: func(cmd *cobra.Command, extra []string) error {
-			if eng.native() {
+			native, err := eng.native(g)
+			if err != nil {
+				return err
+			}
+			if native {
 				// the Go renderer needs neither helm nor helmfile
 				if !nativeGoRenderer() {
 					warnToolchain(cmd)
@@ -191,7 +195,11 @@ func newDiscoverCmd(g *globalFlags) *cobra.Command {
 		Use:   "discover",
 		Short: "Print the discovery map: every (cluster, deployment) with its templates and local charts",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if e.native() {
+			native, err := e.native(g)
+			if err != nil {
+				return err
+			}
+			if native {
 				l, err := e.layout(g)
 				if err != nil {
 					return err

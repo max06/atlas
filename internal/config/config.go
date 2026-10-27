@@ -56,9 +56,23 @@ type Metadata struct {
 type Spec struct {
 	// Engine is the engine minor that renders this tree.
 	Engine Engine `yaml:"engine"`
+	// Native: the native engine renders this tree (Go port of the
+	// templates, Go renderer), in the review, in the Argo CD plugin and in
+	// local renders. False: the helmfile templates of the entry.
+	Native bool `yaml:"native,omitempty"`
 	// TemplateDir and DeploymentDir are relative to the file's directory.
 	TemplateDir   string `yaml:"templateDir,omitempty"`
 	DeploymentDir string `yaml:"deploymentDir,omitempty"`
+}
+
+// NativeSince is the first engine minor that reads spec.native: an older
+// engine would refuse the key (unknown keys are errors) in the plugin
+// discovery and in the review.
+var NativeSince = Engine{Major: 0, Minor: 14, set: true}
+
+// Less orders engine minors.
+func (e Engine) Less(o Engine) bool {
+	return e.Major < o.Major || e.Major == o.Major && e.Minor < o.Minor
 }
 
 // Engine is an engine minor, "<major>.<minor>". Patch releases of one minor
@@ -161,6 +175,9 @@ func Parse(data []byte) (*Root, error) {
 	}
 	if !r.Spec.Engine.set {
 		return nil, errors.New("spec.engine is required (for example engine: \"0.13\")")
+	}
+	if r.Spec.Native && r.Spec.Engine.Less(NativeSince) {
+		return nil, fmt.Errorf("spec.native needs engine %q or later (spec.engine is %q)", NativeSince, r.Spec.Engine)
 	}
 	for key, dir := range map[string]*string{"templateDir": &r.Spec.TemplateDir, "deploymentDir": &r.Spec.DeploymentDir} {
 		if *dir == "" {
