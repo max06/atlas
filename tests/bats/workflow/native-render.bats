@@ -33,3 +33,25 @@ _render() {
   grep -q 'namespace: nsb' "$TEST_TEMP/native.yaml"
   grep -q 'patched: "yes"' "$TEST_TEMP/native.yaml"
 }
+
+@test "native render --redact: equals the review's render step with redaction in the CLI" {
+  # A: the review's render step (helmfile engine, maps from helmfile build,
+  # snapshot.RedactTree) through the side contract; B: atlas render
+  # --engine native --redact (maps from the native states, same scrub)
+  local root; root="$(_repo_root)"
+  cat > "$TEST_TEMP/req.json" <<JSON
+{"contract": 1, "step": "render", "dir": "$root", "entry": "tests/helmfile.yaml.gotmpl", "label": "pr",
+ "temp": "$TEST_TEMP/a", "sidedumpDir": "$TEST_TEMP/a-maps", "redactInCLI": true,
+ "sopsAgeKeyFile": "$SOPS_AGE_KEY_FILE", "parallel": 4}
+JSON
+  mkdir -p "$TEST_TEMP/a"
+  (cd "$root" && "$ATLAS_CLI" review ci side --request "$TEST_TEMP/req.json" --result "$TEST_TEMP/res.json" >/dev/null 2>&1)
+  [ "$(jq -r '.render.status' "$TEST_TEMP/res.json")" = "success" ]
+  (cd "$root/tests" && "$ATLAS_CLI" render --engine native --redact --output-dir "$TEST_TEMP/b" >/dev/null 2>&1)
+  run diff -r "$(jq -r '.render.snapshotDir' "$TEST_TEMP/res.json")" "$TEST_TEMP/b"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  # not vacuous: maps applied, Secrets hashed, no plaintext of a test secret
+  run grep -rq 'AKIAIOSFODNN7EXAMPLE' "$TEST_TEMP/b"
+  [ "$status" -eq 1 ]
+  grep -rq 'REDACTED' "$TEST_TEMP/b"
+}

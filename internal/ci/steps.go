@@ -99,61 +99,30 @@ func rawMap(stream []byte) ([]byte, error) {
 
 // ── redaction maps (ATLAS_REDACT_MAPS) ──────────────────────────────────────
 
-// redactMapsCarrier is one carrier state of a `helmfile build` in
-// ATLAS_REDACT_MAPS mode: the replacement maps of one app instance.
-type redactMapsCarrier struct {
-	Version        int                       `yaml:"version"`
-	Cluster        string                    `yaml:"cluster"`
-	DeploymentName string                    `yaml:"deploymentName"`
-	Releases       map[string]map[string]any `yaml:"releases"`
-}
-
 // WriteRedactMaps reads the carrier states out of a `helmfile build` stream
-// and writes one map file per release in the sidedump layout
-// (<mapDir>/<cluster>/<deployment>/<release>.json, an empty map as {}),
-// the layout the scrubber and the replay read. It returns the number of
-// releases written.
+// in ATLAS_REDACT_MAPS mode and writes one map file per release
+// (snapshot.WriteMaps). It returns the number of releases written.
 func WriteRedactMaps(stream []byte, mapDir string) (int, error) {
 	dec := yaml.NewDecoder(strings.NewReader(string(stream)))
-	n := 0
+	var all []snapshot.Maps
 	for {
 		var state struct {
 			RenderedValues struct {
-				Maps *redactMapsCarrier `yaml:"atlasRedactMaps"`
+				Maps *snapshot.Maps `yaml:"atlasRedactMaps"`
 			} `yaml:"renderedvalues"`
 		}
 		err := dec.Decode(&state)
 		if errors.Is(err, io.EOF) {
-			return n, nil
+			break
 		}
 		if err != nil {
-			return n, fmt.Errorf("parse helmfile build output: %w", err)
+			return 0, fmt.Errorf("parse helmfile build output: %w", err)
 		}
-		c := state.RenderedValues.Maps
-		if c == nil {
-			continue
-		}
-		if c.Cluster == "" || c.DeploymentName == "" {
-			return n, fmt.Errorf("redaction maps: a carrier without cluster or deployment name")
-		}
-		for release, m := range c.Releases {
-			if m == nil {
-				m = map[string]any{}
-			}
-			data, err := json.Marshal(m)
-			if err != nil {
-				return n, err
-			}
-			file := filepath.Join(mapDir, filepath.FromSlash(c.Cluster), c.DeploymentName, release+".json")
-			if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-				return n, err
-			}
-			if err := os.WriteFile(file, append(data, '\n'), 0o644); err != nil {
-				return n, err
-			}
-			n++
+		if state.RenderedValues.Maps != nil {
+			all = append(all, *state.RenderedValues.Maps)
 		}
 	}
+	return snapshot.WriteMaps(mapDir, all)
 }
 
 // ── scrub / replay ──────────────────────────────────────────────────────────

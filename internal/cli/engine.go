@@ -19,6 +19,7 @@ import (
 	"github.com/max06/atlas/internal/engine"
 	"github.com/max06/atlas/internal/helmfile"
 	"github.com/max06/atlas/internal/renderer"
+	"github.com/max06/atlas/internal/snapshot"
 )
 
 // engineFlags select the engine of a command: the helmfile templates the
@@ -76,8 +77,8 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 			return err
 		}
 	}
-	if sel.redact {
-		return fmt.Errorf("--engine native: --redact is not implemented yet")
+	if sel.redact && !nativeGoRenderer() {
+		return fmt.Errorf("--engine native: --redact needs the Go renderer (unset ATLAS_NATIVE_RENDERER)")
 	}
 	if sel.decrypt && sel.skipSecrets {
 		return fmt.Errorf("--decrypt and --skip-secrets exclude each other")
@@ -169,6 +170,25 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 			}
 			ro.Selectors = append(ro.Selectors, s)
 		}
+		if sel.redact {
+			// the maps come from a generation of their own in
+			// ATLAS_REDACT_MAPS mode, as the review takes them from a
+			// separate `helmfile build`: the render's values keep
+			// atlas.redactMaps false
+			mapsEngine, err := engine.New(l, engine.Switches{RedactMaps: true})
+			if err != nil {
+				return err
+			}
+			mapsRoot, err := mapsEngine.Generate(filepath.Join(dir, "maps-states"), engine.Filter{Clusters: sel.clusters, Deployments: sel.deployments}, opts)
+			if err != nil {
+				return err
+			}
+			maps, err := renderer.LoadRoot(mapsRoot)
+			if err != nil {
+				return err
+			}
+			return renderRedacted(cmd, states, maps.RedactMaps(), ro, dir)
+		}
 		return renderer.Render(cmd.Context(), states, ro)
 	}
 	args = append(args, sel.selectors()...)
@@ -180,6 +200,84 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 		args = append(args, "--output-dir", abs, "--output-dir-template", helmfile.OutputDirTemplate)
 	}
 	return r.Run(cmd.Context(), helmfile.Options{}, cmd.OutOrStdout(), append(args, extra...)...)
+}
+
+// renderRedacted is `render --engine native --redact`: the render tree goes
+// into the private work directory, the redaction maps of the states (what
+// the review takes from `helmfile build` in ATLAS_REDACT_MAPS mode) redact it
+// in place (snapshot.RedactTree, the review's own step), and only then the
+// tree leaves: into --output-dir, or to stdout release by release. A release
+// that cannot be redacted fails the render; none of its files leave.
+func renderRedacted(cmd *cobra.Command, states *renderer.Root, maps []snapshot.Maps, ro renderer.Options, work string) error {
+	target := ro.OutputDir
+	tree := filepath.Join(work, "redacted-tree")
+	ro.OutputDir = tree
+	if err := renderer.Render(cmd.Context(), states, ro); err != nil {
+		return err
+	}
+	mapDir := filepath.Join(work, "redaction-maps")
+	if _, err := snapshot.WriteMaps(mapDir, maps); err != nil {
+		return err
+	}
+	pairs := states.Pairs()
+	failed, err := snapshot.RedactTree(tree, mapDir, pairs, os.Stderr)
+	if err != nil {
+		return err
+	}
+	if len(failed) > 0 {
+		var names []string
+		for _, f := range failed {
+			names = append(names, f.Release+" ("+f.Status+")")
+		}
+		return fmt.Errorf("--redact: %d release(s) could not be redacted, nothing written: %s", len(failed), strings.Join(names, ", "))
+	}
+	if target != "" {
+		return copyTree(tree, target)
+	}
+	for _, p := range pairs {
+		cluster, deployment, _ := strings.Cut(p, "|")
+		dir := filepath.Join(tree, filepath.FromSlash(cluster), deployment)
+		if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil || d.IsDir() {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(data)
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyTree copies the files of src into dst (existing files are replaced),
+// like a render into an existing --output-dir.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
 }
 
 // nativeGoRenderer: the native engine renders its states with the Go
