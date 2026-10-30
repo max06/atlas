@@ -59,11 +59,39 @@ esac
 [ -t 0 ] && [ -t 1 ] && args+=(--tty)
 [ -t 0 ] || args+=(--interactive)
 
+# Output paths outside the repository (render -o, review diff -o, review
+# classify --out, review ci side --result) get their own mount at the same
+# path. Without it the CLI writes into the container, and --rm discards the
+# result without an error. The wrapper creates the directory first, so it
+# belongs to the caller and not to the docker daemon.
+mounted=" "
+mount_out() { # <path> <dir|file>
+  local p="$1"
+  [ -n "$p" ] || return 0
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  [ "$2" = file ] && p="$(dirname "$p")"
+  mkdir -p "$p"
+  p="$(cd "$p" && pwd)"
+  case "$p" in "$repo" | "$repo"/*) return 0 ;; esac
+  case "$mounted" in *" $p "*) return 0 ;; esac
+  mounted+="$p "
+  args+=(--volume "$p:$p")
+}
+
 decrypt=false
+prev=""
 for a in "$@"; do
+  case "$prev" in
+    -o | --out | --output-dir) mount_out "$a" dir ;;
+    --result) mount_out "$a" file ;;
+  esac
   case "$a" in
     --decrypt | --redact | --argocd) decrypt=true ;;
+    --out=* | --output-dir=*) mount_out "${a#*=}" dir ;;
+    -o?*) a="${a#-o}" && mount_out "${a#=}" dir ;;
+    --result=*) mount_out "${a#*=}" file ;;
   esac
+  prev="$a"
 done
 if $decrypt; then
   if [ -n "${SOPS_AGE_KEY_FILE:-}" ] && [ -f "$SOPS_AGE_KEY_FILE" ]; then
