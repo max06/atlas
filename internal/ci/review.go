@@ -247,6 +247,9 @@ func Review(ctx context.Context, c ReviewConfig) error {
 			how := "helm post-renderer (ATLAS without the redactMaps capability)"
 			if rc.RedactInCLI {
 				how = "in the CLI (maps from helmfile build)"
+				if _, native, _ := nativeLayout(ws); native {
+					how = "in the CLI (maps from the native engine)"
+				}
 			}
 			l.Printf("redaction of the %s: %s", label, how)
 		}

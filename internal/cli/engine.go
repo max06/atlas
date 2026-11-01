@@ -23,7 +23,8 @@ import (
 )
 
 // engineFlags select the engine of a command: the helmfile templates the
-// entry helmfile pins (default), or the native Go engine of this binary.
+// entry helmfile pins, or the native Go engine of this binary. Without
+// --engine, atlas.yaml decides (spec.native), else the helmfile templates.
 type engineFlags struct {
 	name        string
 	templates   string
@@ -32,18 +33,37 @@ type engineFlags struct {
 
 func (e *engineFlags) register(cmd *cobra.Command) {
 	f := cmd.Flags()
-	f.StringVar(&e.name, "engine", "helmfile", "engine: helmfile (the templates the entry pins) or native (this binary, experimental)")
+	f.StringVar(&e.name, "engine", "", "engine: helmfile (the templates the entry pins) or native (this binary, experimental); default: atlas.yaml spec.native, else helmfile")
 	f.StringVar(&e.templates, "templates", "", "native engine: app templates directory (default: atlas.yaml spec.templateDir, else templates)")
 	f.StringVar(&e.deployments, "deployments", "", "native engine: deployments directory (default: atlas.yaml spec.deploymentDir, else deployments)")
 }
 
-func (e *engineFlags) native() bool { return e.name == "native" }
+// native resolves the engine: the flag, else spec.native of the tree's
+// atlas.yaml (an invalid file is an error, as in the plugin discovery).
+func (e *engineFlags) native(g *globalFlags) (bool, error) {
+	switch e.name {
+	case "native":
+		return true, nil
+	case "helmfile":
+		return false, nil
+	case "":
+		r, err := config.Load(g.dir)
+		if errors.Is(err, config.ErrNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return r.Spec.Native, nil
+	}
+	return false, fmt.Errorf("--engine %q: helmfile or native", e.name)
+}
 
 // layout is the tree of the native engine: the repository root (-C), the
 // directories from the flags, else from atlas.yaml, else the defaults.
 func (e *engineFlags) layout(g *globalFlags) (engine.Layout, error) {
-	if e.name != "native" && e.name != "helmfile" {
-		return engine.Layout{}, fmt.Errorf("--engine %q: helmfile or native", e.name)
+	if _, err := e.native(g); err != nil {
+		return engine.Layout{}, err
 	}
 	root, err := filepath.Abs(g.dir)
 	if err != nil {
@@ -130,7 +150,7 @@ func renderNative(cmd *cobra.Command, g *globalFlags, e *engineFlags, sel *selec
 	}
 	goRenderer := nativeGoRenderer()
 	if goRenderer {
-		opts.Prepare = nativePreparer
+		opts.Prepare = renderer.Prepare
 	} else {
 		opts.Prepare = buildPreparer(cmd.Context(), r)
 	}
@@ -285,28 +305,6 @@ func copyTree(src, dst string) error {
 // keeps helmfile build/template on the generated states (the oracle path).
 func nativeGoRenderer() bool { return os.Getenv("ATLAS_NATIVE_RENDERER") != "helmfile" }
 
-// nativePreparer is buildPreparer without helmfile: the releases of the
-// generated states as `helmfile build` shows them (renderer.State.Prepared).
-func nativePreparer(root string) (map[string][]engine.PreparedRelease, error) {
-	r, err := renderer.LoadRoot(root)
-	if err != nil {
-		return nil, err
-	}
-	prepared := map[string][]engine.PreparedRelease{}
-	for _, st := range r.States {
-		var releases []engine.PreparedRelease
-		prep, err := st.Prepared("")
-		if err != nil {
-			return nil, err
-		}
-		for _, rel := range prep {
-			releases = append(releases, engine.PreparedRelease{Name: rel.Name, Namespace: rel.Namespace, Chart: rel.Chart, Version: rel.Version, KubeContext: rel.KubeContext, Labels: rel.Labels})
-		}
-		prepared[filepath.Base(st.File)] = releases
-	}
-	return prepared, nil
-}
-
 // buildPreparer runs `helmfile build` on the generated root: the releases
 // as helmfile prepares them (rendered release templates, commonLabels,
 // defaults) are the .Release of the values computation.
@@ -420,7 +418,7 @@ ATLAS_REDACT_SECRETS=true, ATLAS_REDACT_MAPS=1, ATLAS_DISCOVERY_MAP=1.`,
 			}
 			prepare := buildPreparer(cmd.Context(), helmfile.Runner{Binary: g.helmfile, Stderr: os.Stderr})
 			if nativeGoRenderer() {
-				prepare = nativePreparer
+				prepare = renderer.Prepare
 			}
 			_, err = eng.Generate(out, f, engine.GenerateOptions{NamespaceOverride: namespace, Prepare: prepare})
 			return err

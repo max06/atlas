@@ -98,7 +98,11 @@ func (r *Root) Pairs() []string {
 	var pairs []string
 	seen := map[string]bool{}
 	for _, st := range r.States {
-		p := st.deploymentOf("cluster") + "|" + st.deploymentOf("deploymentName")
+		cluster := st.deploymentOf("cluster")
+		if cluster == "" {
+			continue // the carrier state
+		}
+		p := cluster + "|" + st.deploymentOf("deploymentName")
 		if !seen[p] {
 			seen[p] = true
 			pairs = append(pairs, p)
@@ -519,6 +523,12 @@ func templater() (*engine.Templater, error) {
 }
 
 // deploymentOf is atlas.deployment.<key> of the state environment.
+// Pair is the cluster and the deployment name of a generated state ("" for
+// the carrier).
+func (st *State) Pair() (cluster, deployment string) {
+	return st.deploymentOf("cluster"), st.deploymentOf("deploymentName")
+}
+
 func (st *State) deploymentOf(key string) string {
 	atlas, _ := st.Env["atlas"].(map[string]any)
 	d, _ := atlas["deployment"].(map[string]any)
@@ -609,4 +619,48 @@ func (s Selector) matches(labels map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// Prepare is the engine's preparer without helmfile: the releases of the
+// generated states as `helmfile build` shows them (State.Prepared).
+func Prepare(root string) (map[string][]engine.PreparedRelease, error) {
+	r, err := LoadRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	prepared := map[string][]engine.PreparedRelease{}
+	for _, st := range r.States {
+		var releases []engine.PreparedRelease
+		prep, err := st.Prepared("")
+		if err != nil {
+			return nil, err
+		}
+		for _, rel := range prep {
+			releases = append(releases, engine.PreparedRelease{Name: rel.Name, Namespace: rel.Namespace, Chart: rel.Chart, Version: rel.Version, KubeContext: rel.KubeContext, Labels: rel.Labels})
+		}
+		prepared[filepath.Base(st.File)] = releases
+	}
+	return prepared, nil
+}
+
+// Merge joins roots that were generated into subdirectories of dir into one
+// root with dir as its directory: the states keep their files (State.File
+// gets the subdirectory) and render in the order of the roots.
+func Merge(dir string, roots []*Root) (*Root, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	m := &Root{Dir: abs}
+	for _, r := range roots {
+		rel, err := filepath.Rel(abs, r.Dir)
+		if err != nil || !filepath.IsLocal(rel) {
+			return nil, fmt.Errorf("merge: root %s is not below %s", r.Dir, abs)
+		}
+		for _, st := range r.States {
+			st.File = filepath.Join(rel, st.File)
+			m.States = append(m.States, st)
+		}
+	}
+	return m, nil
 }

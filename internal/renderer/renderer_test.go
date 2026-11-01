@@ -1,9 +1,13 @@
 package renderer
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +167,46 @@ helmfiles:
 	}
 	if _, ok := maps[0].Releases["plain"]; !ok {
 		t.Errorf("empty release map dropped: %+v", maps[0].Releases)
+	}
+}
+
+func TestAllowFailedReleases(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		f := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("chart/Chart.yaml", "apiVersion: v2\nname: chart\nversion: 0.1.0\n")
+	write("chart/templates/cm.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}\n")
+	// the first state: a release whose chart does not exist, then a good
+	// one; the second state renders too
+	write("states/0001.yaml", "releases:\n  - name: broken\n    chart: ./missing\n  - name: good\n    chart: ../chart\n")
+	write("states/0002.yaml", "releases:\n  - name: other\n    chart: ../chart\n")
+	write("helmfile.yaml", "helmfiles:\n  - path: states/0001.yaml\n  - path: states/0002.yaml\n")
+	root, err := LoadRoot(filepath.Join(dir, "helmfile.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, log bytes.Buffer
+	if err := Render(context.Background(), root, Options{Stdout: &stdout, Log: io.Discard}); err == nil || strings.Contains(stdout.String(), "name: good") {
+		t.Fatalf("without AllowFailedReleases the first error stops the render: %v\n%s", err, stdout.String())
+	}
+	stdout.Reset()
+	err = Render(context.Background(), root, Options{Stdout: &stdout, Log: &log, AllowFailedReleases: true})
+	if err == nil || !strings.Contains(err.Error(), `release "broken"`) {
+		t.Fatalf("the failed release must fail the render: %v", err)
+	}
+	for _, name := range []string{"name: good", "name: other"} {
+		if !strings.Contains(stdout.String(), name) {
+			t.Errorf("%s not rendered:\n%s", name, stdout.String())
+		}
+	}
+	if !strings.Contains(log.String(), `release "broken"`) {
+		t.Errorf("the error is not in the log: %q", log.String())
 	}
 }

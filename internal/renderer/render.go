@@ -45,6 +45,10 @@ type Options struct {
 	OutputDirTemplate string
 	// Selectors are helmfile's --selector flags (OR of the selectors).
 	Selectors []Selector
+	// AllowFailedReleases is helmfile's --allow-failed-releases: a release
+	// (or a state) that fails does not stop the others; the render still
+	// fails, with every error. Each error is also written to Log.
+	AllowFailedReleases bool
 }
 
 // Renderer renders generated states with one helm environment.
@@ -101,12 +105,23 @@ func Render(ctx context.Context, root *Root, o Options) error {
 	}
 	r := &Renderer{opts: o, settings: settings, work: work, registry: rc, repos: map[string]Repository{}, added: map[string]bool{}}
 	matched := 0
+	var failed []error
 	for _, st := range root.States {
-		n, err := r.renderState(ctx, root, st)
+		n, err := r.renderState(ctx, root, st, &failed)
 		if err != nil {
-			return err
+			if !o.AllowFailedReleases || ctx.Err() != nil {
+				return err
+			}
+			var re *ReleaseError
+			if !errors.As(err, &re) {
+				err = &ReleaseError{State: st, Err: err}
+			}
+			r.fail(&failed, err)
 		}
 		matched += n
+	}
+	if len(failed) > 0 {
+		return errors.Join(failed...)
 	}
 	if matched == 0 {
 		// helmfile's NoMatchingHelmfileError, also without selectors
@@ -148,7 +163,30 @@ func (o Options) selected(labels map[string]string) bool {
 // namespace before the selection (helmfile's ApplyOverrides at load). Like
 // helmfile, all charts of the state are prepared first (chartify included,
 // whose output lands in between), then the releases render in order.
-func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int, error) {
+// ReleaseError is the error of one release (Release "" for the whole
+// state). With AllowFailedReleases, Render returns them joined.
+type ReleaseError struct {
+	State   *State
+	Release string
+	Err     error
+}
+
+func (e *ReleaseError) Error() string {
+	if e.Release == "" {
+		return fmt.Sprintf("%s: %v", e.State.File, e.Err)
+	}
+	return fmt.Sprintf("release %q in %s: %v", e.Release, e.State.File, e.Err)
+}
+
+func (e *ReleaseError) Unwrap() error { return e.Err }
+
+// fail records the error of one release (AllowFailedReleases).
+func (r *Renderer) fail(failed *[]error, err error) {
+	fmt.Fprintf(r.opts.Log, "%v\n", err)
+	*failed = append(*failed, err)
+}
+
+func (r *Renderer) renderState(ctx context.Context, root *Root, st *State, failed *[]error) (int, error) {
 	for _, repo := range st.Repositories {
 		r.repos[repo.Name] = repo
 	}
@@ -178,12 +216,24 @@ func (r *Renderer) renderState(ctx context.Context, root *Root, st *State) (int,
 		t, err := r.prepareRelease(root, st, rel)
 		calls = append(calls, t)
 		if err != nil {
-			return len(calls), fmt.Errorf("release %q in %s: %w", rel.Name, st.File, err)
+			err = &ReleaseError{State: st, Release: rel.Name, Err: err}
+			if !r.opts.AllowFailedReleases {
+				return len(calls), err
+			}
+			r.fail(failed, err)
+			calls[len(calls)-1].failed = true
 		}
 	}
 	for _, t := range calls {
+		if t.failed {
+			continue
+		}
 		if err := r.templateRelease(ctx, t); err != nil {
-			return len(calls), fmt.Errorf("release %q in %s: %w", t.Name, st.File, err)
+			err = &ReleaseError{State: st, Release: t.Name, Err: err}
+			if !r.opts.AllowFailedReleases || ctx.Err() != nil {
+				return len(calls), err
+			}
+			r.fail(failed, err)
 		}
 	}
 	return len(calls), nil
@@ -341,6 +391,7 @@ type templateCall struct {
 	// arguments (--post-renderer-args), loaded from HELM_PLUGINS like helm.
 	PostRenderer     string
 	PostRendererArgs []string
+	failed           bool // AllowFailedReleases: the preparation failed, no render
 	// cleanup: temporary files of the call (values)
 	cleanup []string
 }

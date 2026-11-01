@@ -109,7 +109,20 @@ func (r *Renderer) chartify(st *State, rel Release, stateDir, chartRef string, l
 		}
 		return d
 	}
-	return runner.Chartify(rel.Name, chartRef, chartify.WithChartifyOpts(opts))
+	// chartify prints the kustomize output (helmfile's stdout shows that
+	// line): it goes to Options.Stdout, not to the process stdout
+	var dir string
+	printed, err := captureStdout(func() error {
+		var err error
+		dir, err = runner.Chartify(rel.Name, chartRef, chartify.WithChartifyOpts(opts))
+		return err
+	})
+	if printed != "" {
+		if _, werr := io.WriteString(r.opts.Stdout, printed); werr != nil && err == nil {
+			err = werr
+		}
+	}
+	return dir, err
 }
 
 // releaseID is helmfile's ReleaseToID (chartify's temporary directory id).

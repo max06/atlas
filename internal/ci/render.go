@@ -26,6 +26,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/max06/atlas/internal/config"
 	"github.com/max06/atlas/internal/gha"
 	"github.com/max06/atlas/internal/helmfile"
 	"github.com/max06/atlas/internal/snapshot"
@@ -257,7 +258,26 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	stopHeartbeat := s.heartbeat()
 	defer stopHeartbeat()
 
-	if _, err := os.Stat(inDir(c.Dir, c.HelmfilePath)); err != nil {
+	// atlas.yaml spec.native: the native engine renders the side (no
+	// helmfile, no entry needed); the redaction always runs in the CLI
+	layout, native, err := nativeLayout(c.Dir)
+	if err != nil {
+		s.log.Annotate(s.level, "The %s of the %s is invalid: %v", config.FileName, s.sideName, err)
+		res.Status, res.Pairs = "error", []string{}
+		return res, c.Outputs.Set("status", "error")
+	}
+	if native {
+		s.log.Printf("engine of the %s: native (%s spec.native)", s.sideName, config.FileName)
+		if !c.Keyless && !c.RedactInCLI {
+			c.RedactInCLI = true
+			s.RedactInCLI = true
+			if c.SidedumpDir == "" {
+				c.SidedumpDir = filepath.Join(c.Temp, c.Label+"-redact-maps")
+				s.SidedumpDir = c.SidedumpDir
+			}
+		}
+	}
+	if _, err := os.Stat(inDir(c.Dir, c.HelmfilePath)); !native && err != nil {
 		s.log.Printf("Helmfile not found at %s", c.HelmfilePath)
 		res.Status, res.Pairs = "missing", []string{} // nothing rendered, nothing to guess
 		return res, c.Outputs.Set("status", "missing")
@@ -277,7 +297,7 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 
 	// --allow-failed-releases (helmfile >= 1.8): the other releases of a call
 	// keep rendering when one fails; the call still fails.
-	if help, _ := exec.CommandContext(ctx, s.helmfileBin(), "--help").CombinedOutput(); bytes.Contains(help, []byte("--allow-failed-releases")) {
+	if help, _ := exec.CommandContext(ctx, s.helmfileBin(), "--help").CombinedOutput(); !native && bytes.Contains(help, []byte("--allow-failed-releases")) {
 		s.extraArgs = append(s.extraArgs, "--allow-failed-releases")
 	}
 
@@ -285,7 +305,7 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	// compute them as for the post-renderer and hand them out through a
 	// carrier state; one build of the side (filtered to the selection in a
 	// subset render) collects them all.
-	if c.RedactInCLI {
+	if c.RedactInCLI && !native {
 		s.phase("redaction maps (helmfile build)")
 		clusters, deployments := s.pairFilters()
 		var stream bytes.Buffer
@@ -305,7 +325,13 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 	var renderErr error
 	var mode string
 	var rendered int
-	if c.PairsFile != "" {
+	if native {
+		mode = "full"
+		if c.PairsFile != "" {
+			mode = "subset"
+		}
+		rendered, renderErr, err = s.renderNative(layout)
+	} else if c.PairsFile != "" {
 		mode = "subset"
 		rendered, renderErr, err = s.subset()
 	} else {
