@@ -68,7 +68,7 @@ type Spec struct {
 // NativeSince is the first engine minor that reads spec.native: an older
 // engine would refuse the key (unknown keys are errors) in the plugin
 // discovery and in the review.
-var NativeSince = Engine{Major: 0, Minor: 14, set: true}
+var NativeSince = Engine{Major: 0, Minor: 15, set: true}
 
 // Less orders engine minors.
 func (e Engine) Less(o Engine) bool {
