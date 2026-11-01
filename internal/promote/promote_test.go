@@ -53,7 +53,7 @@ func fixtureRepo(t *testing.T) *gitrev.Repo {
 			t.Fatalf("cp: %v\n%s", err, out)
 		}
 	}
-	write("atlas.yaml", "apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: \"0.14\"\n  native: true\n")
+	write("atlas.yaml", "apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: \"0.15\"\n  native: true\n")
 	git("init", "-q", "-b", "base")
 	git("add", "-A")
 	git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "base")

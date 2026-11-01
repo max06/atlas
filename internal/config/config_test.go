@@ -33,7 +33,7 @@ func TestParse(t *testing.T) {
 		t.Errorf("got %+v", r.Spec)
 	}
 
-	r, err = Parse([]byte(header + "spec:\n  engine: \"0.14\"\n  native: true\n"))
+	r, err = Parse([]byte(header + "spec:\n  engine: \"0.15\"\n  native: true\n"))
 	if err != nil || !r.Spec.Native {
 		t.Errorf("native: %+v %v", r, err)
 	}
@@ -61,7 +61,7 @@ func TestParseRejects(t *testing.T) {
 		"two documents":    {header + "spec:\n  engine: \"0.13\"\n---\nfoo: bar\n", "exactly one YAML document"},
 		"empty":            {"", "the file is empty"},
 		"broken yaml":      {header + "spec:\n  engine: \"0.13\n", "yaml:"},
-		"native too old":   {header + "spec:\n  engine: \"0.13\"\n  native: true\n", `spec.native needs engine "0.14" or later (spec.engine is "0.13")`},
+		"native too old":   {header + "spec:\n  engine: \"0.14\"\n  native: true\n", `spec.native needs engine "0.15" or later (spec.engine is "0.14")`},
 	} {
 		_, err := Parse([]byte(tc.content))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

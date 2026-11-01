@@ -481,7 +481,7 @@ apiVersion: atlas.io/v1alpha1
 kind: Root
 spec:
   engine: "0.13"              # engine minor: "<major>.<minor>", a quoted string
-  native: false               # optional: true renders the tree with the native engine (engine 0.14 or later)
+  native: false               # optional: true renders the tree with the native engine (engine 0.15 or later)
   templateDir: templates      # optional, default "templates"
   deploymentDir: deployments  # optional, default "deployments"
 ```
@@ -491,7 +491,7 @@ Rules:
 - `engine` must be a quoted string. An unquoted `1.10` is the float `1.1` for every YAML reader, and it would select a different engine. atlas rejects it.
 - Only `apiVersion`, `kind`, `metadata` and `spec` are permitted at the top level. An unknown key is an error, so a misspelled key cannot fall back to a default silently.
 - `templateDir` and `deploymentDir` are relative paths inside the tree. The helmfile templates take the directories from the entry helmfile (`atlas.appTemplates`, `atlas.deploymentDefinitions`); the native engine reads them from `atlas.yaml`.
-- `native: true` selects the [native engine](#atlas-cli-proof-of-concept) for the tree: in the review (discovery, render and redaction maps of that side), in the Argo CD plugin (`atlas render --argocd`) and in local commands without `--engine`. The entry helmfile is then not used. It needs `engine: "0.14"` or later, because an older engine rejects the unknown key.
+- `native: true` selects the [native engine](#atlas-cli-proof-of-concept) for the tree: in the review (discovery, render and redaction maps of that side), in the Argo CD plugin (`atlas render --argocd`) and in local commands without `--engine`. The entry helmfile is then not used. It needs `engine: "0.15"` or later, because an older engine (0.14 included) rejects the unknown key.
 
 The pin (with `native`) selects:
 

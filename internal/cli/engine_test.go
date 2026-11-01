@@ -22,13 +22,13 @@ func TestEngineFromAtlasYAML(t *testing.T) {
 		}
 	}
 	check("no atlas.yaml", "", false, false)
-	write("  engine: \"0.14\"\n  native: true\n")
+	write("  engine: \"0.15\"\n  native: true\n")
 	check("spec.native", "", true, false)
 	check("flag wins", "helmfile", false, false)
 	check("unknown flag", "templates", false, true)
 	write("  engine: \"0.14\"\n")
 	check("pin without native", "", false, false)
 	check("flag native", "native", true, false)
-	write("  engine: \"0.13\"\n  native: true\n")
+	write("  engine: \"0.14\"\n  native: true\n")
 	check("invalid atlas.yaml", "", false, true)
 }
