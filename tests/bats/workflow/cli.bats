@@ -181,7 +181,7 @@ setup() {
 }
 
 @test "cli: review diff of a switch to the native engine shows no changes" {
-  printf 'apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: "0.14"\n  native: true\n' > "$FIXTURE_REPO/atlas.yaml"
+  printf 'apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: "0.15"\n  native: true\n' > "$FIXTURE_REPO/atlas.yaml"
   run --separate-stderr "$ATLAS_CLI" -C "$FIXTURE_REPO" review diff --base "$BASE_SHA" --full --single-engine
   [ "$status" -eq 0 ] || { echo "$stderr"; false; }
   [[ "$stderr" == *"head side renders with the native engine"* ]]

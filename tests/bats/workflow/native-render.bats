@@ -61,7 +61,7 @@ JSON
 # replaces both tree paths with TREE
 _native_tree() {
   cp -r "$(_repo_root)/tests" "$1"
-  printf 'apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: "0.14"\n  native: true\n' > "$1/atlas.yaml"
+  printf 'apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: "0.15"\n  native: true\n' > "$1/atlas.yaml"
 }
 
 _side() { # <step> <dir> <entry> <temp> [extra json fields]
