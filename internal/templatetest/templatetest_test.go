@@ -29,7 +29,7 @@ func TestRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("atlas.yaml", "apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: \"0.14\"\n  native: true\n")
+	write("atlas.yaml", "apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: \"0.15\"\n  native: true\n")
 	write("templates/app1/tests/app1_test.yaml", `suite: app1
 tests:
   - it: renders one ConfigMap with the test values
