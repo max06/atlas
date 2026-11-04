@@ -9,6 +9,7 @@ require (
 	github.com/helmfile/helmfile v1.8.1
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v4 v4.0.0
 	gopkg.in/yaml.v3 v3.0.1
 	helm.sh/helm/v4 v4.3.0
 	sigs.k8s.io/kustomize/api v0.21.3
