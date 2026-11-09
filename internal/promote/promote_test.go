@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/max06/atlas/internal/discovery"
 	"github.com/max06/atlas/internal/gitrev"
 )
 
@@ -231,5 +232,67 @@ func TestAtomID(t *testing.T) {
 		if got := atomID(path, "deployments", "templates", templates, charts); got != want {
 			t.Errorf("%s: %s, want %s", path, got, want)
 		}
+	}
+}
+
+// A release that changes only with several atoms together belongs to the
+// atoms that reach its pair; a release nobody reaches belongs to every atom.
+// No release stays without an owner (a part would render "unchanged").
+func TestAttribute(t *testing.T) {
+	alone := []map[string]bool{{}, {}, {"c/e/r2": true}}
+	touches := func(pair string) []int {
+		if pair == "c|d" {
+			return []int{0, 1}
+		}
+		return nil
+	}
+	got := attribute([]string{"c/d/r1", "c/e/r2", "c/x/r3"}, alone, touches, 3)
+	want := map[string][]int{"c/d/r1": {0, 1}, "c/e/r2": {2}, "c/x/r3": {0, 1, 2}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("attribute = %v, want %v", got, want)
+	}
+}
+
+// A new pair on a skipped cluster links the deployment that creates it and
+// the atoms To does not have. A new file in a template that To already uses
+// does not link; a deployment at the root of the deployments directory does.
+func TestLinkNewPairOnSkippedCluster(t *testing.T) {
+	added := []gitrev.Change{{Status: "A", Path: "x"}}
+	pair, global := "group1/cluster3|dnew", "group1/cluster3|gnew"
+	atoms := []*Atom{
+		{ID: "deployment:group1/cluster3/apps/dnew", NewPairs: []string{pair}, changes: added},
+		{ID: "template:app-known", NewPairs: []string{pair}, changes: added},
+		{ID: "template:app-new", NewPairs: []string{pair}, changes: added},
+		{ID: "deployment:apps/gnew", NewPairs: []string{global}, changes: []gitrev.Change{{Status: "M", Path: "y"}}},
+		{ID: "chart:charts/new", NewPairs: []string{global}, changes: added},
+	}
+	newOn(atoms, &discovery.Map{Pairs: []discovery.Pair{{Templates: []string{"app-known"}}}})
+	var got [][]string
+	for _, group := range link(atoms, skipper([]string{"cluster3"})) {
+		var ids []string
+		for _, a := range group {
+			ids = append(ids, a.ID)
+		}
+		got = append(got, ids)
+	}
+	want := [][]string{
+		{"deployment:group1/cluster3/apps/dnew", "template:app-new"},
+		{"template:app-known"},
+		{"deployment:apps/gnew", "chart:charts/new"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("link = %v, want %v", got, want)
+	}
+}
+
+func TestReasonHidesTheWorkDirectory(t *testing.T) {
+	o := Options{Work: "/tmp/atlas-promote-123/w"}
+	got := reason(o, os.ErrNotExist)
+	if got != "file does not exist" {
+		t.Errorf("reason = %q", got)
+	}
+	err := &os.PathError{Op: "open", Path: "/tmp/atlas-promote-123/w/tree/charts/x", Err: os.ErrNotExist}
+	if got := reason(o, err); got != "open <work>/tree/charts/x: file does not exist" {
+		t.Errorf("reason = %q", got)
 	}
 }

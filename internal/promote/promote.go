@@ -107,9 +107,11 @@ type Atom struct {
 	Full         string   `json:"full,omitempty"`
 
 	changes []gitrev.Change
+	// isNew: To does not have the atom yet (see newOn).
+	isNew bool
 }
 
-// added: every file of the atom is new (To does not have the atom yet).
+// added: every file of the atom is new since the merge base.
 func (a *Atom) added() bool {
 	for _, c := range a.changes {
 		if c.Status != "A" {
@@ -117,6 +119,32 @@ func (a *Atom) added() bool {
 		}
 	}
 	return len(a.changes) > 0
+}
+
+// newOn marks the atoms To does not have yet: every file is new, and the
+// discovery map of To does not know the template or chart. A new file in a
+// template To already uses (a README) does not make the template new.
+func newOn(atoms []*Atom, to *discovery.Map) {
+	known := map[string]bool{}
+	if to != nil {
+		for _, pr := range to.Pairs {
+			for _, t := range pr.Templates {
+				known["template:"+t] = true
+			}
+			for _, c := range pr.Charts {
+				known["chart:"+c] = true
+			}
+		}
+	}
+	for _, a := range atoms {
+		a.isNew = a.added() && !known[a.ID]
+	}
+}
+
+// ownsPair: the deployment atom that creates the pair "<cluster>|<deployment>"
+// (a deployment at the root of the deployments directory has no prefix).
+func (a *Atom) ownsPair(dep string) bool {
+	return a.ID == "deployment:apps/"+dep || strings.HasPrefix(a.ID, "deployment:") && strings.HasSuffix(a.ID, "/apps/"+dep)
 }
 
 // Make computes the plan.
@@ -147,6 +175,11 @@ func Make(ctx context.Context, o Options) (*Plan, error) {
 	var fromPaths []string
 	changedFrom := map[string]bool{}
 	for _, c := range fromChanges {
+		// git quotes names with non-ASCII or special characters; such a name
+		// would match no path and count as "already on To"
+		if strings.HasPrefix(c.Path, `"`) {
+			return nil, fmt.Errorf("file name %s on %s: names that git quotes (non-ASCII or special characters) are not supported", c.Path, o.From)
+		}
 		fromPaths = append(fromPaths, c.Path)
 		changedFrom[c.Path] = true
 	}
@@ -180,6 +213,7 @@ func Make(ctx context.Context, o Options) (*Plan, error) {
 	}
 	ws := filepath.Join(o.Work, "tree")
 	maps := map[string]*discovery.Map{}
+	fromKnown := true
 	for _, side := range []struct{ name, rev string }{{"to", p.To.Commit}, {"from", p.From.Commit}} {
 		if err := r.Export(ctx, side.rev, ws); err != nil {
 			return nil, err
@@ -189,13 +223,17 @@ func Make(ctx context.Context, o Options) (*Plan, error) {
 			if side.name == "to" {
 				return nil, fmt.Errorf("discovery on %s: %w", o.To, err)
 			}
-			p.Notes = append(p.Notes, fmt.Sprintf("no discovery map on %s (%v): new templates and deployments of %s are not known", o.From, err, o.From))
+			// without the map of From a new deployment has no pair: no unit
+			// may count as "no effect" then
+			p.Notes = append(p.Notes, fmt.Sprintf("no discovery map on %s (%s): new templates and deployments of %s are not known, so no unit counts as \"no effect\"", o.From, reason(o, err), o.From))
 			m = maps["to"]
+			fromKnown = false
 		}
 		maps[side.name] = m
 	}
 
 	atoms := makeAtoms(candidates, maps["to"], maps["from"])
+	newOn(atoms, maps["to"])
 	skip := skipper(o.SkipClusters)
 	toPairs := map[string]bool{}
 	for _, pr := range maps["to"].Pairs {
@@ -239,7 +277,7 @@ func Make(ctx context.Context, o Options) (*Plan, error) {
 	for i := range p.Units {
 		u := &p.Units[i]
 		// no pair on To, or the render shows that none of them changes
-		u.NoEffect = u.Full == "" && (len(u.Pairs) == 0 || u.Split != nil && u.Split.Changed != nil && len(u.Split.Changed) == 0)
+		u.NoEffect = fromKnown && u.Full == "" && (len(u.Pairs) == 0 || u.Split != nil && u.Split.Changed != nil && len(u.Split.Changed) == 0)
 		for _, k := range u.NewPairs {
 			if cluster, _, _ := strings.Cut(k, "|"); !skip(cluster) {
 				u.NoEffect = false
@@ -360,7 +398,7 @@ func link(atoms []*Atom, skip func(string) bool) [][]*Atom {
 		keys := append([]string{}, a.Pairs...)
 		for _, k := range a.NewPairs {
 			cluster, dep, _ := strings.Cut(k, "|")
-			if !skip(cluster) || a.added() || strings.HasPrefix(a.ID, "deployment:") && strings.HasSuffix(a.ID, "/apps/"+dep) {
+			if !skip(cluster) || a.isNew || a.ownsPair(dep) {
 				keys = append(keys, k)
 			}
 		}

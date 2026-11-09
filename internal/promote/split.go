@@ -2,6 +2,7 @@ package promote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,9 +61,11 @@ func splitUnit(ctx context.Context, o Options, p *Plan, ws string, u Unit) ([]Un
 		return nil, err
 	}
 	defer os.RemoveAll(renders)
+	// a failed export (disk, cancelled context) stops the plan; only a failed
+	// render is evidence about the unit
 	render := func(name, rev string) (string, error) {
 		if err := r.Export(ctx, rev, ws); err != nil {
-			return "", err
+			return "", exportError{err}
 		}
 		dir := filepath.Join(renders, name)
 		err := review.RenderTree(ctx, ws, o.Entry, o.Helmfile, u.Pairs, dir, review.RenderOptions{SkipSecrets: true}, o.Log)
@@ -75,8 +78,11 @@ func splitUnit(ctx context.Context, o Options, p *Plan, ws string, u Unit) ([]Un
 		return []Unit{u}, nil
 	}
 	base, err := render("to", p.To.Commit)
+	if errors.As(err, &exportError{}) {
+		return nil, err
+	}
 	if err != nil {
-		return keep(fmt.Sprintf("no split: %s does not render (%v)", p.To.Ref, firstLine(err)))
+		return keep(fmt.Sprintf("no split: %s does not render (%s)", p.To.Ref, reason(o, err)))
 	}
 	var paths []string
 	for _, a := range u.Atoms {
@@ -87,8 +93,11 @@ func splitUnit(ctx context.Context, o Options, p *Plan, ws string, u Unit) ([]Un
 		return nil, err
 	}
 	all, err := render("all", allTree)
+	if errors.As(err, &exportError{}) {
+		return nil, err
+	}
 	if err != nil {
-		return keep(fmt.Sprintf("no split: %s with all atoms does not render (%v)", p.To.Ref, firstLine(err)))
+		return keep(fmt.Sprintf("no split: %s with all atoms does not render (%s)", p.To.Ref, reason(o, err)))
 	}
 	changedAll, err := changed(base, all, u.Pairs)
 	if err != nil {
@@ -160,9 +169,12 @@ func splitUnit(ctx context.Context, o Options, p *Plan, ws string, u Unit) ([]Un
 			continue
 		}
 		dir, err := render(fmt.Sprintf("atom-%d", i), tree)
+		if errors.As(err, &exportError{}) {
+			return nil, err
+		}
 		if err != nil {
 			for j := range u.Atoms {
-				union(i, j, fmt.Sprintf("%s: does not render alone (%s)", a.ID, firstLine(err)))
+				union(i, j, fmt.Sprintf("%s: does not render alone (%s)", a.ID, reason(o, err)))
 			}
 			continue
 		}
@@ -235,6 +247,17 @@ func splitUnit(ctx context.Context, o Options, p *Plan, ws string, u Unit) ([]Un
 		return []Unit{u}, nil
 	}
 	fmt.Fprintf(o.Log, "promote: %s splits into %d units\n", u.ID, len(roots))
+	// what each part changes: the releases its atoms change alone and the
+	// releases that change only with several atoms together
+	partChanged := map[int]map[string]bool{}
+	for rel, owners := range attribute(sortedSet(releases), alone, touches, n) {
+		for _, i := range owners {
+			if partChanged[find(i)] == nil {
+				partChanged[find(i)] = map[string]bool{}
+			}
+			partChanged[find(i)][rel] = true
+		}
+	}
 	var out []Unit
 	for _, root := range roots {
 		part, err := makeUnit(ctx, r, p, groups[root])
@@ -252,17 +275,49 @@ func splitUnit(ctx context.Context, o Options, p *Plan, ws string, u Unit) ([]Un
 				}
 			}
 		}
-		changedPart := map[string]bool{}
-		for _, a := range part.Atoms {
-			for _, rel := range sp.Releases[a.ID] {
-				changedPart[rel] = true
-			}
-		}
-		own.Changed = sortedSet(changedPart)
+		own.Changed = sortedSet(partChanged[root])
 		part.Split = own
 		out = append(out, part)
 	}
 	return out, nil
+}
+
+// attribute gives each changed release to the atoms that own it: the atoms
+// that change it alone; else (the release changes only with several atoms
+// together) the atoms that reach its pair; else every atom. A release never
+// stays without an owner: a part would show "renders unchanged" for it.
+func attribute(releases []string, alone []map[string]bool, touches func(pair string) []int, n int) map[string][]int {
+	out := map[string][]int{}
+	for _, rel := range releases {
+		var owners []int
+		for i := 0; i < n; i++ {
+			if alone[i][rel] {
+				owners = append(owners, i)
+			}
+		}
+		if len(owners) == 0 {
+			owners = touches(pairOf(rel))
+		}
+		if len(owners) == 0 {
+			for i := 0; i < n; i++ {
+				owners = append(owners, i)
+			}
+		}
+		out[rel] = owners
+	}
+	return out
+}
+
+// exportError marks a failed export of a revision into the workspace.
+type exportError struct{ error }
+
+// clean removes the private work directory from a message: it has a random
+// name, and the plan must read the same on every run.
+func clean(o Options, s string) string {
+	if o.Work == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, o.Work, "<work>")
 }
 
 // changed returns the releases ("<cluster>/<deployment>/<release>") whose
@@ -306,8 +361,10 @@ func contains(list []string, v string) bool {
 	return false
 }
 
-func firstLine(err error) string {
-	s := err.Error()
+// reason is the first line of an error for the plan, without the private
+// work directory and cut to a readable length.
+func reason(o Options, err error) string {
+	s := clean(o, err.Error())
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
