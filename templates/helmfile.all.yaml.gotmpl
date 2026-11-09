@@ -246,6 +246,14 @@
               "skipSecrets" true
         ) | fromYaml }}
         {{- $definition := include "atlas.deployment.definition" (dict "Values" $pairValues "hierarchy" $pairHierarchy) | fromYaml }}
+        {{- /* An empty deployment.yaml parses to nil. From helmfile v1.8.3 on,
+             `get` with a default accepts a nil value (before: "unexpected
+             type"), so the map would list a deployment without templates
+             that the render then rejects. Fail here, on every helmfile
+             version, like the render and the native engine do. */ -}}
+        {{- if not (kindIs "map" $definition) }}
+          {{- fail (printf "%s: the deployment definition is empty or not a map" $deployment.path) }}
+        {{- end }}
         {{- $templates := list }}
         {{- $charts := list }}
         {{- range $app := ($definition | get "apps" list) }}
