@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/max06/atlas/internal/snapshot"
 )
@@ -81,7 +82,7 @@ func WriteExport(in ExportInput, log io.Writer) error {
 	d := ExportDiff{
 		Version: ExportVersion, Base: in.Base, Head: in.Head,
 		Status: firstNonEmpty(in.Status, in.Result.Status), PRStatus: in.PRStatus, BaselineStatus: in.BaselineStatus,
-		RenderMode: firstNonEmpty(in.RenderMode, "full"), Keyless: in.Keyless, Pairs: in.Pairs,
+		RenderMode: firstNonEmpty(in.RenderMode, "full"), Keyless: in.Keyless, Pairs: uniqueSorted(in.Pairs),
 		Releases: []ExportRelease{},
 	}
 	for _, r := range in.Result.Releases {
@@ -120,6 +121,24 @@ func WriteExport(in ExportInput, log io.Writer) error {
 	fmt.Fprintf(log, "export: %s (diff.json: %d release(s); inventory.json: %t; merge-result tree: %t)\n",
 		in.Dir, len(d.Releases), in.Inventory != nil, nonEmpty(tree))
 	return nil
+}
+
+// uniqueSorted: the pairs of both sides come concatenated (unionPairs); the
+// export lists each pair once.
+func uniqueSorted(pairs []string) []string {
+	if pairs == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, p := range pairs {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func nonEmpty(dir string) bool {
