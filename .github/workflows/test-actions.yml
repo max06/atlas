@@ -69,10 +69,16 @@ jobs:
             backend: cli
             engine: ""
             shard: cli
-          - suite: review workflow, equivalence
+          # the equivalence suite runs its tests one after the other (one
+          # shared fixture repository): two shards, split by a test filter
+          - suite: review workflow, equivalence 1
             backend: cli
             engine: ""
-            shard: equivalence
+            shard: equivalence-1
+          - suite: review workflow, equivalence 2
+            backend: cli
+            engine: ""
+            shard: equivalence-2
           - suite: review workflow, actions
             backend: cli
             engine: ""
@@ -143,9 +149,11 @@ jobs:
           ATLAS_ENGINE: ${{ matrix.engine }}
         run: |
           paths="${{ matrix.paths }}"
+          filter=""
           if [ -n "${{ matrix.shard }}" ]; then
             paths=$(tests/bats/helpers/workflow-shards.sh "${{ matrix.shard }}")
+            filter=$(tests/bats/helpers/workflow-shards.sh --filter "${{ matrix.shard }}")
           fi
           # --timing: the time of each test, to balance the shards
           # shellcheck disable=SC2086
-          bats --recursive --jobs 4 --timing $paths
+          bats --recursive --jobs 4 --timing ${filter:+--filter "$filter"} $paths
