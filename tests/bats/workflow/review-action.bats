@@ -253,3 +253,47 @@ render_side() {
   [ ! -e "$RUNNER_TEMP/atlas-review-export" ]
   [ -z "$(out export_dir)" ]
 }
+
+@test "review action: export with the inventory and without the tree (native engine)" {
+  printf 'apiVersion: atlas.io/v1alpha1\nkind: Root\nspec:\n  engine: "0.15"\n  native: true\n' > "$FIXTURE_REPO/atlas.yaml"
+  printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - reviewMarker: inventory\n' \
+    > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  merge_feature "native engine + values edit (inventory)"
+  run bash -c "cd '$FIXTURE_REPO' && env -u GITHUB_ACTIONS INPUT_EXPORT=true INPUT_EXPORT_TREE=false INPUT_EXPORT_INVENTORY=true \
+      INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE=on INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl '$ATLAS_CLI' review ci action review"
+  [ "$status" -eq 0 ]
+  [ "$(out pr_status)" = "success" ]
+  local export="$RUNNER_TEMP/atlas-review-export"
+  # no tree: diff.json and inventory.json only
+  [ "$(ls "$export")" = "$(printf 'diff.json\ninventory.json')" ]
+  local inv="$export/inventory.json"
+  [ "$(jq -r .version "$inv")" = "1" ]
+  # charts: every pair of the tree, although the render was a subset
+  [ "$(jq -r '.charts.pairs' "$inv")" -gt 1 ]
+  [ "$(jq -r '.charts.items | length' "$inv")" -gt 0 ]
+  jq -e '[.charts.items[].releases[]] | any(startswith("cluster1|deployment1|"))' "$inv" >/dev/null
+  # no runner path in chart references, no plaintext fixture secret anywhere
+  ! jq -r '.charts.items[].chart' "$inv" | grep -q '^/'
+  ! grep -q 'AKIAIOSFODNN7EXAMPLE' "$inv"
+  # images and CRDs: the rendered pairs (atlas.yaml changed: a full render here)
+  [ "$(jq -r '.images.renderMode' "$inv")" = "$(out render_mode)" ]
+  [ "$(jq -r '.images.pairs' "$inv")" -gt 0 ]
+  # the fixture charts render no image and no CRD (unit tests cover the extraction)
+  [ "$(jq -r '.images.items | type' "$inv")" = "array" ]
+  [ "$(jq -r '.crds.items | type' "$inv")" = "array" ]
+  [ "$(jq -r '.notes // [] | length' "$inv")" = "0" ]
+}
+
+@test "review action: the inventory of a helmfile tree has no chart list and says why" {
+  printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - reviewMarker: inventory-helmfile\n' \
+    > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  merge_feature "values edit (inventory, helmfile engine)"
+  run bash -c "cd '$FIXTURE_REPO' && env -u GITHUB_ACTIONS INPUT_EXPORT=true INPUT_EXPORT_INVENTORY=true \
+      INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE=on INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl '$ATLAS_CLI' review ci action review"
+  [ "$status" -eq 0 ]
+  local inv="$RUNNER_TEMP/atlas-review-export/inventory.json"
+  [ "$(jq -r '.charts // "none"' "$inv")" = "none" ]
+  jq -e '.notes | any(contains("native engine"))' "$inv" >/dev/null
+  # the tree is still exported by default
+  [ -d "$RUNNER_TEMP/atlas-review-export/merge-result" ]
+}

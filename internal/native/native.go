@@ -268,3 +268,43 @@ func sortedKeys(m map[string]error) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// GenerateKeyless generates the states of every pair of the tree without
+// decrypting a SOPS file (SkipSecrets): what an inventory of the charts
+// reads. work is a scratch directory, removed afterwards; the returned
+// states are in memory. failed holds the pairs whose states could not be
+// generated, with their errors.
+func GenerateKeyless(l engine.Layout, work string) (root *renderer.Root, pairs []string, failed map[string]error, err error) {
+	found, err := engine.Discover(l, engine.Filter{})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	seen := map[string]bool{}
+	for _, p := range found {
+		k := p.Cluster + "|" + p.DeploymentName
+		if !seen[k] {
+			seen[k] = true
+			pairs = append(pairs, k)
+		}
+	}
+	sort.Strings(pairs)
+	if len(pairs) == 0 {
+		return &renderer.Root{}, pairs, map[string]error{}, nil
+	}
+	if err := os.RemoveAll(work); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		return nil, nil, nil, err
+	}
+	defer os.RemoveAll(work)
+	eng, err := engine.New(l, engine.Switches{SkipSecrets: true})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	root, failed, err = generate(eng, filepath.Join(work, "states"), pairs)
+	if err == nil && root == nil {
+		root = &renderer.Root{}
+	}
+	return root, pairs, failed, err
+}

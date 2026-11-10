@@ -61,6 +61,10 @@ type ExportInput struct {
 	Keyless                  bool
 	Pairs                    []string
 	Result                   snapshot.DiffResult
+	// SkipTree: no merge-result/ copy (the tree is the big part of the export).
+	SkipTree bool
+	// Inventory, when set, goes to inventory.json.
+	Inventory *Inventory
 }
 
 // WriteExport writes <Dir>/diff.json and copies the merge result's render
@@ -98,13 +102,23 @@ func WriteExport(in ExportInput, log io.Writer) error {
 	if err := os.WriteFile(filepath.Join(in.Dir, "diff.json"), append(body, '\n'), 0o644); err != nil {
 		return err
 	}
+	if in.Inventory != nil {
+		body, err := json.MarshalIndent(in.Inventory, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(in.Dir, "inventory.json"), append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
 	tree := filepath.Join(in.Dir, "merge-result")
-	if in.PRDir != "" && nonEmpty(in.PRDir) {
+	if !in.SkipTree && in.PRDir != "" && nonEmpty(in.PRDir) {
 		if err := copyDir(in.PRDir, tree); err != nil {
 			return fmt.Errorf("export the merge result's tree: %w", err)
 		}
 	}
-	fmt.Fprintf(log, "export: %s (diff.json: %d release(s); merge-result tree: %t)\n", in.Dir, len(d.Releases), nonEmpty(tree))
+	fmt.Fprintf(log, "export: %s (diff.json: %d release(s); inventory.json: %t; merge-result tree: %t)\n",
+		in.Dir, len(d.Releases), in.Inventory != nil, nonEmpty(tree))
 	return nil
 }
 
