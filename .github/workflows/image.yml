@@ -79,10 +79,16 @@ jobs:
       # on both platforms (as an arbitrary uid, like the wrapper runs it).
       # The same build arguments as the push below, so the push reuses
       # these layers and the smoke test checks the image that is pushed.
+      # First one build of both platforms: the two compile stages run at the
+      # same time, and the loads below and the push come from the builder's
+      # cache. No GitHub Actions build cache: its export took longer than
+      # the whole build, and a source change invalidates the compile layers.
       - name: Smoke test
         run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION=${{ steps.meta.outputs.version }} .
           for platform in linux/amd64 linux/arm64; do
-            docker buildx build --load --platform "$platform" --cache-from type=gha \
+            docker buildx build --load --platform "$platform" \
               -t atlas-smoke --build-arg VERSION=${{ steps.meta.outputs.version }} .
             docker run --rm --platform "$platform" --user 12345:12345 atlas-smoke doctor
           done
@@ -102,6 +108,4 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 

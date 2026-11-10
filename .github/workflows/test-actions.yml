@@ -7,7 +7,9 @@
 #
 # Separated from the main tests.yml matrix because the review pipeline has
 # its own tool dependencies (dyff) and doesn't need Helm/Helmfile version
-# matrix coverage. The suites run as parallel jobs.
+# matrix coverage. The suites run as parallel jobs. The review workflow
+# suites render the most: they run in shards, one job each
+# (tests/bats/helpers/workflow-shards.sh names the files of a shard).
 
 name: Action Tests
 
@@ -23,8 +25,10 @@ on:
       - internal/**
       - go.mod
       - go.sum
+      - .github/workflows/test-actions.yml
   pull_request:
     paths:
+      - .github/workflows/test-actions.yml
       - .github/actions/**
       - tests/bats/workflow/**
       - tests/bats/helpers/**
@@ -59,11 +63,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # the review pipeline through the atlas CLI
-          - suite: review workflow
+          # the review pipeline through the atlas CLI, in shards; "rest" is
+          # every file that no other shard names
+          - suite: review workflow, cli
             backend: cli
             engine: ""
-            paths: tests/bats/workflow/ tests/bats/redaction/redaction-replay.bats
+            shard: cli
+          # the equivalence suite runs its tests one after the other (one
+          # shared fixture repository): two shards, split by a test filter
+          - suite: review workflow, equivalence 1
+            backend: cli
+            engine: ""
+            shard: equivalence-1
+          - suite: review workflow, equivalence 2
+            backend: cli
+            engine: ""
+            shard: equivalence-2
+          - suite: review workflow, actions
+            backend: cli
+            engine: ""
+            shard: actions
+          - suite: review workflow, rest
+            backend: cli
+            engine: ""
+            shard: rest
           # the core suites (values, redaction, integration) against the
           # native Go engine: a helmfile shim renders the native states for
           # every call with the test entry (tests/bats/helpers/native-engine),
@@ -71,6 +94,7 @@ jobs:
           - suite: native engine
             backend: ""
             engine: native
+            shard: ""
             paths: tests/bats/values/ tests/bats/redaction/ tests/bats/integration/
     env:
       SOPS_AGE_KEY_FILE: ${{ github.workspace }}/tests/sops-secret.txt
@@ -123,4 +147,13 @@ jobs:
         env:
           ATLAS_REVIEW_BACKEND: ${{ matrix.backend }}
           ATLAS_ENGINE: ${{ matrix.engine }}
-        run: bats --recursive --jobs 4 ${{ matrix.paths }}
+        run: |
+          paths="${{ matrix.paths }}"
+          filter=""
+          if [ -n "${{ matrix.shard }}" ]; then
+            paths=$(tests/bats/helpers/workflow-shards.sh "${{ matrix.shard }}")
+            filter=$(tests/bats/helpers/workflow-shards.sh --filter "${{ matrix.shard }}")
+          fi
+          # --timing: the time of each test, to balance the shards
+          # shellcheck disable=SC2086
+          bats --recursive --jobs 4 --timing ${filter:+--filter "$filter"} $paths
