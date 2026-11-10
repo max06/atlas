@@ -747,6 +747,7 @@ jobs:
 | `in-place` | `true` | Render in the checkout (faster on GitHub runners) or in a workspace under `RUNNER_TEMP` |
 | `render-parallel`, `helmfile-timeout` | CPUs, `900` | Concurrent helmfile calls per render; seconds per call |
 | `engine-repository` | `ghcr.io/max06/atlas` | Image repository of pinned engines: a side whose `atlas.yaml` pins another minor renders in `<engine-repository>:<pin>` (see [Reviews across engine versions](#reviews-across-engine-versions)) |
+| `export`, `export-artifact`, `export-retention-days` | `false`, `atlas-review`, `7` | Upload the full diff and the merge result's redacted render tree as an artifact (see [Export for later jobs](#export-for-later-jobs)) |
 
 ### Outputs
 
@@ -760,6 +761,21 @@ jobs:
 | `engine_baseline`, `engine_pr` | Who rendered each side: `self` or the image of its pin |
 | `head`, `base` | The two commits |
 | `comment_body`, `summary_file` | The comment markdown; the path of the job summary |
+| `export_dir`, `export_artifact` | With `export`: the export directory on the runner; the name of the uploaded artifact |
+
+### Export for later jobs
+
+The comment cuts big diffs. A later job (for example an automated judgement of the PR) can read the whole review from an artifact instead: set `export: "true"`, and download the artifact `export-artifact` in that job.
+
+| File | Content |
+|------|---------|
+| `diff.json` | The full diff, never cut: `version` (layout version, `1`), `base`, `head`, `status`, `prStatus`, `baselineStatus`, `renderMode`, `keyless`, `pairs`, and `releases[]` with `path`, `cluster`, `deployment`, `release`, `change` (`new`, `removed` or empty), `suppressed` (`removed`, `no-map` or empty) and `resources[]` (`label`, `change`, `diff`) |
+| `merge-result/` | The render tree of the merge result, one file per resource (`<cluster>/<deployment>/<release>/...`) |
+
+- The export holds what the comment may show. Suppressed releases have no content in `diff.json`. The merge result's tree is redacted like the comment (a release the redaction could not handle is not in the tree). Keyless reviews export `ENC[...]` values.
+- The baseline's tree is never exported: an old baseline can hold values that only the replay over the merge result's maps redacts.
+- With `render-subset: "on"` the tree holds only the rendered pairs, not the whole repository.
+- The review removes the SOPS key file that it writes into `RUNNER_TEMP` when it ends, so a later upload from `RUNNER_TEMP` cannot carry it.
 
 ### Reviews across engine versions
 

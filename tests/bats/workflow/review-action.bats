@@ -214,3 +214,42 @@ render_side() {
   # the CLI path wrote one map per release, as the post-renderer dumps them
   [ -f "$RUNNER_TEMP/cli-redact-maps/cluster1/deployment20/app-multiline-tplsops.json" ]
 }
+
+@test "review action: export writes the full diff and the redacted merge result, the key file is removed" {
+  printf 'apps:\n  - template: app1\n    namespace: test\n    values:\n      - reviewMarker: exported\n' \
+    > "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  merge_feature "values edit (export)"
+  # the key as an action input: the review writes the key file itself
+  export KEY_INPUT
+  KEY_INPUT="$(cat "$(_repo_root)/tests/sops-secret.txt")"
+  run bash -c "cd '$FIXTURE_REPO' && env -u GITHUB_ACTIONS -u SOPS_AGE_KEY_FILE INPUT_SOPS_AGE_KEY=\"\$KEY_INPUT\" INPUT_EXPORT=true \
+      INPUT_BASE='HEAD^1' INPUT_SUBSET_MODE=off INPUT_HELMFILE_PATH=helmfile.yaml.gotmpl '$ATLAS_CLI' review ci action review"
+  [ "$status" -eq 0 ]
+  [ "$(out pr_status)" = "success" ]
+  [ "$(out status)" = "changes" ]
+  local export="$RUNNER_TEMP/atlas-review-export"
+  [ "$(out export_dir)" = "$export" ]
+  # diff.json: the full diff with the release of the edit
+  [ "$(jq -r .version "$export/diff.json")" = "1" ]
+  [ "$(jq -r .status "$export/diff.json")" = "changes" ]
+  [ -n "$(jq -r .head "$export/diff.json")" ] && [ -n "$(jq -r .base "$export/diff.json")" ]
+  jq -e '.releases[] | select(.path == "cluster1/deployment1/app1") | .resources[].diff | contains("reviewMarker: exported")' \
+    "$export/diff.json" >/dev/null
+  # the merge result's tree is there and redacted; the baseline's tree is not exported
+  [ -d "$export/merge-result/cluster1/deployment1" ]
+  ! grep -rq 'AKIAIOSFODNN7EXAMPLE' "$export"
+  grep -rq 'REDACTED' "$export/merge-result"
+  [ "$(ls "$export")" = "$(printf 'diff.json\nmerge-result')" ]
+  # the review wrote the key file, and it does not outlive the review
+  [[ "$output" == *"SOPS key file:"* ]]
+  [ ! -e "$RUNNER_TEMP/sops-age-key.txt" ]
+}
+
+@test "review action: no export without the export input" {
+  echo "# comment only" >> "$FIXTURE_REPO/deployments/cluster1/apps/deployment1/deployment.yaml"
+  merge_feature "comment (no export)"
+  run review on
+  [ "$status" -eq 0 ]
+  [ ! -e "$RUNNER_TEMP/atlas-review-export" ]
+  [ -z "$(out export_dir)" ]
+}

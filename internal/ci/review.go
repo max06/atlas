@@ -53,6 +53,10 @@ type ReviewConfig struct {
 	Version          string
 	EngineRepository string
 
+	// Export writes the full diff and the merge result's render tree to
+	// <Temp>/atlas-review-export after the comment (WriteExport).
+	Export bool
+
 	Temp    string // work directory (RUNNER_TEMP)
 	Outputs gha.Outputs
 	Log     io.Writer
@@ -117,6 +121,14 @@ func Review(ctx context.Context, c ReviewConfig) error {
 			return err
 		}
 		l.Printf("SOPS key file: %d bytes", len(c.SopsAgeKey))
+		// The file must not outlive the review: later steps of the job (and
+		// whatever they upload from RUNNER_TEMP) never need the key.
+		keyFile := c.SopsAgeKeyFile
+		defer func() {
+			if err := os.Remove(keyFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				l.Annotate("warning", "Could not remove the SOPS key file: %v", err)
+			}
+		}()
 	}
 
 	// Each side renders with the engine its atlas.yaml pins: this binary or
@@ -298,6 +310,9 @@ func Review(ctx context.Context, c ReviewConfig) error {
 		Classify: cls, HelmfilePath: c.Entry, RunURL: c.RunURL, Temp: temp,
 		Pairs: unionPairs(pr.Pairs, baseline.Pairs),
 	}
+	if c.Export {
+		in.ExportDir, in.Base, in.Head = filepath.Join(temp, "atlas-review-export"), base, head
+	}
 	if cls != nil {
 		in.ClassifySummary = readFile(filepath.Join(classifyDir, "classify-summary.md"))
 	}
@@ -339,6 +354,7 @@ func ReviewAction(ctx context.Context, binary, version string, log io.Writer) er
 		SopsAgeKey:       input("SOPS_AGE_KEY"),
 		SopsAgeKeyFile:   os.Getenv("SOPS_AGE_KEY_FILE"),
 		Keyless:          input("KEYLESS") == "true",
+		Export:           input("EXPORT") == "true",
 		Helmfile:         binary,
 		Version:          version,
 		EngineRepository: input("ENGINE_REPOSITORY"),
