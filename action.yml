@@ -108,6 +108,14 @@ inputs:
     description: '"true": write the full diff (diff.json, never cut) and the redacted render tree of the merge result, and upload both as an artifact for later jobs (for example an automated judgement). The baseline tree is never exported. In subset mode the tree holds only the rendered pairs. Default "false".'
     required: false
     default: "false"
+  export-tree:
+    description: '"true" (default): the export holds the redacted render tree of the merge result (merge-result/). "false": diff.json (and inventory.json) only, a much smaller artifact.'
+    required: false
+    default: "true"
+  export-inventory:
+    description: '"true": the export holds inventory.json: the charts and versions of every pair (from a keyless states generation, native engine only), and the images and CRD versions of the rendered pairs. Default "false".'
+    required: false
+    default: "false"
   export-artifact:
     description: Name of the export artifact
     required: false
@@ -256,6 +264,8 @@ runs:
         INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         INPUT_IN_PLACE: ${{ inputs.in-place }}
         INPUT_EXPORT: ${{ inputs.export }}
+        INPUT_EXPORT_TREE: ${{ inputs.export-tree }}
+        INPUT_EXPORT_INVENTORY: ${{ inputs.export-inventory }}
         RENDER_PARALLEL: ${{ inputs.render-parallel }}
         HELMFILE_TIMEOUT: ${{ inputs.helmfile-timeout }}
       run: ${GITHUB_ACTION_PATH}/action/review.sh

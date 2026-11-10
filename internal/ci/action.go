@@ -223,6 +223,9 @@ type CompareInput struct {
 	// render tree are written there (WriteExport); Base and Head go into
 	// diff.json.
 	ExportDir, Base, Head string
+	// ExportSkipTree and Inventory: see ExportInput.
+	ExportSkipTree bool
+	Inventory      *Inventory
 }
 
 // Compare replays the redaction maps over the baseline, diffs the trees,
@@ -334,6 +337,7 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 			Dir: in.ExportDir, PRDir: in.PRDir, Base: in.Base, Head: in.Head,
 			Status: d.Result.Status, PRStatus: in.PRStatus, BaselineStatus: in.BaselineStatus,
 			RenderMode: in.RenderMode, Keyless: in.Keyless, Pairs: in.Pairs, Result: d.Result,
+			SkipTree: in.ExportSkipTree, Inventory: in.Inventory,
 		}, log)
 		if err != nil {
 			return fmt.Errorf("export: %w", err)

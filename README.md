@@ -748,6 +748,7 @@ jobs:
 | `render-parallel`, `helmfile-timeout` | CPUs, `900` | Concurrent helmfile calls per render; seconds per call |
 | `engine-repository` | `ghcr.io/max06/atlas` | Image repository of pinned engines: a side whose `atlas.yaml` pins another minor renders in `<engine-repository>:<pin>` (see [Reviews across engine versions](#reviews-across-engine-versions)) |
 | `export`, `export-artifact`, `export-retention-days` | `false`, `atlas-review`, `7` | Upload the full diff and the merge result's redacted render tree as an artifact (see [Export for later jobs](#export-for-later-jobs)) |
+| `export-tree`, `export-inventory` | `true`, `false` | What the export holds besides `diff.json`: the render tree; `inventory.json` |
 
 ### Outputs
 
@@ -770,11 +771,13 @@ The comment cuts big diffs. A later job (for example an automated judgement of t
 | File | Content |
 |------|---------|
 | `diff.json` | The full diff, never cut: `version` (layout version, `1`), `base`, `head`, `status`, `prStatus`, `baselineStatus`, `renderMode`, `keyless`, `pairs`, and `releases[]` with `path`, `cluster`, `deployment`, `release`, `change` (`new`, `removed` or empty), `suppressed` (`removed`, `no-map` or empty) and `resources[]` (`label`, `change`, `diff`) |
-| `merge-result/` | The render tree of the merge result, one file per resource (`<cluster>/<deployment>/<release>/...`) |
+| `merge-result/` | The render tree of the merge result, one file per resource (`<cluster>/<deployment>/<release>/...`). Left out with `export-tree: "false"` (the tree of a full render can be hundreds of MB) |
+| `inventory.json` | With `export-inventory: "true"`: what the merge result deploys (layout version `1`). `charts`: every chart in every version with its releases (`<cluster>\|<deployment>\|<release>`), from a keyless states generation of **all** pairs (native engine only; no render, no decryption), plus `kubeVersions` per cluster. `images`: every `image` value of the rendered resources with the resources that use it. `crds`: each rendered CRD with its versions (`served`, `storage`). Images and CRDs cover only the rendered pairs (`renderMode`, `pairs`). `notes` say what is missing and why |
 
 - The export holds what the comment may show. Suppressed releases have no content in `diff.json`. The merge result's tree is redacted like the comment (a release the redaction could not handle is not in the tree). Keyless reviews export `ENC[...]` values.
 - The baseline's tree is never exported: an old baseline can hold values that only the replay over the merge result's maps redacts.
-- With `render-subset: "on"` the tree holds only the rendered pairs, not the whole repository.
+- With `render-subset: "on"` the tree holds only the rendered pairs, not the whole repository. The chart list of `inventory.json` covers all pairs anyway.
+- `inventory.json` holds names, versions and repository URLs only: credentials and queries are removed from URLs, local charts get repo-relative paths. A failed inventory does not fail the review; the export then has no `inventory.json` and the log says why.
 - The review removes the SOPS key file that it writes into `RUNNER_TEMP` when it ends, so a later upload from `RUNNER_TEMP` cannot carry it.
 
 ### Reviews across engine versions

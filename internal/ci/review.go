@@ -56,6 +56,11 @@ type ReviewConfig struct {
 	// Export writes the full diff and the merge result's render tree to
 	// <Temp>/atlas-review-export after the comment (WriteExport).
 	Export bool
+	// ExportSkipTree leaves the render tree out of the export.
+	ExportSkipTree bool
+	// ExportInventory adds inventory.json (BuildInventory): built after the
+	// merge result's render, while the workspace still holds the merge result.
+	ExportInventory bool
 
 	Temp    string // work directory (RUNNER_TEMP)
 	Outputs gha.Outputs
@@ -287,6 +292,21 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	if err != nil {
 		return err
 	}
+	// The inventory reads the merge result's tree (keyless states) and its
+	// render: now, before the baseline replaces the workspace. It never
+	// blocks the review.
+	var inventory *Inventory
+	if c.Export && c.ExportInventory && pr.Status == "success" {
+		inv, err := BuildInventory(InventoryInput{
+			Dir: ws, TreeDir: pr.SnapshotDir, Pairs: pr.Pairs, RenderMode: pr.Mode,
+			Work: filepath.Join(temp, "inventory-states"),
+		}, c.Log)
+		if err != nil {
+			l.Annotate("warning", "The inventory of the merge result failed: %v", err)
+		} else {
+			inventory = &inv
+		}
+	}
 	baseline, err := side("baseline", base, false)
 	if err != nil {
 		return err
@@ -312,6 +332,7 @@ func Review(ctx context.Context, c ReviewConfig) error {
 	}
 	if c.Export {
 		in.ExportDir, in.Base, in.Head = filepath.Join(temp, "atlas-review-export"), base, head
+		in.ExportSkipTree, in.Inventory = c.ExportSkipTree, inventory
 	}
 	if cls != nil {
 		in.ClassifySummary = readFile(filepath.Join(classifyDir, "classify-summary.md"))
@@ -355,6 +376,8 @@ func ReviewAction(ctx context.Context, binary, version string, log io.Writer) er
 		SopsAgeKeyFile:   os.Getenv("SOPS_AGE_KEY_FILE"),
 		Keyless:          input("KEYLESS") == "true",
 		Export:           input("EXPORT") == "true",
+		ExportSkipTree:   input("EXPORT_TREE") == "false",
+		ExportInventory:  input("EXPORT_INVENTORY") == "true",
 		Helmfile:         binary,
 		Version:          version,
 		EngineRepository: input("ENGINE_REPOSITORY"),
