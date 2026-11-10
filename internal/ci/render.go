@@ -253,6 +253,17 @@ func render(ctx context.Context, c RenderConfig) (RenderResult, error) {
 		return res, err
 	}
 	s.extraEnv = append(s.extraEnv, keyEnv...)
+	// A key file that sopsKeyEnv wrote from the input must not outlive the
+	// render: later steps of the job (and their uploads from RUNNER_TEMP)
+	// never need it. A given file (SopsAgeKeyFile) belongs to the caller.
+	if !c.Keyless && c.SopsAgeKeyFile == "" && c.SopsAgeKey != "" {
+		created := filepath.Join(c.Temp, "sops-age-key.txt")
+		defer func() {
+			if err := os.Remove(created); err != nil && !errors.Is(err, os.ErrNotExist) {
+				s.log.Annotate("warning", "Could not remove the SOPS key file: %v", err)
+			}
+		}()
+	}
 
 	s.phase(fmt.Sprintf("start (%d parallel helmfile calls)", s.Parallel))
 	stopHeartbeat := s.heartbeat()

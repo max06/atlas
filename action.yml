@@ -104,6 +104,18 @@ inputs:
     description: Seconds a single helmfile invocation may take (default 900)
     required: false
     default: ""
+  export:
+    description: '"true": write the full diff (diff.json, never cut) and the redacted render tree of the merge result, and upload both as an artifact for later jobs (for example an automated judgement). The baseline tree is never exported. In subset mode the tree holds only the rendered pairs. Default "false".'
+    required: false
+    default: "false"
+  export-artifact:
+    description: Name of the export artifact
+    required: false
+    default: atlas-review
+  export-retention-days:
+    description: Days GitHub keeps the export artifact
+    required: false
+    default: "7"
 
 outputs:
   status:
@@ -154,6 +166,12 @@ outputs:
   summary_file:
     description: Path of the job summary (markdown)
     value: ${{ steps.review.outputs.summary-file }}
+  export_dir:
+    description: Directory of the export (diff.json, merge-result/) on the runner; empty without export
+    value: ${{ steps.review.outputs.export_dir }}
+  export_artifact:
+    description: Name of the uploaded export artifact; empty when nothing was uploaded
+    value: ${{ steps.export-upload.outputs.artifact-id != '' && inputs.export-artifact || '' }}
 
 runs:
   using: composite
@@ -237,9 +255,20 @@ runs:
         INPUT_LATEST_MAIN_SHA: ${{ steps.latest.outputs.main_sha }}
         INPUT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         INPUT_IN_PLACE: ${{ inputs.in-place }}
+        INPUT_EXPORT: ${{ inputs.export }}
         RENDER_PARALLEL: ${{ inputs.render-parallel }}
         HELMFILE_TIMEOUT: ${{ inputs.helmfile-timeout }}
       run: ${GITHUB_ACTION_PATH}/action/review.sh
+
+    - name: Upload the export
+      id: export-upload
+      if: always() && inputs.export == 'true' && steps.review.outputs.export_dir != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.export-artifact }}
+        path: ${{ steps.review.outputs.export_dir }}
+        retention-days: ${{ inputs.export-retention-days }}
+        if-no-files-found: error
 
     - name: Post the PR comment
       if: always() && inputs.comment == 'true' && steps.review.outputs.body != '' && github.event.pull_request.number != ''

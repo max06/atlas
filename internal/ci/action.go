@@ -219,6 +219,10 @@ type CompareInput struct {
 	// Keyless: both sides rendered without decryption; there are no redaction
 	// maps to replay, nothing is suppressed, the comment says so.
 	Keyless bool
+	// ExportDir: when set, the full diff (diff.json) and the merge result's
+	// render tree are written there (WriteExport); Base and Head go into
+	// diff.json.
+	ExportDir, Base, Head string
 }
 
 // Compare replays the redaction maps over the baseline, diffs the trees,
@@ -325,6 +329,17 @@ func Compare(ctx context.Context, in CompareInput, out gha.Outputs, log io.Write
 	}
 	_ = out.Setf("scrubbed_count", "%d", scrubbed)
 	_ = out.Setf("no_map_count", "%d", noMap)
+	if in.ExportDir != "" {
+		err := WriteExport(ExportInput{
+			Dir: in.ExportDir, PRDir: in.PRDir, Base: in.Base, Head: in.Head,
+			Status: d.Result.Status, PRStatus: in.PRStatus, BaselineStatus: in.BaselineStatus,
+			RenderMode: in.RenderMode, Keyless: in.Keyless, Pairs: in.Pairs, Result: d.Result,
+		}, log)
+		if err != nil {
+			return fmt.Errorf("export: %w", err)
+		}
+		_ = out.Set("export_dir", in.ExportDir)
+	}
 	return out.Set("summary-file", filepath.Join(in.Temp, "summary.md"))
 }
 
