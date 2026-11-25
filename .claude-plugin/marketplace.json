@@ -1,0 +1,12 @@
+{
+  "name": "atlas",
+  "description": "Claude Code plugins for ATLAS repositories",
+  "owner": { "name": "max06" },
+  "plugins": [
+    {
+      "name": "atlas",
+      "source": "./contrib/claude-plugin",
+      "description": "Skills for working in ATLAS consumer repositories: the deployment model, the atlas CLI, making and reviewing changes, pitfalls."
+    }
+  ]
+}

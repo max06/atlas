@@ -1,0 +1,6 @@
+{
+  "name": "atlas",
+  "description": "Skills for working in ATLAS consumer repositories: the deployment model, the atlas CLI, making and reviewing changes, pitfalls.",
+  "author": { "name": "max06" },
+  "repository": "https://github.com/max06/atlas"
+}
