@@ -472,6 +472,23 @@ Both sides are exported into one workspace path in turn, because rendered values
 
 `atlas render --argocd` runs as the Argo CD config management plugin: the filter comes from `ARGOCD_ENV_ATLAS_FILTER_CLUSTER` / `ARGOCD_ENV_ATLAS_FILTER_DEPLOYMENT_NAME`, and releases render into `ARGOCD_APP_NAMESPACE` unless `ARGOCD_ENV_HELMFILE_USE_CONTEXT_NAMESPACE` is set.
 
+## Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace (`.claude-plugin/marketplace.json`). Its plugin `atlas` (`contrib/claude-plugin/`) carries the skill `atlas:consumer-repo`: the operating guide for an agent working in a consumer repository. It covers the deployment model, the `bin/atlas` commands, how to make and review a change, the Go-template pitfalls and the secret rules. Local conventions stay in the consumer's own `CLAUDE.md`.
+
+Install it once per consumer clone:
+
+```bash
+claude plugin marketplace add max06/atlas --scope project
+claude plugin install atlas@atlas --scope project
+```
+
+Or interactively: `/plugin install atlas --marketplace max06/atlas`.
+
+The first command writes `extraKnownMarketplaces` and the second writes `enabledPlugins` into the consumer's `.claude/settings.json`. Commit that file so everyone opening the repository is offered the marketplace. Listing the plugin there does not install it: every clone (a devcontainer, for example in `postCreateCommand`) still runs the install command once.
+
+The plugin has no `version`, so each commit that touches `contrib/claude-plugin/` is an update. Third-party marketplaces don't update automatically: run `claude plugin marketplace update atlas`, or set `"autoUpdate": true` on the marketplace entry.
+
 ## atlas.yaml: the engine pin
 
 `atlas.yaml` at the root of the tree (the Argo CD source path) pins the engine that renders the tree. Each branch has its own copy. To test another engine, change the pin in a PR or in your working tree.
