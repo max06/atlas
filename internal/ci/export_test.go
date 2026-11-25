@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -104,5 +105,21 @@ func TestWriteExportWithoutTreeWritesDiffOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "merge-result")); !os.IsNotExist(err) {
 		t.Errorf("merge-result without a tree: %v", err)
+	}
+}
+
+func TestWriteExportListsEachPairOnce(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "export")
+	pairs := []string{"infra/zulu|app", "infra/alpha|app", "infra/zulu|app", "infra/alpha|app"} // both sides, as unionPairs gives them
+	if err := WriteExport(ExportInput{Dir: dir, Pairs: pairs, Result: snapshot.DiffResult{Status: snapshot.StatusNoChanges}}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var got ExportDiff
+	body, _ := os.ReadFile(filepath.Join(dir, "diff.json"))
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"infra/alpha|app", "infra/zulu|app"}; !reflect.DeepEqual(got.Pairs, want) {
+		t.Errorf("pairs = %v, want %v", got.Pairs, want)
 	}
 }
