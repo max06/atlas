@@ -57,11 +57,6 @@
 			"source": "${localEnv:HOME}${localEnv:USERPROFILE}/.claude",
 			"target": "/home/vscode/.claude",
 			"type": "bind"
-		},
-		{
-			"source": "${localEnv:HOME}${localEnv:USERPROFILE}/SynoDrive/nixos-config",
-			"target": "/workspaces/nixos-config",
-			"type": "bind"
 		}
 	],
 	// add --network=host to docker run
