@@ -155,40 +155,53 @@ class SetupRunner:
         return all(self.results.values())
 
 
+def nix_available() -> bool:
+    """True when the nix devcontainer feature is installed.
+
+    In that case the user's dotfiles (home-manager) provide kubeswitch, its
+    shell integration and a seeded ~/.kube/switch-config.yaml, so the
+    script must not install a second copy or a competing config.
+    """
+    return shutil.which("nix") is not None or os.path.isdir("/nix/var/nix")
+
+
 def main():
     runner = SetupRunner()
 
-    runner.add_task(
-        "install kubeswitch",
-        "sudo -E eget danielfoehrKn/kubeswitch --to /usr/local/bin/switcher"
-    )
-    runner.add_task(
-        "add kubeswitch to profile and install default config",
-        [
-            "echo 'source <(switcher init bash)' >> ~/.bashrc",
-            "echo alias s=\\'switch\\' >> ~/.bashrc",
-            "echo 'complete -o default -F __start_switcher s' >> ~/.bashrc",
-            "mkdir -p ~/.kube",
-            f"[ ! -e ~/.kube/switch-config.yaml ] && ln -s ${os.getcwd()}/.devcontainer/defaults/switch-config.yaml ~/.kube/switch-config.yaml || true"
-        ],
-        ["install kubeswitch"]
-    )
+    if nix_available():
+        runner.console.print(
+            "[blue]nix detected, leaving kubeswitch to the dotfiles profile[/blue]")
+    else:
+        runner.add_task(
+            "install kubeswitch",
+            "sudo -E eget danielfoehrKn/kubeswitch --to /usr/local/bin/switcher"
+        )
+        runner.add_task(
+            "add kubeswitch to profile and install default config",
+            [
+                "echo 'source <(switcher init bash)' >> ~/.bashrc",
+                "echo alias s=\\'switch\\' >> ~/.bashrc",
+                "echo 'complete -o default -F __start_switcher s' >> ~/.bashrc",
+                "mkdir -p ~/.kube",
+                f"[ ! -e ~/.kube/switch-config.yaml ] && ln -s {os.getcwd()}/.devcontainer/defaults/switch-config.yaml ~/.kube/switch-config.yaml || true"
+            ],
+            ["install kubeswitch"]
+        )
+        runner.add_task(
+            "install krew", '''
+                cd "$(mktemp -d)" &&
+                eget kubernetes-sigs/krew --to ./krew &&
+                ./krew install krew
+            '''
+        )
+
+        runner.add_task(
+            "install krew plugins", "kubectl krew install node-shell", [
+                "install krew"]
+        )
     runner.add_task(
         "install helmfile", [
             "sudo -E eget helmfile/helmfile --to /usr/local/bin/helmfile"]
-    )
-
-    runner.add_task(
-        "install krew", '''
-            cd "$(mktemp -d)" &&
-            eget kubernetes-sigs/krew --to ./krew &&
-            ./krew install krew
-        '''
-    )
-
-    runner.add_task(
-        "install krew plugins", "kubectl krew install node-shell", [
-            "install krew"]
     )
 
     runner.add_task(
