@@ -411,6 +411,9 @@ ATLAS_REDACT_SECRETS=true, ATLAS_REDACT_MAPS=1, ATLAS_DISCOVERY_MAP=1.`,
 			if err != nil {
 				return err
 			}
+			// helmfile's --namespace is also the top-level .Namespace of
+			// the state templates, not only the .Release.Namespace.
+			eng.Namespace = namespace
 			f := engine.Filter{Clusters: splitList(os.Getenv("ATLAS_FILTER_CLUSTER")), Deployments: splitList(os.Getenv("ATLAS_FILTER_DEPLOYMENT_NAME"))}
 			if os.Getenv("ATLAS_DISCOVERY_MAP") == "1" {
 				_, err = eng.GenerateDiscoveryMap(out, f)

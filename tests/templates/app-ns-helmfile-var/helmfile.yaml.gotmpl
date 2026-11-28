@@ -1,0 +1,13 @@
+# App template exercising helmfile's NATIVE state-template variable
+# `.Namespace` (the value of the `--namespace` CLI flag, empty string when
+# the flag is absent). Plain helmfile provides this key in every state
+# template, so templates written against plain helmfile may reference it.
+# ATLAS renders app templates via `tpl` with a hand-built context — this
+# template guards against that context missing the key (which would
+# hard-fail the render, since helmfile's tpl runs with missingkey=error).
+releases:
+  - name: ns-helmfile-var
+    chart: ../../charts/chart1
+    values:
+      - scenario: helmfile-native-namespace-var
+      - helmfileNamespaceVar: "cli[{{ .Namespace }}]"

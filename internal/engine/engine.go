@@ -17,6 +17,19 @@ type Engine struct {
 	Atlas map[string]any
 	T     *Templater
 	Sops  Sops
+	// Namespace is helmfile's --namespace of the render ("" without the
+	// flag). helmfile exposes it as the top-level .Namespace of every state
+	// template, so the contexts that render deployment.yaml and app
+	// templates carry it too (see setNamespace).
+	Namespace string
+}
+
+// setNamespace mirrors helmfile's native top-level .Namespace into a tpl
+// context, like the templates do (atlas.instance.template, the values
+// loader). Without the key, a template referencing {{ .Namespace }} fails
+// under missingkey=error.
+func (e *Engine) setNamespace(ctx map[string]any) {
+	ctx["Namespace"] = e.Namespace
 }
 
 // Switches are the runtime switches of the entry (ATLAS_* variables).
@@ -119,6 +132,7 @@ func (e *Engine) InstanceTemplate(values, hierarchy, instance map[string]any) (s
 	file := fmt.Sprintf("%s/%s/%s/helmfile.yaml.gotmpl", atlas["cwd"], atlas["appTemplates"], inst["template"])
 	ctx := merge(deepCopy(values), deepCopy(hierarchy))
 	ctx["Release"] = synthRelease()
+	e.setNamespace(ctx)
 	ctx["Values"] = deepCopy(ctx)
 	entries, err := list(instance, "values")
 	if err != nil {

@@ -28,6 +28,10 @@ Inputs (passed via `include "atlas.values.merged" $args`):
             release-time the loader passes helmfile's real .Release; at
             state-build time stage-3 passes a synthetic dict with the
             release's name + namespace.
+  .Namespace  Optional. Helmfile's native top-level .Namespace (the
+            --namespace CLI flag value). Mirrored into the tpl context
+            so app templates referencing {{ .Namespace }} render the
+            same way plain helmfile would. Defaults to "".
   .redact   Bool. When true, every SOPS-decrypted value tree is rewritten
             through atlas.redact.value BEFORE merge. Any later .yaml.gotmpl
             that pulls from a SOPS key sees the redacted derivative and
@@ -246,6 +250,13 @@ Returns: merged hierarchy YAML as a string. Callers `fromYaml` it.
      template needs (.foo AND .Values.foo) without a back-pointer. */ -}}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Release" .Release }}
+{{- /* Helmfile natively exposes .Namespace (the --namespace CLI flag
+     value, or "" when the flag is absent) in every state and values
+     template. App templates written against plain helmfile may reference
+     it, so mirror the caller-provided value into the tpl context —
+     without the key, helmfile's missingkey=error tpl mode hard-fails
+     the render. */ -}}
+{{- $_ := set $ctx "Namespace" (. | get "Namespace" "") }}
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== DEPLOYMENT — find instance + nameStyle ====================== */ -}}
