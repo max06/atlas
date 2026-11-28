@@ -114,6 +114,12 @@ Purpose:
      AND .Values.foo) without a back-pointer. */ -}}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Release" $synthRelease }}
+{{- /* Helmfile natively exposes .Namespace (the --namespace CLI flag
+     value, or "" when the flag is absent) in every state template. App
+     templates written against plain helmfile may reference it, so mirror
+     this state file's own .Namespace into the tpl context — without the
+     key, helmfile's missingkey=error tpl mode hard-fails the render. */ -}}
+{{- $_ := set $ctx "Namespace" .Namespace }}
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 
 {{- /* ====================== DEPLOYMENT.YAML — find this instance for namespace override ====================== */ -}}
@@ -138,6 +144,7 @@ Purpose:
     "Values"    .Values
     "hierarchy" $hierarchy
     "instance"  $thisInstance
+    "Namespace" .Namespace
 ) | fromYaml }}
 
 {{- /* ====================== REWRITE EACH RELEASE ====================== */ -}}
@@ -317,8 +324,8 @@ Purpose:
   {{- $replMap := dict }}
   {{- if or $.Values.atlas.redactSecrets $.Values.atlas.redactMaps }}
     {{- $relCtx := dict "Name" $release.name "Namespace" ($release | get "namespace" "") }}
-    {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" false) | fromYaml }}
-    {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "redact" true) | fromYaml }}
+    {{- $real := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "Namespace" $.Namespace "redact" false) | fromYaml }}
+    {{- $redacted := include "atlas.values.merged" (dict "Values" $.Values "Release" $relCtx "Namespace" $.Namespace "redact" true) | fromYaml }}
     {{- $replMap = index (include "atlas.diff.values" (dict "real" $real "redacted" $redacted) | fromJson) "v" }}
   {{- end }}
   {{- if $.Values.atlas.redactMaps }}

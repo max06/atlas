@@ -18,5 +18,6 @@ that invokes the shared logic with redact=false (real values for helm).
 {{- include "atlas.values.merged" (dict
     "Values" .Values
     "Release" .Release
+    "Namespace" .Namespace
     "redact" false
 ) }}

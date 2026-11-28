@@ -151,6 +151,8 @@ the template directory. Non-string entries (inline maps) are passed through.
                  skipSecrets and a synthetic .Release)
     "instance"   this instance's apps[] entry from the templated deployment.yaml
                  (dict when the deployment has no matching entry)
+    "Namespace"  optional; the caller's helmfile-native .Namespace (the
+                 --namespace CLI flag value). Defaults to "".
   Output: the rendered template text; callers pipe it through fromYaml.
 
   Context: atlas + hierarchy + synthetic .Release, plus the instance's inline
@@ -175,6 +177,12 @@ the template directory. Non-string entries (inline maps) are passed through.
      atlas.deployment.definition. */ -}}
 {{- $ctx := mergeOverwrite (deepCopy .Values) (deepCopy $hierarchy) }}
 {{- $_ := set $ctx "Release" $synthRelease }}
+{{- /* Helmfile natively exposes .Namespace (the --namespace CLI flag value,
+     or "" when the flag is absent) in every state template. App templates
+     written against plain helmfile may reference it, so mirror the caller's
+     value into the tpl context — without the key, helmfile's
+     missingkey=error tpl mode hard-fails the render. */ -}}
+{{- $_ := set $ctx "Namespace" (. | get "Namespace" "") }}
 {{- $_ := set $ctx "Values" (deepCopy $ctx) }}
 {{- range $entry := (.instance | get "values" list) }}
   {{- if kindIs "map" $entry }}

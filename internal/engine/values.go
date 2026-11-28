@@ -183,6 +183,7 @@ func (e *Engine) Values(values, release map[string]any, redact bool) (map[string
 
 	ctx := merge(deepCopy(values), deepCopy(hierarchy))
 	ctx["Release"] = release
+	e.setNamespace(ctx)
 	ctx["Values"] = deepCopy(ctx)
 
 	text, err := readText(deploymentPath)

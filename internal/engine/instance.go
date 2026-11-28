@@ -92,6 +92,7 @@ func (e *Engine) instanceState(p Pair, values map[string]any) (*Instance, error)
 	}
 	ctx := merge(deepCopy(values), deepCopy(hierarchy))
 	ctx["Release"] = synthRelease()
+	e.setNamespace(ctx)
 	ctx["Values"] = deepCopy(ctx)
 	deploymentPath := p.DeploymentPath
 	text, err := readText(deploymentPath)

@@ -274,6 +274,7 @@
                   "Values"    (dict "atlas" $instanceAtlas)
                   "hierarchy" $pairHierarchy
                   "instance"  $app
+                  "Namespace" $.Namespace
             ) | fromYaml }}
             {{- range $release := ($rendered | get "releases" list) }}
               {{- $chart := $release | get "chart" "" | toString }}
